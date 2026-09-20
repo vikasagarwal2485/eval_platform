@@ -1,0 +1,145 @@
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { render } from '@testing-library/react';
+import type { ReactElement } from 'react';
+import { MemoryRouter, Route, Routes } from 'react-router-dom';
+
+export type Handler = (req: { method: string; path: string; body: any }) => unknown; // eslint-disable-line @typescript-eslint/no-explicit-any
+
+/** Stub `fetch` with a route table keyed "METHOD /path" (query string ignored unless keyed). */
+export function mockApi(routes: Record<string, unknown | Handler>) {
+  const calls: { method: string; path: string; body: any }[] = []; // eslint-disable-line @typescript-eslint/no-explicit-any
+  const fn = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input).replace(/^\/api/, '');
+    const method = (init?.method ?? 'GET').toUpperCase();
+    const body = init?.body ? JSON.parse(String(init.body)) : undefined;
+    calls.push({ method, path: url, body });
+    const key = [`${method} ${url}`, `${method} ${url.split('?')[0]}`].find((k) => k in routes);
+    if (!key)
+      return new Response(JSON.stringify({ detail: `no mock for ${method} ${url}` }), {
+        status: 404,
+      });
+    const val = routes[key];
+    const out = typeof val === 'function' ? (val as Handler)({ method, path: url, body }) : val;
+    if (out instanceof Response) return out;
+    return new Response(JSON.stringify(out), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  });
+  vi.stubGlobal('fetch', fn);
+  return { fn, calls };
+}
+
+export function jsonError(status: number, detail: unknown) {
+  return new Response(JSON.stringify({ detail }), { status });
+}
+
+export function renderApp(ui: ReactElement, { route = '/', path = '*', stubLive = true } = {}) {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+  return {
+    qc,
+    ...render(
+      <QueryClientProvider client={qc}>
+        <MemoryRouter
+          initialEntries={[route]}
+          future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+        >
+          <Routes>
+            <Route path={path} element={ui} />
+            {stubLive && <Route path="/runs/:id/live" element={<div>LIVE PAGE</div>} />}
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    ),
+  };
+}
+
+export const HEALTH_OK = {
+  status: 'ok',
+  ollama: { reachable: true, base_url: 'http://localhost:11434', version: '0.34.2', error: null },
+  config: { ollama_base_url: 'http://localhost:11434', db_path: 'x', request_timeout_s: 300 },
+};
+
+export const MODELS = [
+  {
+    name: 'gemma4:e4b',
+    digest: 'd1',
+    size_bytes: 9_600_000_000,
+    parameter_size: '8.0B',
+    quantization: 'Q4_K_M',
+    family: 'gemma4',
+    capabilities: ['completion', 'vision', 'thinking'],
+    thinking: true,
+  },
+  {
+    name: 'llama3:8b',
+    digest: 'd2',
+    size_bytes: 4_700_000_000,
+    parameter_size: '8B',
+    quantization: 'Q4_0',
+    family: 'llama',
+    capabilities: ['completion'],
+    thinking: false,
+  },
+  {
+    name: 'qwen3:8b',
+    digest: 'd3',
+    size_bytes: 5_200_000_000,
+    parameter_size: '8.2B',
+    quantization: 'Q4_K_M',
+    family: 'qwen3',
+    capabilities: ['completion', 'thinking'],
+    thinking: true,
+  },
+];
+
+export const SUITES = [
+  {
+    id: 1,
+    name: 'Starter suite',
+    description: 'Built in',
+    is_builtin: true,
+    case_count: 3,
+    counts_by_category: { classification: 1, reasoning: 1, generation: 1 },
+  },
+];
+export const SUITE_DETAIL = {
+  ...SUITES[0],
+  cases: [
+    {
+      id: 10,
+      suite_id: 1,
+      position: 0,
+      category: 'classification',
+      title: 'Sentiment',
+      prompt: 'Great!',
+      labels: ['positive', 'negative'],
+      expected: 'positive',
+    },
+    {
+      id: 11,
+      suite_id: 1,
+      position: 1,
+      category: 'reasoning',
+      title: 'Bat and ball',
+      prompt: '...',
+      expected: '5',
+      comparison: 'numeric',
+    },
+    {
+      id: 12,
+      suite_id: 1,
+      position: 2,
+      category: 'generation',
+      title: 'Haiku',
+      prompt: 'Write a haiku',
+    },
+  ],
+};
+
+export const baseRoutes = {
+  'GET /health': HEALTH_OK,
+  'GET /models': MODELS,
+  'GET /suites': SUITES,
+  'GET /suites/1': SUITE_DETAIL,
+};

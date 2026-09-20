@@ -1,0 +1,13 @@
+# python
+backend/.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+# node
+frontend/node_modules/
+frontend/dist/
+# local data (SQLite run history)
+data/*.db
+data/*.db-*

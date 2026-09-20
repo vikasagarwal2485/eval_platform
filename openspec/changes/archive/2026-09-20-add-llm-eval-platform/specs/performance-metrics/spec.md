@@ -1,0 +1,54 @@
+# Spec Delta
+
+## Purpose
+
+Captures and aggregates speed and resource metrics for each model request so models can be compared on latency and throughput, independent of answer quality.
+
+## ADDED Requirements
+
+### Requirement: Per-request metrics
+The system SHALL record, for every request: total latency, time to first token, time to first answer token (after any thinking output), model load duration, prompt token count, output token count, thinking token count when available, prompt evaluation duration, generation duration, and generation throughput in tokens per second.
+
+#### Scenario: Metrics recorded
+- **WHEN** a request completes successfully
+- **THEN** all available metrics are stored with the result, sourced from Ollama-reported counters where provided and from wall-clock timing otherwise
+
+#### Scenario: Throughput calculation
+- **WHEN** Ollama reports an output token count and a generation duration
+- **THEN** tokens per second is output tokens divided by generation duration in seconds
+
+#### Scenario: Metric unavailable
+- **WHEN** a metric cannot be obtained for a request (for example the request failed before the first token)
+- **THEN** the metric is stored as absent, never as zero, and is excluded from aggregates
+
+### Requirement: Cold start separated from warm performance
+The system SHALL report model load time separately from generation latency, and SHALL exclude load time and warm-up requests from warm-performance aggregates so that model swapping does not distort speed comparisons.
+
+#### Scenario: Cold first request
+- **WHEN** the first request to a model triggers a model load
+- **THEN** the load duration is recorded and shown as cold-start cost, and warm-latency aggregates use the model's warmed requests
+
+#### Scenario: Warm-up disabled
+- **WHEN** warm-up is disabled and the first request includes a load
+- **THEN** that request is flagged `cold` and excluded from warm aggregates by default, with an option to include it
+
+### Requirement: Aggregate statistics
+The system SHALL compute, per model (and per category), the mean, median, 95th percentile, minimum, and maximum of latency and time to first token, and the mean and median of tokens per second, across all warm requests including repeats.
+
+#### Scenario: Repeats reduce noise
+- **WHEN** the run is configured with five repeats per case
+- **THEN** aggregates are computed over all repeats and the spread (min/max or standard deviation) is reported
+
+### Requirement: Memory footprint
+The system SHALL record the model's resident memory and the portion in GPU/unified memory as reported by Ollama while the model is loaded, when available.
+
+#### Scenario: Footprint reported
+- **WHEN** Ollama reports that a model is loaded with its memory size
+- **THEN** the run stores the size and VRAM/unified-memory share for that model and shows it in the comparison
+
+### Requirement: Throughput vs. output length transparency
+The system SHALL present speed metrics alongside token counts so that latency differences caused by different output lengths are distinguishable from differences caused by raw generation speed.
+
+#### Scenario: Verbose model
+- **WHEN** one model produces twice as many tokens as another for the same case
+- **THEN** the comparison shows both total latency and tokens per second, and the output token counts

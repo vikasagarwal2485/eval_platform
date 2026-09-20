@@ -1,0 +1,115 @@
+name: Starter suite
+description: >-
+  Small built-in suite covering classification, reasoning and generation.
+  Read-only; duplicate it to customise. Indicative only - extend with your own cases.
+cases:
+  # ---------------------------------------------------------------- classification
+  - category: classification
+    title: Sentiment - clearly positive
+    prompt: "Classify the sentiment of this review: The battery lasts all day and the screen is gorgeous. Best purchase I've made this year!"
+    labels: [positive, negative, neutral]
+    expected: positive
+    tags: [sentiment]
+  - category: classification
+    title: Sentiment - clearly negative
+    prompt: "Classify the sentiment of this review: It arrived broken and support never replied to my emails. Total waste of money."
+    labels: [positive, negative, neutral]
+    expected: negative
+    tags: [sentiment]
+  - category: classification
+    title: Sentiment - neutral
+    prompt: "Classify the sentiment of this statement: The package was delivered on Tuesday."
+    labels: [positive, negative, neutral]
+    expected: neutral
+    tags: [sentiment]
+  - category: classification
+    title: Topic - business
+    prompt: "What is the topic of this headline: The central bank raised interest rates by 25 basis points to curb inflation."
+    labels: [sports, business, technology, entertainment]
+    expected: business
+    tags: [topic]
+  - category: classification
+    title: Spam detection
+    prompt: "Is this message spam? CONGRATULATIONS! You've won a $1000 gift card. Click http://bit.ly/claim-now to collect your prize today!"
+    labels: [spam, not_spam]
+    expected: spam
+    tags: [spam]
+  - category: classification
+    title: Support intent
+    prompt: "What is the customer's intent: I'd like to cancel my subscription before the next billing date."
+    labels: [cancel_subscription, billing_question, technical_support, general_inquiry]
+    expected: cancel_subscription
+    tags: [intent]
+  # ---------------------------------------------------------------- reasoning
+  - category: reasoning
+    title: Multi-leg journey
+    prompt: "A train travels at 60 km/h for 2.5 hours, then at 80 km/h for 1.5 hours. How many kilometres does it travel in total?"
+    comparison: numeric
+    expected: "270"
+    tags: [arithmetic, word-problem]
+  - category: reasoning
+    title: Machines and widgets
+    prompt: "If 3 machines take 3 minutes to make 3 widgets, how many minutes do 100 machines take to make 100 widgets?"
+    comparison: numeric
+    expected: "3"
+    tags: [trick]
+  - category: reasoning
+    title: Apples
+    prompt: "Sam has 5 apples. He gives 2 apples to Ana, then buys twice as many apples as he has left. How many apples does Sam have now?"
+    comparison: numeric
+    expected: "9"
+    tags: [arithmetic, word-problem]
+  - category: reasoning
+    title: Syllogism
+    prompt: "All bloops are razzies. All razzies are lazzies. Are all bloops definitely lazzies? Answer yes or no."
+    comparison: text
+    expected: "yes"
+    tags: [logic]
+  - category: reasoning
+    title: Percentage
+    prompt: "What is 15% of 240, plus 12?"
+    comparison: numeric
+    expected: "48"
+    tags: [arithmetic]
+  - category: reasoning
+    title: Bat and ball
+    prompt: "A bat and a ball cost $1.10 in total. The bat costs $1.00 more than the ball. How many cents does the ball cost?"
+    comparison: numeric
+    expected: "5"
+    tags: [trick]
+  # ---------------------------------------------------------------- generation
+  - category: generation
+    title: Product description
+    prompt: "Write a two-sentence product description for a reusable water bottle that keeps drinks cold for 24 hours."
+    constraints:
+      max_words: 60
+      required_keywords: [cold]
+    rubric:
+      - {name: Relevance, description: Describes a reusable bottle and its 24-hour cold retention}
+      - {name: Fluency, description: Natural, grammatical, well-written sentences}
+      - {name: Persuasiveness, description: Would make a customer want the product}
+    tags: [marketing]
+  - category: generation
+    title: One-sentence summary
+    prompt: >-
+      Summarize the following in one sentence: Photosynthesis is the process by which plants, algae
+      and some bacteria convert light energy into chemical energy. Using sunlight, water and carbon
+      dioxide, they produce glucose and release oxygen as a by-product. This process underpins most
+      food chains on Earth and is the main source of atmospheric oxygen.
+    constraints:
+      max_words: 40
+    rubric:
+      - {name: Accuracy, description: Faithful to the source with no invented facts}
+      - {name: Conciseness, description: A single tight sentence}
+      - {name: Fluency, description: Natural and grammatical}
+    tags: [summarization]
+  - category: generation
+    title: Polite decline email
+    prompt: "Write a short, polite email declining a meeting invitation because of a scheduling conflict, and propose an alternative time."
+    constraints:
+      max_words: 120
+    rubric:
+      - {name: Tone, description: Polite and professional}
+      - {name: Completeness, description: Declines, gives a reason, and proposes an alternative}
+      - {name: Clarity, description: Clear and easy to act on}
+    tags: [writing]
