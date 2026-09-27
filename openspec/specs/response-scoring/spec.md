@@ -51,7 +51,7 @@ The system SHALL score reasoning cases by extracting the final answer from the m
 - **THEN** the system falls back to a documented extraction rule; if that also fails, the case scores 0 with outcome `unparseable`
 
 ### Requirement: Judge-based scoring
-The system SHALL score generation cases, and optionally reasoning quality, using an LLM judge (a locally hosted model chosen by the user) against a rubric, producing an integer 1-5 score per criterion with a short justification, normalized to 0-1.
+The system SHALL score generation cases, and optionally reasoning quality, using an LLM judge (any available local or enterprise model chosen by the user, or the evaluated models themselves when cross-model judging is used) against a rubric, producing an integer 1-5 score per criterion with a short justification, normalized to 0-1.
 
 #### Scenario: Rubric scoring
 - **WHEN** a generation case has a rubric with criteria and a judge model is configured
@@ -68,6 +68,14 @@ The system SHALL score generation cases, and optionally reasoning quality, using
 #### Scenario: No judge configured
 - **WHEN** no judge model is configured
 - **THEN** generation cases are not judged, show "unscored", and are excluded from composite scores rather than counted as 0
+
+#### Scenario: Enterprise judge
+- **WHEN** the selected judge is an enterprise model
+- **THEN** the answers are scored by that model with the same rubric and normalization as a local judge, and the UI states that the answers are sent to its provider
+
+#### Scenario: Judge outside the evaluated set
+- **WHEN** the judge is a model that is not one of the evaluated models
+- **THEN** the scores are not labelled self-judged
 
 ### Requirement: Deterministic constraint checks
 The system SHALL support optional deterministic checks on generated text (maximum/minimum length, required keywords, forbidden keywords) that are reported as pass/fail alongside judge scores.

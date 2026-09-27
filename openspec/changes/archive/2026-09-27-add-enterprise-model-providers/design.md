@@ -115,3 +115,39 @@ Fake OpenAI and Anthropic HTTP servers (SSE, usage, rate-limit and auth error mo
 - OpenAI: keep Chat Completions or move to the Responses API for newer reasoning models (which changes the stream events and how reasoning is reported)? Decide against current docs at implementation; the adapter boundary makes it a local change.
 - Anthropic thinking budget: fixed fraction of `max_tokens` versus a per-run setting; start with a bounded default and expose a setting only if needed.
 - Whether to add a hard cap on billable requests per run (a confirm-above-N prompt) after real usage shows typical run sizes.
+
+## Implementation Notes
+
+Details settled while implementing; behaviour in `specs/` is unchanged.
+
+- **OpenAI adapter** uses Chat Completions (not the Responses API); `max_completion_tokens` is sent on the official
+  endpoint, `max_tokens` on a custom `base_url`. If a model rejects an optional parameter (`temperature`, `seed`, or
+  `max_tokens` in favour of `max_completion_tokens`) with a 400, the adapter drops or renames that one parameter and
+  retries once more, recording what changed - rather than hand-listing which model accepts what.
+- **Anthropic adapter** tries manual thinking (`thinking.type: "enabled"` with a computed `budget_tokens`) first and
+  falls back to `thinking.type: "adaptive"` on the specific 400 a model returns when it does not support manual mode
+  (and remembers the working mode per model for the rest of the process, so later requests do not pay for the failed
+  attempt again). Structured judge output uses a single forced tool call, since the Messages API has no JSON-schema
+  response mode; the streamed tool input *is* the judge's answer.
+- **Retries live inside the adapter**, before the first byte of a request: exponential backoff with jitter, capped at
+  30 s, honouring the provider's `Retry-After` when given. A 401/403 is never retried. This keeps retry accounting
+  (`attempts`, `retry_wait_ms`) local to one request and out of the runner.
+- **Per-run circuit breakers** (`app/core/circuits.py`) are shared between generation and judging within one run: an
+  authentication failure blocks only that model reference for the rest of the run; an unavailable-after-retries
+  provider blocks the whole provider. They reset per run (and per re-score), so a fixed key works again on the next run.
+- **Cloud metrics exclude retry wait from latency and TTFT** (`compute_cloud_metrics`), and tokens-per-second is
+  computed over the window from the first *visible* output token to the end of the stream - hidden (unstreamed)
+  reasoning tokens are excluded from that window so they do not deflate the apparent speed.
+- **A model reference's provider is matched by registry name, not display text** - `@openai-main/gpt-4o` - so two
+  providers of the same kind (two keys, or a gateway and the official endpoint) are unambiguous everywhere: routing,
+  snapshots, exports, and cross-model judging's "never judge yourself" rule.
+- **The unified `/api/models` list only degrades gracefully in one direction**: Ollama unreachable still returns
+  enterprise models (if any are registered and enabled), but with *no* registered or enabled enterprise models it
+  keeps the original 503 shape untouched, so existing Ollama-only callers see no change at all.
+- **The secret redactor is lazy and pattern-based**, not a fixed set of known keys: it also strips generic key-shaped
+  strings (`sk-...`, `sk-ant-...`, `Authorization: Bearer ...`) so an error from a provider we did not anticipate is
+  still scrubbed, and it matches long partial substrings of a real registered key (not only an exact match), so a
+  masked or truncated echo of the key in a provider error is still caught.
+- **The frontend computes its own request-destination and data-sharing breakdown** from the same rule the backend
+  uses for cross-model planning, so Run setup can show an accurate estimate and provider list before a run exists to
+  ask the backend about.

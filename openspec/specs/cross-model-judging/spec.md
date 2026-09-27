@@ -77,8 +77,23 @@ Only answers from successful requests SHALL be judged. Failed requests SHALL kee
 - **WHEN** a model's request for a generation case failed
 - **THEN** no judge is asked to score it and the case keeps its error outcome
 
+### Requirement: Cross-model judging spans local and enterprise models
+Cross-model judging SHALL work across any mix of evaluated local and enterprise models, following the same rule that a model never judges its own answers, and SHALL disclose which providers will receive other models' answers.
+
+#### Scenario: Mixed pair
+- **WHEN** one local model and one enterprise model are evaluated with cross-model judging
+- **THEN** the enterprise model judges the local model's answers, the local model judges the enterprise model's answers, and neither judges its own
+
+#### Scenario: Disclosure
+- **WHEN** cross-model judging includes an enterprise model as judge
+- **THEN** Run setup states that the other models' answers will be sent to that provider
+
+#### Scenario: Cost estimate
+- **WHEN** the run setup shows the estimated number of judgements
+- **THEN** it distinguishes judgements made by enterprise models from those made locally
+
 ### Requirement: Judging runs after generation and limits model loading
-Cross-model judging SHALL run only after all generation in the run has finished, so it cannot disturb measured latency. Judging work SHALL be grouped by judge model so each judge model is loaded once per scoring pass rather than alternating between models. Thinking SHALL be disabled for thinking-capable judges, as for single-judge mode.
+Cross-model judging SHALL run only after all generation in the run has finished, so it cannot disturb measured latency. Judging work SHALL be grouped by judge model so each judge model is loaded once per scoring pass rather than alternating between models, and only local judge models SHALL be unloaded between groups. Thinking SHALL be disabled for thinking-capable local judges, as for single-judge mode.
 
 #### Scenario: Speed figures unaffected
 - **WHEN** a run with cross-model judging completes
@@ -91,6 +106,10 @@ Cross-model judging SHALL run only after all generation in the run has finished,
 #### Scenario: Cancellation while judging
 - **WHEN** the user cancels during the judging stage
 - **THEN** judging stops promptly, judgements already made are kept, and the run is marked cancelled
+
+#### Scenario: Enterprise judge group
+- **WHEN** an enterprise model is one of the judges
+- **THEN** its judgements are made as one group like any other judge, and no unload request is sent for it
 
 ### Requirement: Re-score with cross-model judging
 A finished run SHALL be re-scorable with any judging mode without regenerating outputs. Each re-scoring SHALL create a new scoring attempt that records its judging mode and the judge models used, and earlier attempts SHALL remain readable.
