@@ -25,7 +25,15 @@ export function Banner({
   );
 }
 
-export function ErrorBox({ error, title }: { error: unknown; title?: string }) {
+export function ErrorBox({
+  error,
+  title,
+  children,
+}: {
+  error: unknown;
+  title?: string;
+  children?: ReactNode;
+}) {
   if (!error) return null;
   const message = error instanceof Error ? error.message : String(error);
   const unreachable = error instanceof ApiError && error.code === 'ollama_unreachable';
@@ -37,6 +45,7 @@ export function ErrorBox({ error, title }: { error: unknown; title?: string }) {
     <Banner kind="error">
       {title && <strong>{title} </strong>}
       {message}
+      {children}
       {unreachable && (
         <div className="small">
           Ollama unreachable{baseUrl ? ` at ${baseUrl}` : ''}. Start it with{' '}

@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import type { Category, Judgement, ResultItem, Run, RunCase, ScoreRow } from '../api/types';
 import { CATEGORIES } from '../api/types';
 import { dash, fmtMs, fmtNum, fmtPct } from '../lib/format';
+import ModelChip from './ModelChip';
 import { CategoryBadge, Empty, OutcomeBadge } from './ui';
 
 const FAILURES = ['wrong', 'unparseable', 'error'];
@@ -129,6 +130,25 @@ function Metrics({ r }: { r: ResultItem }) {
           cold start
         </span>
       )}
+      {r.source === 'cloud' && (
+        <div>
+          {r.model_version && (
+            <>
+              Model version: <code>{r.model_version}</code>
+            </>
+          )}
+          {r.attempts > 1 && <span> · {r.attempts} attempts</span>}
+          {r.params_ignored.length > 0 && (
+            <ul style={{ margin: '2px 0 0', paddingLeft: 18 }}>
+              {r.params_ignored.map((p) => (
+                <li key={p.name}>
+                  Not applied: <strong>{p.name}</strong> — {p.reason}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -161,6 +181,7 @@ export default function CaseDrilldown({ run, results }: { run: Run; results: Res
   const [failuresOnly, setFailuresOnly] = useState(false);
   const [model, setModel] = useState('');
   const models = run.models.map((m) => m.name);
+  const modelInfo = useMemo(() => new Map(run.models.map((m) => [m.name, m])), [run.models]);
 
   const byCase = useMemo(() => {
     const map = new Map<number, Map<string, ResultItem[]>>();
@@ -267,7 +288,14 @@ export default function CaseDrilldown({ run, results }: { run: Run; results: Res
                 const rs = perModel?.get(m) ?? [];
                 return (
                   <div key={m}>
-                    <h3 style={{ margin: '0 0 6px' }}>{m}</h3>
+                    <h3 style={{ margin: '0 0 6px' }}>
+                      <ModelChip
+                        name={m}
+                        source={modelInfo.get(m)?.source}
+                        provider={modelInfo.get(m)?.provider}
+                        providerKind={modelInfo.get(m)?.provider_kind}
+                      />
+                    </h3>
                     {rs.length === 0 && <p className="muted small">No result.</p>}
                     {rs.map((r) => (
                       <ModelResult key={r.id} r={r} multi={rs.length > 1} />

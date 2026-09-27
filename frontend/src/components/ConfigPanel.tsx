@@ -1,4 +1,5 @@
 import type { JudgeMode, ModelInfo, RunConfig } from '../api/types';
+import { KIND_LABEL } from '../lib/providers';
 import NumberField from './NumberField';
 import { Banner } from './ui';
 
@@ -13,9 +14,25 @@ interface Props {
   selectedModels: string[];
   /** cases that would be judged, per model and repeat (used only for the cost estimate) */
   caseCounts: { generation: number; reasoning: number };
+  /** every selected case, all categories (used for the generation request estimate) */
+  totalCaseCount: number;
   /** shown when the mode was changed automatically */
   notice?: string | null;
   onDismissNotice?: () => void;
+}
+
+type ShareReason = 'contestant' | 'single judge' | 'cross-model judge';
+
+/** destination of a request for this model: `local` (Ollama) or the enterprise provider's name */
+function destinationOf(m: ModelInfo | undefined, ref: string): string {
+  if (m?.source === 'cloud' && m.provider) return m.provider;
+  return ref.startsWith('@') ? ref : 'local';
+}
+
+function destinationLabel(dest: string, models: ModelInfo[]): string {
+  if (dest === 'local') return 'Ollama (local)';
+  const kind = models.find((m) => m.provider === dest)?.provider_kind;
+  return kind ? `${dest} (${KIND_LABEL[kind]})` : dest;
 }
 
 const MODES: { value: JudgeMode; label: string; help: string }[] = [
@@ -38,6 +55,7 @@ export default function ConfigPanel({
   models,
   selectedModels,
   caseCounts,
+  totalCaseCount,
   notice,
   onDismissNotice,
 }: Props) {
@@ -50,6 +68,44 @@ export default function ConfigPanel({
   const answers = judgedCases * n * config.repeats;
   const judgements = answers * (n - 1);
   const judging = judgeMode !== 'none';
+  const availableJudges = models.filter((m) => m.available);
+
+  // ---- data-sharing notice: every provider that will receive prompts or answers, and why
+  const reasons = new Map<string, Set<ShareReason>>();
+  const addReason = (provider: string | null, reason: ShareReason) => {
+    if (!provider) return;
+    if (!reasons.has(provider)) reasons.set(provider, new Set());
+    reasons.get(provider)!.add(reason);
+  };
+  for (const ref of selectedModels) {
+    const m = models.find((x) => x.name === ref);
+    if (m?.source === 'cloud') {
+      addReason(m.provider, 'contestant');
+      if (judgeMode === 'cross_model') addReason(m.provider, 'cross-model judge');
+    }
+  }
+  if (judgeMode === 'single' && judgeModel) {
+    const jm = models.find((x) => x.name === judgeModel);
+    if (jm?.source === 'cloud') addReason(jm.provider, 'single judge');
+  }
+
+  // ---- request estimate, split by where each request actually goes
+  const destCounts = new Map<string, number>();
+  const addRequests = (dest: string, count: number) =>
+    destCounts.set(dest, (destCounts.get(dest) ?? 0) + count);
+  for (const ref of selectedModels) {
+    const m = models.find((x) => x.name === ref);
+    const dest = destinationOf(m, ref);
+    addRequests(dest, totalCaseCount * config.repeats);
+    if (judgeMode === 'cross_model' && judgedCases > 0 && n > 1) {
+      addRequests(dest, judgedCases * config.repeats * (n - 1)); // this model judges the other n-1
+    }
+  }
+  if (judgeMode === 'single' && judgeModel && judgedCases > 0) {
+    const jm = models.find((x) => x.name === judgeModel);
+    addRequests(destinationOf(jm, judgeModel), judgedCases * config.repeats * n);
+  }
+  const showBreakdown = destCounts.size > 0 && (destCounts.size > 1 || reasons.size > 0);
 
   return (
     <section className="card" aria-labelledby="cfg-h">
@@ -103,12 +159,16 @@ export default function ConfigPanel({
               onChange={(e) => onJudgeChange(e.target.value || null)}
             >
               <option value="">Choose a judge…</option>
-              {models.map((m) => (
+              {availableJudges.map((m) => (
                 <option key={m.name} value={m.name}>
-                  {m.name}
+                  {m.source === 'cloud' ? `${m.display_name ?? m.name} (${m.provider})` : m.name}
                 </option>
               ))}
             </select>
+            <p className="small muted" style={{ margin: '4px 0 0' }}>
+              Any available local or enterprise model can judge, including one that is not being
+              evaluated.
+            </p>
           </div>
         )}
 
@@ -155,6 +215,30 @@ export default function ConfigPanel({
                 </div>
               )}
             </Banner>
+          </div>
+        )}
+
+        {reasons.size > 0 && (
+          <div style={{ marginTop: 12 }}>
+            <Banner kind="warn" role="status">
+              <strong>This run will send data to:</strong>
+              <ul style={{ margin: '4px 0 0', paddingLeft: 18 }}>
+                {[...reasons.entries()].map(([provider, why]) => (
+                  <li key={provider}>
+                    {destinationLabel(provider, models)} — as {[...why].join(' and ')}
+                  </li>
+                ))}
+              </ul>
+            </Banner>
+          </div>
+        )}
+
+        {showBreakdown && (
+          <div className="small muted" style={{ marginTop: 8 }} data-testid="request-breakdown">
+            Estimated requests:{' '}
+            {[...destCounts.entries()]
+              .map(([dest, count]) => `${destinationLabel(dest, models)}: ${count}`)
+              .join(' · ')}
           </div>
         )}
 

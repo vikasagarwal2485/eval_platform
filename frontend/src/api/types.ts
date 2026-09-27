@@ -10,11 +10,22 @@ export interface ModelInfo {
   family: string | null;
   capabilities: string[];
   thinking: boolean;
+  /** `name` is the model reference: a bare Ollama name, or `@provider/model` for enterprise models */
+  source: ModelSource;
+  provider: string | null;
+  provider_kind: ProviderKind | null;
+  display_name: string | null;
+  reasoning: boolean;
+  available: boolean;
+  unavailable_reason: string | null;
 }
+export type ModelSource = 'local' | 'cloud';
+export type ProviderKind = 'openai' | 'anthropic';
 
 export interface Health {
   status: string;
   ollama: { reachable: boolean; base_url: string; version: string | null; error: string | null };
+  providers: { name: string; kind: ProviderKind; key_env: string; key_available: boolean }[];
   config: { ollama_base_url: string; db_path: string; request_timeout_s: number };
 }
 
@@ -112,6 +123,10 @@ export interface RunModel {
   size_bytes: number | null;
   thinking: boolean;
   memory: Memory | null;
+  source: ModelSource;
+  provider: string | null;
+  provider_kind: ProviderKind | null;
+  model_versions: string[];
 }
 export interface RunCase {
   id: number;
@@ -188,6 +203,10 @@ export interface LeaderRow {
   digest: string;
   parameter_size: string | null;
   quantization: string | null;
+  source: ModelSource;
+  provider: string | null;
+  provider_kind: ProviderKind | null;
+  model_versions: string[];
   categories: Partial<Record<Category, CategoryScore>>;
   composite: number | null;
   performance: PerfStats;
@@ -226,6 +245,8 @@ export interface Summary {
   judging: { mode: JudgeMode; judges: JudgeStat[] };
   models_count: number;
   comparable: boolean;
+  /** local and enterprise models together: speed figures are not like-for-like */
+  mixed_sources: boolean;
   categories_present: Category[];
   leaderboard: LeaderRow[];
 }
@@ -256,6 +277,12 @@ export interface ResultItem {
   tokens_per_s: number | null;
   output_tokens: number | null;
   metrics: Record<string, number | boolean | null | Record<string, unknown>>;
+  source: ModelSource;
+  provider: string | null;
+  model_version: string | null;
+  attempts: number;
+  params_applied: Record<string, unknown>;
+  params_ignored: { name: string; reason: string }[];
   scores: ScoreRow[];
   primary: { value: number | null; outcome: string };
 }
@@ -306,4 +333,44 @@ export interface ResultEvent {
   tokens_per_s: number | null;
   is_cold: boolean;
   error: string | null;
+}
+
+// ---------------------------------------------------------------- providers
+export interface ProviderModel {
+  id: number;
+  model_id: string;
+  ref: string;
+  display_name: string;
+  enabled: boolean;
+  reasoning: boolean;
+}
+export interface Provider {
+  id: number;
+  kind: ProviderKind;
+  name: string;
+  key_env: string;
+  base_url: string | null;
+  /** whether the environment variable currently holds a key; the key itself is never exposed */
+  key_available: boolean;
+  data_sharing_acknowledged_at: string | null;
+  created_at: string;
+  models: ProviderModel[];
+}
+export interface ProviderCreate {
+  kind: ProviderKind;
+  name: string;
+  key_env: string;
+  base_url?: string | null;
+  acknowledge_data_sharing: boolean;
+}
+export type ConnectionStatus =
+  'working' | 'key_not_set' | 'authentication_failed' | 'rate_limited' | 'unreachable' | 'error';
+export interface ConnectionTest {
+  status: ConnectionStatus;
+  message: string;
+  base_url: string;
+}
+export interface AvailableModel {
+  id: string;
+  already_added: boolean;
 }

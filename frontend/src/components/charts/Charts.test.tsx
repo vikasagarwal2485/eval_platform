@@ -266,4 +266,28 @@ describe('ChartsSection', () => {
       'var(--series-3)',
     );
   });
+
+  it('6.5: shows no local-vs-cloud note for an all-local comparison', () => {
+    render(<ChartsSection rows={withComposite()} categories={[...CATS]} />);
+    expect(screen.queryByText(/not directly like-for-like/)).toBeNull();
+  });
+
+  it('6.5: shows the local-vs-cloud latency note only when local and cloud models are both present', () => {
+    const mixed = withComposite([
+      ...THREE_MODELS,
+      row('@oa/gpt-4o', { cls: 1, rea: 1, gen: 1, latency: 900, tps: 60, cloud: true }),
+    ]);
+    render(<ChartsSection rows={mixed} categories={[...CATS]} />);
+    expect(screen.getByText(/include network time and provider queueing/)).toBeInTheDocument();
+    expect(screen.getByText(/not directly like-for-like/)).toBeInTheDocument();
+  });
+
+  it('6.5: shows no note when every model is cloud', () => {
+    const allCloud = withComposite([
+      row('@oa/gpt-4o', { cls: 1, rea: 1, gen: 1, latency: 900, tps: 60, cloud: true }),
+      row('@an/claude', { cls: 1, rea: 1, gen: 1, latency: 1100, tps: 55, cloud: true }),
+    ]);
+    render(<ChartsSection rows={allCloud} categories={[...CATS]} />);
+    expect(screen.queryByText(/not directly like-for-like/)).toBeNull();
+  });
 });

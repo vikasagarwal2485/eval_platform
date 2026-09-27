@@ -64,12 +64,27 @@ export default function RunSetupPage() {
 
   const ollamaDown = health.data ? !health.data.ollama.reachable : false;
   const backendDown = !!health.error;
+  const all = models.data ?? [];
+  const info = (ref: string) => all.find((m) => m.name === ref);
+  // Ollama only matters if a local model is in the run (as contestant or single judge)
+  const usesLocal = [...selected, ...(judgeMode === 'single' && judge ? [judge] : [])].some(
+    (r) => (info(r)?.source ?? (r.startsWith('@') ? 'cloud' : 'local')) === 'local',
+  );
+  const unavailable = selected
+    .map((r) => info(r))
+    .filter((m): m is NonNullable<typeof m> => !!m && !m.available);
+  const judgeInfo = judgeMode === 'single' && judge ? info(judge) : undefined;
   const blockers = [
     backendDown && 'The evaluation backend is not reachable.',
-    ollamaDown && 'Ollama is unreachable.',
+    ollamaDown && usesLocal && 'Ollama is unreachable, and this run uses a local model.',
+    ...unavailable.map((m) => `${m.name} is unavailable: ${m.unavailable_reason}`),
     !selected.length && 'Select at least one model.',
     !caseCount && 'Select a test suite or add an ad-hoc prompt.',
     judgeMode === 'single' && !judge && 'Choose a judge model, or pick another judging mode.',
+    judgeMode === 'single' &&
+      !!judgeInfo &&
+      !judgeInfo.available &&
+      `Judge ${judgeInfo.name} is unavailable: ${judgeInfo.unavailable_reason}`,
   ].filter(Boolean) as string[];
 
   const start = () => {
@@ -105,8 +120,8 @@ export default function RunSetupPage() {
       )}
       {ollamaDown && (
         <Banner kind="error">
-          <strong>Ollama unreachable</strong> at {health.data?.ollama.base_url}. Starting new runs
-          is disabled until it is back.
+          <strong>Ollama unreachable</strong> at {health.data?.ollama.base_url}. Local models cannot
+          be used until it is back; enterprise models still can.
         </Banner>
       )}
 
@@ -121,6 +136,8 @@ export default function RunSetupPage() {
             onSuccess: (m) => setSelected((s) => s.filter((n) => m.some((x) => x.name === n))),
           })
         }
+        ollamaDown={ollamaDown}
+        ollamaUrl={health.data?.ollama.base_url}
         refreshing={refresh.isPending}
       />
 
@@ -179,6 +196,7 @@ export default function RunSetupPage() {
           models={models.data ?? []}
           selectedModels={selected}
           caseCounts={caseCounts}
+          totalCaseCount={caseCount}
           notice={judgeNotice}
           onDismissNotice={() => setJudgeNotice(null)}
         />

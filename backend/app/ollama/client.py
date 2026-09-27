@@ -8,13 +8,11 @@ from typing import Any, Protocol
 
 import httpx
 
+from app.providers.errors import ModelBackendError
 
-class OllamaError(Exception):
+
+class OllamaError(ModelBackendError):
     """Ollama returned an error (HTTP status or error chunk)."""
-
-    def __init__(self, message: str, status: int | None = None):
-        super().__init__(message)
-        self.status = status
 
 
 class OllamaUnreachable(OllamaError):

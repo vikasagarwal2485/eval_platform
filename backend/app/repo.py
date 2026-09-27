@@ -12,6 +12,8 @@ from sqlalchemy.orm import Session
 from app.models import (
     Judgement,
     ModelSnapshot,
+    Provider,
+    RegisteredModel,
     Result,
     Run,
     RunCase,
@@ -151,6 +153,8 @@ def get_or_create_snapshot(session: Session, info: ModelInfo) -> ModelSnapshot:
         family=info.family,
         size_bytes=info.size_bytes,
         capabilities=list(info.capabilities),
+        provider_kind=info.provider_kind,
+        source=info.source,
     )
     session.add(snap)
     session.flush()
@@ -319,3 +323,140 @@ def replace_score(
     return add_score(
         session, attempt_id=attempt_id, result_id=result_id, kind=kind, value=value, outcome=outcome, detail=detail
     )
+
+
+# ------------------------------------------------------------------ providers and registered models
+def get_provider(session: Session, provider_id: int) -> Provider:
+    p = session.get(Provider, provider_id)
+    if not p:
+        raise NotFound(f"provider {provider_id} not found")
+    return p
+
+
+def get_provider_by_name(session: Session, name: str) -> Provider | None:
+    return session.scalar(select(Provider).where(Provider.name == name))
+
+
+def list_providers(session: Session) -> list[Provider]:
+    return list(session.scalars(select(Provider).order_by(Provider.name)))
+
+
+def create_provider(
+    session: Session, *, kind: str, name: str, key_env: str, base_url: str | None, ack_at: datetime | None
+) -> Provider:
+    if get_provider_by_name(session, name):
+        raise Conflict(f"A provider named '{name}' already exists")
+    p = Provider(kind=kind, name=name, key_env=key_env, base_url=base_url, ack_at=ack_at)
+    session.add(p)
+    session.flush()
+    return p
+
+
+def update_provider(
+    session: Session,
+    provider_id: int,
+    *,
+    key_env: str | None = None,
+    base_url: str | None = None,
+    clear_base_url: bool = False,
+) -> Provider:
+    """Change the key variable name or base URL. The name is part of every model reference and never changes."""
+    p = get_provider(session, provider_id)
+    if key_env is not None:
+        p.key_env = key_env
+    if clear_base_url:
+        p.base_url = None
+    elif base_url is not None:
+        p.base_url = base_url
+    session.flush()
+    return p
+
+
+def provider_in_use(session: Session, name: str) -> bool:
+    """True if a queued or running run uses one of the provider's models, as contestant or judge."""
+    prefix = f"@{name}/"
+    for run in session.scalars(select(Run).where(Run.status.in_(("queued", "running")))):
+        refs = [s.name for s in run_snapshots(session, run)] + ([run.judge_model] if run.judge_model else [])
+        if any(r.startswith(prefix) for r in refs):
+            return True
+    return False
+
+
+def delete_provider(session: Session, provider_id: int) -> None:
+    p = get_provider(session, provider_id)
+    if provider_in_use(session, p.name):
+        raise Conflict(f"Provider '{p.name}' is used by a queued or running run; let it finish or cancel it first")
+    session.delete(p)  # its registered models go with it; past runs keep their snapshots
+    session.flush()
+
+
+def add_registered_model(
+    session: Session,
+    provider_id: int,
+    model_id: str,
+    *,
+    display_name: str = "",
+    enabled: bool = True,
+    reasoning: bool = False,
+) -> RegisteredModel:
+    p = get_provider(session, provider_id)
+    if session.scalar(
+        select(RegisteredModel).where(RegisteredModel.provider_id == p.id, RegisteredModel.model_id == model_id)
+    ):
+        raise Conflict(f"'{model_id}' is already registered under provider '{p.name}'")
+    m = RegisteredModel(
+        provider_id=p.id, model_id=model_id, display_name=display_name, enabled=enabled, reasoning=reasoning
+    )
+    session.add(m)
+    session.flush()
+    return m
+
+
+def get_registered_model(session: Session, model_pk: int) -> RegisteredModel:
+    m = session.get(RegisteredModel, model_pk)
+    if not m:
+        raise NotFound(f"model {model_pk} not found")
+    return m
+
+
+def update_registered_model(
+    session: Session,
+    model_pk: int,
+    *,
+    enabled: bool | None = None,
+    reasoning: bool | None = None,
+    display_name: str | None = None,
+) -> RegisteredModel:
+    m = get_registered_model(session, model_pk)
+    if enabled is not None:
+        m.enabled = enabled
+    if reasoning is not None:
+        m.reasoning = reasoning
+    if display_name is not None:
+        m.display_name = display_name
+    session.flush()
+    return m
+
+
+def delete_registered_model(session: Session, model_pk: int) -> None:
+    session.delete(get_registered_model(session, model_pk))
+    session.flush()
+
+
+def list_registered_models(session: Session, *, enabled_only: bool = False) -> list[RegisteredModel]:
+    q = select(RegisteredModel).join(Provider, Provider.id == RegisteredModel.provider_id)
+    if enabled_only:
+        q = q.where(RegisteredModel.enabled.is_(True))
+    return list(session.scalars(q.order_by(Provider.name, RegisteredModel.id)))
+
+
+def find_registered(
+    session: Session, provider_name: str, model_id: str
+) -> tuple[Provider | None, RegisteredModel | None]:
+    p = get_provider_by_name(session, provider_name)
+    if not p:
+        return None, None
+    m = session.scalar(
+        select(RegisteredModel).where(RegisteredModel.provider_id == p.id, RegisteredModel.model_id == model_id)
+    )
+    return p, m

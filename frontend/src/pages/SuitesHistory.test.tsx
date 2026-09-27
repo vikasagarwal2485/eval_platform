@@ -267,6 +267,15 @@ describe('9.9 history page', () => {
     expect(within(active).getByRole('button', { name: 'Delete' })).toBeDisabled();
   });
 
+  it('6.5: marks an enterprise model with a cloud badge and provider in the Models column', async () => {
+    historySetup([{ ...runRow(1), models: runOf(['a:1', '@oa/gpt-4o']).models }]);
+    const table = await screen.findByRole('table', { name: 'Runs' });
+    const row = within(table).getAllByRole('row')[1];
+    const cell = within(row).getAllByRole('cell')[3]; // Models column
+    expect(cell).toHaveTextContent('a:1, @oa/gpt-4o');
+    expect(within(cell).getByText('cloud · oa')).toBeInTheDocument();
+  });
+
   it('re-runs a past run and opens its live view', async () => {
     const { user, calls } = historySetup([runRow(1)], { 'POST /runs/1/rerun': { id: 9 } });
     await user.click(await screen.findByRole('button', { name: 'Re-run' }));

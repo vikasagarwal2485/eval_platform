@@ -30,6 +30,7 @@ export function row(
     tokens?: number | null;
     self?: boolean;
     judges?: number | null;
+    cloud?: boolean;
     mem?: number | null;
   } = {},
 ): LeaderRow {
@@ -40,6 +41,10 @@ export function row(
   return {
     model,
     model_id: 1,
+    source: o.cloud ? 'cloud' : 'local',
+    provider: o.cloud ? 'oa' : null,
+    provider_kind: o.cloud ? 'openai' : null,
+    model_versions: o.cloud ? ['gpt-4o-2024-08-06'] : [],
     digest: 'd',
     parameter_size: '8B',
     quantization: 'Q4_K_M',
@@ -84,6 +89,7 @@ export function summary(rows: LeaderRow[], extra: Partial<Summary> = {}): Summar
     judging: { mode: 'single', judges: [] },
     models_count: rows.length,
     comparable: rows.length > 1,
+    mixed_sources: rows.some((r) => r.source === 'cloud') && rows.some((r) => r.source === 'local'),
     categories_present: ['classification', 'reasoning', 'generation'],
     leaderboard: rows,
     ...extra,
@@ -117,6 +123,10 @@ export function runOf(models: string[], extra: Partial<Run> = {}): Run {
       size_bytes: 1,
       thinking: false,
       memory: null,
+      source: name.startsWith('@') ? 'cloud' : 'local',
+      provider: name.startsWith('@') ? name.slice(1).split('/')[0] : null,
+      provider_kind: name.startsWith('@') ? 'openai' : null,
+      model_versions: [],
     })),
     case_count: 2,
     progress: { completed: 4, total: 4 },
@@ -188,6 +198,12 @@ export function result(
     is_cold: false,
     sent_prompt: 'PROMPT + suffix',
     template_version: 'v1',
+    source: model.startsWith('@') ? 'cloud' : 'local',
+    provider: model.startsWith('@') ? model.slice(1).split('/')[0] : null,
+    model_version: null,
+    attempts: 1,
+    params_applied: {},
+    params_ignored: [],
     latency_ms: 1500,
     ttft_ms: 300,
     tokens_per_s: 45.2,

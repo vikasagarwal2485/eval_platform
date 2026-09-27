@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from app.core.scoring.base import ScoreResult
-from app.ollama.client import OllamaClient, OllamaError, OllamaUnreachable
+from app.ollama.client import OllamaClient, OllamaUnreachable
+from app.providers.errors import ModelBackendError, ProviderError
 
 DEFAULT_GENERATION_RUBRIC = [
     {"name": "Relevance", "description": "Directly and fully addresses the request"},
@@ -118,6 +120,7 @@ async def run_judge(
     think: bool | None = False,
     attempts: int = 2,
     options: dict | None = None,
+    on_error: Callable[[BaseException], None] | None = None,
 ) -> tuple[ScoreResult, list[dict]]:
     """Judge one response. One retry on invalid output; `error` outcome (never raises) on failure.
 
@@ -125,7 +128,9 @@ async def run_judge(
     """
     metrics: list[dict] = []
     last_error = "unknown"
+    made = 0
     for attempt in range(1, attempts + 1):
+        made = attempt
         try:
             content, final = await _collect(
                 client,
@@ -141,8 +146,12 @@ async def run_judge(
             scores = parse_judge_output(content, call.rubric)
         except OllamaUnreachable:
             raise
-        except (JudgeParseError, OllamaError) as exc:
+        except (JudgeParseError, ModelBackendError) as exc:
             last_error = str(exc)
+            if isinstance(exc, ModelBackendError) and on_error:
+                on_error(exc)  # lets the caller open a circuit for this judge
+            if isinstance(exc, ProviderError):
+                break  # the adapter already retried transient errors, and a rejected key stays rejected
             continue
         raw_mean, norm = normalize_scores(scores)
         return (
@@ -165,7 +174,7 @@ async def run_judge(
             call.kind,
             None,
             "error",
-            {"error": last_error, "judge_model": judge_model, "attempts": attempts, **call.extra},
+            {"error": last_error, "judge_model": judge_model, "attempts": made, **call.extra},
         ),
         metrics,
     )

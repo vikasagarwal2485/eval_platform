@@ -16,6 +16,10 @@ class Settings:
     request_timeout_s: float = 300.0
     max_retries: int = 2
     retry_backoff_s: float = 1.0
+    # enterprise providers (retries happen inside the adapters, before the first byte)
+    provider_max_retries: int = 4
+    provider_backoff_s: float = 1.0
+    provider_backoff_cap_s: float = 30.0
     frontend_dist: Path = ROOT_DIR / "frontend" / "dist"
 
     @property
@@ -39,5 +43,7 @@ def load_settings(env: dict | None = None) -> Settings:
         request_timeout_s=float(env.get("EVAL_REQUEST_TIMEOUT_S", defaults.request_timeout_s)),
         max_retries=int(env.get("EVAL_MAX_RETRIES", defaults.max_retries)),
         retry_backoff_s=float(env.get("EVAL_RETRY_BACKOFF_S", defaults.retry_backoff_s)),
+        provider_max_retries=int(env.get("EVAL_PROVIDER_MAX_RETRIES", defaults.provider_max_retries)),
+        provider_backoff_s=float(env.get("EVAL_PROVIDER_BACKOFF_S", defaults.provider_backoff_s)),
         frontend_dist=Path(env.get("EVAL_FRONTEND_DIST", str(defaults.frontend_dist))),
     )

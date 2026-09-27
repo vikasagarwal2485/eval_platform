@@ -1,6 +1,14 @@
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { baseRoutes, HEALTH_OK, jsonError, MODELS, mockApi, renderApp } from '../test/utils';
+import {
+  baseRoutes,
+  CLOUD_MODELS,
+  HEALTH_OK,
+  jsonError,
+  MODELS,
+  mockApi,
+  renderApp,
+} from '../test/utils';
 import RunSetupPage from './RunSetupPage';
 
 const setup = (routes: Record<string, unknown> = {}) => {
@@ -71,13 +79,13 @@ describe('9.2 model selection', () => {
       await screen.findByRole('checkbox', { name: 'Starter suite' }).catch(() => document.body),
     );
     expect(startButton()).toBeDisabled();
-    expect(screen.getByText('Ollama is unreachable.')).toBeInTheDocument();
   });
 
   it('shows an empty state when no models are installed', async () => {
     setup({ 'GET /models': [] });
-    expect(await screen.findByText('No models installed')).toBeInTheDocument();
+    expect(await screen.findByText('No models available')).toBeInTheDocument();
     expect(screen.getByText(/ollama pull/)).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Providers' })).toHaveAttribute('href', '/providers');
   });
 
   it('refresh re-reads models and drops selections that disappeared', async () => {
@@ -467,5 +475,229 @@ describe('cross-model judging option', () => {
       screen.getByText(/both judge and one of the models being evaluated/),
     ).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Use cross-model judging instead' })).toBeNull();
+  });
+});
+
+describe('6.3 enterprise models in the picker', () => {
+  const MIXED = [...MODELS, ...CLOUD_MODELS];
+  const down = {
+    ...HEALTH_OK,
+    status: 'ollama_unreachable',
+    ollama: { ...HEALTH_OK.ollama, reachable: false, error: 'refused' },
+  };
+
+  it('groups models by source: Local (Ollama) and one group per provider', async () => {
+    setup({ 'GET /models': MIXED });
+    await model('@oa/gpt-4o');
+    const picker = screen.getByRole('group', { name: 'Available models' });
+    const groups = within(picker)
+      .getAllByRole('group')
+      .filter((g) => g.tagName === 'FIELDSET');
+    expect(groups.map((g) => g.querySelector('legend')?.textContent)).toEqual([
+      'Local (Ollama)',
+      'an (Anthropic)',
+      'oa (OpenAI)',
+    ]);
+    const oa = within(groups[2]);
+    expect(oa.getByRole('checkbox', { name: '@oa/gpt-4o' })).toBeInTheDocument();
+    expect(oa.getByRole('checkbox', { name: '@oa/o3' })).toBeInTheDocument();
+    expect(within(groups[0]).getByRole('checkbox', { name: 'qwen3:8b' })).toBeInTheDocument();
+  });
+
+  it('marks enterprise models with a cloud badge, provider kind and reasoning flag', async () => {
+    setup({ 'GET /models': MIXED });
+    const o3Card = (await model('@oa/o3')).closest('.model-card') as HTMLElement;
+    expect(within(o3Card).getByText('cloud')).toBeInTheDocument();
+    expect(within(o3Card).getByText('OpenAI')).toBeInTheDocument();
+    expect(within(o3Card).getByText('reasoning')).toBeInTheDocument();
+
+    const gptCard = screen
+      .getByRole('checkbox', { name: '@oa/gpt-4o' })
+      .closest('.model-card') as HTMLElement;
+    expect(within(gptCard).getByText('GPT-4o')).toBeInTheDocument(); // display_name shown for cloud models
+
+    const local = screen
+      .getByRole('checkbox', { name: 'qwen3:8b' })
+      .closest('.model-card') as HTMLElement;
+    expect(within(local).queryByText('cloud')).toBeNull();
+    expect(within(local).getByText('thinking')).toBeInTheDocument();
+  });
+
+  it('shows a model without a key as disabled and names the missing variable', async () => {
+    const { user } = setup({ 'GET /models': MIXED });
+    const claude = await model('@an/claude');
+    expect(claude).toBeDisabled();
+    expect(claude).toHaveAccessibleDescription(/environment variable AN_KEY is empty/);
+    const card = claude.closest('.model-card') as HTMLElement;
+    expect(within(card).getByText('unavailable')).toBeInTheDocument();
+    await user.click(claude);
+    expect(screen.getByText('0 selected')).toBeInTheDocument();
+  });
+
+  it('“Select all” picks only models that are available', async () => {
+    const { user } = setup({ 'GET /models': MIXED });
+    await model('@oa/gpt-4o');
+    await user.click(screen.getByRole('button', { name: 'Select all' }));
+    expect(screen.getByText('5 selected')).toBeInTheDocument(); // 3 local + gpt-4o + o3, not the key-less claude
+    expect(screen.getByRole('checkbox', { name: '@an/claude' })).not.toBeChecked();
+  });
+
+  it('keeps enterprise models selectable and startable while Ollama is down', async () => {
+    const { user } = setup({ 'GET /health': down, 'GET /models': CLOUD_MODELS });
+    expect(await screen.findByText(/local models are unavailable/)).toBeInTheDocument();
+    expect(screen.queryByText('Local (Ollama)')).toBeNull();
+    await user.click(await model('@oa/gpt-4o'));
+    await user.click(await screen.findByRole('checkbox', { name: 'Starter suite' }));
+    await waitFor(() => expect(startButton()).toBeEnabled());
+    expect(screen.queryByText(/Ollama is unreachable, and this run uses a local model/)).toBeNull();
+  });
+
+  it('still blocks a run that includes a local model while Ollama is down', async () => {
+    const { user } = setup({ 'GET /health': down, 'GET /models': MIXED });
+    await user.click(await model('qwen3:8b'));
+    await user.click(await model('@oa/gpt-4o'));
+    await user.click(await screen.findByRole('checkbox', { name: 'Starter suite' }));
+    expect(startButton()).toBeDisabled();
+    expect(
+      screen.getByText('Ollama is unreachable, and this run uses a local model.'),
+    ).toBeInTheDocument();
+    await user.click(screen.getByRole('checkbox', { name: 'qwen3:8b' }));
+    expect(startButton()).toBeEnabled();
+  });
+
+  it('sends enterprise model references unchanged in the run request', async () => {
+    const { user, calls } = setup({ 'GET /models': MIXED, 'POST /runs': { id: 1 } });
+    await user.click(await model('qwen3:8b'));
+    await user.click(screen.getByRole('checkbox', { name: '@oa/o3' }));
+    await user.click(await screen.findByRole('checkbox', { name: 'Starter suite' }));
+    await user.click(startButton());
+    await screen.findByText('LIVE PAGE');
+    expect(calls.find((c) => c.path === '/runs')!.body.models).toEqual(['qwen3:8b', '@oa/o3']);
+  });
+
+  it('drops a selected model that disappears after a refresh', async () => {
+    const { user } = setup({
+      'GET /models': MIXED,
+      'GET /models?refresh=1': MIXED.filter((m) => m.name !== '@oa/o3'),
+    });
+    await user.click(await model('@oa/o3'));
+    await user.click(screen.getByRole('checkbox', { name: '@oa/gpt-4o' }));
+    await user.click(screen.getByRole('button', { name: 'Refresh' }));
+    await waitFor(() => expect(screen.queryByRole('checkbox', { name: '@oa/o3' })).toBeNull());
+    expect(screen.getByText('1 selected')).toBeInTheDocument();
+  });
+
+  it('explains both ways to add models when nothing is available', async () => {
+    setup({ 'GET /models': [] });
+    expect(await screen.findByText('No models available')).toBeInTheDocument();
+    expect(screen.getByText(/ollama pull/)).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Providers' })).toBeInTheDocument();
+  });
+});
+
+describe('6.4 judging across local and enterprise models', () => {
+  const MIXED = [...MODELS, ...CLOUD_MODELS]; // gemma4:e4b, llama3:8b, qwen3:8b (local); @oa/gpt-4o, @oa/o3 (available), @an/claude (no key)
+
+  const pickSuite = async (user: ReturnType<typeof userEvent.setup>) =>
+    user.click(await screen.findByRole('checkbox', { name: 'Starter suite' }));
+
+  it('offers every available model as judge, labelled with its provider, and excludes unavailable ones', async () => {
+    const { user } = setup({ 'GET /models': MIXED });
+    await model('qwen3:8b');
+    await user.click(screen.getByRole('radio', { name: 'Single judge model' }));
+    const select = screen.getByLabelText('Judge model');
+    const optionLabels = within(select)
+      .getAllByRole('option')
+      .map((o) => o.textContent);
+    expect(optionLabels).toContain('qwen3:8b');
+    expect(optionLabels).toContain('GPT-4o (oa)');
+    expect(optionLabels).toContain('o3 (oa)');
+    expect(optionLabels).not.toContain('claude (an)'); // @an/claude has no key: not offered as judge
+  });
+
+  it('shows no data-sharing notice for a local-only run', async () => {
+    const { user } = setup({ 'GET /models': MIXED });
+    await user.click(await model('qwen3:8b'));
+    await user.click(screen.getByRole('checkbox', { name: 'llama3:8b' }));
+    await user.click(screen.getByRole('radio', { name: 'Single judge model' }));
+    await user.selectOptions(screen.getByLabelText('Judge model'), 'llama3:8b');
+    expect(screen.queryByText(/This run will send data to/)).toBeNull();
+  });
+
+  it('discloses the provider when an enterprise model is a contestant', async () => {
+    const { user } = setup({ 'GET /models': MIXED });
+    await user.click(await model('qwen3:8b'));
+    await user.click(screen.getByRole('checkbox', { name: '@oa/gpt-4o' }));
+    expect(await screen.findByText(/This run will send data to/)).toBeInTheDocument();
+    expect(screen.getByText(/oa \(OpenAI\) — as contestant/)).toBeInTheDocument();
+  });
+
+  it('discloses the provider when it is chosen as the single judge, even if not a contestant', async () => {
+    const { user } = setup({ 'GET /models': MIXED });
+    await user.click(await model('qwen3:8b'));
+    await user.click(screen.getByRole('checkbox', { name: 'llama3:8b' }));
+    await user.click(screen.getByRole('radio', { name: 'Single judge model' }));
+    await user.selectOptions(screen.getByLabelText('Judge model'), '@oa/gpt-4o');
+    expect(await screen.findByText(/oa \(OpenAI\) — as single judge/)).toBeInTheDocument();
+  });
+
+  it('discloses cross-model judging: an enterprise contestant judges the others too', async () => {
+    const { user } = setup({ 'GET /models': MIXED });
+    await user.click(await model('qwen3:8b'));
+    await user.click(screen.getByRole('checkbox', { name: '@oa/gpt-4o' }));
+    await user.click(screen.getByRole('radio', { name: 'Cross-model judging' }));
+    expect(
+      await screen.findByText(/oa \(OpenAI\) — as contestant and cross-model judge/),
+    ).toBeInTheDocument();
+  });
+
+  it('splits the request estimate into local and per-provider counts', async () => {
+    const { user } = setup({ 'GET /models': MIXED });
+    await user.click(await model('qwen3:8b'));
+    await user.click(screen.getByRole('checkbox', { name: '@oa/gpt-4o' }));
+    await pickSuite(user); // starter suite fixture: 3 cases total
+    const est = await screen.findByTestId('request-breakdown');
+    // each selected model gets 3 cases × 1 repeat = 3 generation requests, sent to its own destination
+    expect(est).toHaveTextContent('Ollama (local): 3');
+    expect(est).toHaveTextContent('oa (OpenAI): 3');
+  });
+
+  it('adds judgement requests to the destination breakdown for a single hosted judge', async () => {
+    const { user } = setup({ 'GET /models': MIXED });
+    await user.click(await model('qwen3:8b'));
+    await user.click(screen.getByRole('checkbox', { name: 'llama3:8b' }));
+    await pickSuite(user); // starter suite fixture: 3 cases, 1 of them generation
+    await user.click(screen.getByRole('radio', { name: 'Single judge model' }));
+    await user.selectOptions(screen.getByLabelText('Judge model'), '@oa/gpt-4o');
+    const est = await screen.findByTestId('request-breakdown');
+    // generation: 2 local models × 3 cases = 6, all local; judging: 1 generation case × 2 contestants = 2, sent to oa
+    expect(est).toHaveTextContent('Ollama (local): 6');
+    expect(est).toHaveTextContent('oa (OpenAI): 2');
+  });
+
+  it('blocks starting if the chosen judge loses its key after a refresh', async () => {
+    const noKey = MIXED.map((m) =>
+      m.name === '@oa/gpt-4o'
+        ? {
+            ...m,
+            available: false,
+            unavailable_reason: 'API key not set: environment variable OA_KEY is empty',
+          }
+        : m,
+    );
+    const { user } = setup({ 'GET /models': MIXED, 'GET /models?refresh=1': noKey });
+    await user.click(await model('qwen3:8b'));
+    await pickSuite(user);
+    await user.click(screen.getByRole('radio', { name: 'Single judge model' }));
+    await user.selectOptions(screen.getByLabelText('Judge model'), '@oa/gpt-4o');
+    await waitFor(() => expect(startButton()).toBeEnabled());
+
+    await user.click(screen.getByRole('button', { name: 'Refresh' }));
+    await waitFor(() => expect(startButton()).toBeDisabled());
+    expect(
+      screen.getByText(
+        'Judge @oa/gpt-4o is unavailable: API key not set: environment variable OA_KEY is empty',
+      ),
+    ).toBeInTheDocument();
   });
 });

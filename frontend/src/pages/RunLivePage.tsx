@@ -2,6 +2,7 @@ import { useMemo } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { ACTIVE_STATUSES, useResults, useRun, useRunActions } from '../api/hooks';
 import { useRunEvents } from '../api/useRunEvents';
+import ModelChip from '../components/ModelChip';
 import { Banner, ErrorBox, OutcomeBadge, Spinner, StatusBadge } from '../components/ui';
 import { fmtMs, fmtNum } from '../lib/format';
 
@@ -29,6 +30,10 @@ export default function RunLivePage() {
   const cases = useMemo(
     () => new Map((run.data?.cases ?? []).map((c) => [c.id, c])),
     [run.data?.cases],
+  );
+  const modelInfo = useMemo(
+    () => new Map((run.data?.models ?? []).map((m) => [m.name, m])),
+    [run.data?.models],
   );
 
   // DB rows are the source of truth; SSE events show up instantly until the refetch lands.
@@ -161,20 +166,40 @@ export default function RunLivePage() {
         </div>
         {active && (
           <p className="small" style={{ margin: '10px 0 0' }} aria-live="polite">
-            {r.status === 'queued' && !current.model
-              ? 'Waiting for the run queue…'
-              : scoring
-                ? `Scoring generated answers with the judge… ${scoring.done}/${scoring.total || '?'}`
-                : current.model
-                  ? `Running ${current.model} · ${current.case_title ?? `case ${current.case_id}`}${current.repeat ? ` (repeat ${current.repeat + 1})` : ''}`
-                  : 'Starting…'}
+            {r.status === 'queued' && !current.model ? (
+              'Waiting for the run queue…'
+            ) : scoring ? (
+              `Scoring generated answers with the judge… ${scoring.done}/${scoring.total || '?'}`
+            ) : current.model ? (
+              <>
+                Running{' '}
+                <ModelChip
+                  name={current.model}
+                  source={modelInfo.get(current.model)?.source}
+                  provider={modelInfo.get(current.model)?.provider}
+                  providerKind={modelInfo.get(current.model)?.provider_kind}
+                />{' '}
+                · {current.case_title ?? `case ${current.case_id}`}
+                {current.repeat ? ` (repeat ${current.repeat + 1})` : ''}
+              </>
+            ) : (
+              'Starting…'
+            )}
           </p>
         )}
       </section>
 
       {active && live.preview && (
         <section className="card" aria-label="Streaming preview">
-          <h2>Streaming: {live.preview.model}</h2>
+          <h2>
+            Streaming:{' '}
+            <ModelChip
+              name={live.preview.model}
+              source={modelInfo.get(live.preview.model)?.source}
+              provider={modelInfo.get(live.preview.model)?.provider}
+              providerKind={modelInfo.get(live.preview.model)?.provider_kind}
+            />
+          </h2>
           {live.preview.thinking && (
             <details>
               <summary>Thinking ({live.preview.thinking.length} chars)</summary>
@@ -208,7 +233,14 @@ export default function RunLivePage() {
                   const c = cases.get(row.caseId);
                   return (
                     <tr key={row.id}>
-                      <td>{row.model}</td>
+                      <td>
+                        <ModelChip
+                          name={row.model}
+                          source={modelInfo.get(row.model)?.source}
+                          provider={modelInfo.get(row.model)?.provider}
+                          providerKind={modelInfo.get(row.model)?.provider_kind}
+                        />
+                      </td>
                       <td>
                         {c?.title || c?.prompt.slice(0, 60) || `case ${row.caseId}`}
                         {row.repeat > 0 && <span className="muted"> #{row.repeat + 1}</span>}

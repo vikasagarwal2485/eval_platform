@@ -1,7 +1,8 @@
-import { useState } from 'react';
+import { Fragment, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { ACTIVE_STATUSES, useRunMutations, useRuns } from '../api/hooks';
 import ComparePanel from '../components/ComparePanel';
+import ModelChip from '../components/ModelChip';
 import { Empty, ErrorBox, Spinner, StatusBadge } from '../components/ui';
 import { fmtDate, fmtDuration } from '../lib/format';
 
@@ -102,7 +103,19 @@ export default function HistoryPage() {
                         </div>
                       )}
                     </td>
-                    <td>{r.models.map((m) => m.name).join(', ')}</td>
+                    <td>
+                      {r.models.map((m, i) => (
+                        <Fragment key={m.id}>
+                          {i > 0 && ', '}
+                          <ModelChip
+                            name={m.name}
+                            source={m.source}
+                            provider={m.provider}
+                            providerKind={m.provider_kind}
+                          />
+                        </Fragment>
+                      ))}
+                    </td>
                     <td className="num">{r.case_count}</td>
                     <td>{fmtDate(r.started_at ?? r.created_at)}</td>
                     <td>{fmtDuration(r.started_at, r.finished_at)}</td>

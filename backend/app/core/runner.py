@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app import repo
 from app.config import Settings
+from app.core.circuits import Circuits
 from app.core.events import EventHub
 from app.core.metrics import StreamCollector
 from app.core.model_discovery import ModelDiscovery
@@ -24,6 +25,8 @@ from app.core.scoring.thinking import split_thinking
 from app.core.templates import build_messages, build_prompt
 from app.models import ModelSnapshot, Run, RunCase
 from app.ollama.client import OllamaClient, OllamaError, OllamaUnreachable
+from app.providers.backend import caps_for_kind
+from app.providers.errors import ModelBackendError
 from app.schemas import RunConfig
 
 log = logging.getLogger(__name__)
@@ -66,6 +69,7 @@ class Runner:
         self.settings = settings
         self.queue: asyncio.Queue[Job] = asyncio.Queue()
         self._cancel: dict[int, asyncio.Event] = {}
+        self._circuits: dict[int, Circuits] = {}
         self._task: asyncio.Task | None = None
         self._running = 0
         self.max_concurrent_jobs = 0  # observed; must stay 1
@@ -161,18 +165,24 @@ class Runner:
 
         status, error = "completed", None
         completed = 0
+        self._circuits[run_id] = Circuits()
         try:
             for idx, snap in enumerate(snaps):
                 if self._cancelled(run_id):
                     raise CancelledRun()
-                if idx > 0:
-                    await self._unload_quietly(snaps[idx - 1].name)
-                self.hub.publish(run_id, "model_started", {"model": snap.name, "index": idx, "of": len(snaps)})
-                footprint_done = False
-                if cfg.warmup:
+                caps = caps_for_kind(snap.provider_kind)
+                if idx > 0 and caps_for_kind(snaps[idx - 1].provider_kind).unload:
+                    await self._unload_quietly(snaps[idx - 1].name)  # enterprise models have nothing to unload
+                self.hub.publish(
+                    run_id, "model_started", {"model": snap.name, "index": idx, "of": len(snaps), "source": snap.source}
+                )
+                # footprint: read after warm-up when there is one, else after the first request; not for cloud models
+                footprint_done = not caps.footprint
+                if cfg.warmup and caps.warmup:  # a billable warm-up request is never sent to an enterprise model
                     await self._warmup(run_id, snap, cfg)
-                    await self._record_footprint(session, run_id, snap)
-                    footprint_done = True
+                    if caps.footprint:
+                        await self._record_footprint(session, run_id, snap)
+                        footprint_done = True
                 for case in cases:
                     for rep in range(cfg.repeats):
                         if self._cancelled(run_id):
@@ -195,6 +205,7 @@ class Runner:
         except Exception as exc:  # noqa: BLE001
             log.exception("run %s crashed", run_id)
             status, error = "failed", f"Unexpected error: {exc}"
+        self._circuits.pop(run_id, None)
         session.rollback()
         repo.set_run_status(session, run_id, status, error=error)
         session.commit()
@@ -220,7 +231,7 @@ class Runner:
                 pass
         except OllamaUnreachable:
             raise
-        except OllamaError as exc:
+        except ModelBackendError as exc:
             log.warning("warm-up of %s failed: %s", snap.name, exc)
             self.hub.publish(run_id, "warning", {"model": snap.name, "message": f"warm-up failed: {exc}"})
 
@@ -306,6 +317,9 @@ class Runner:
         think = cfg.think if "thinking" in snap.capabilities else None
         timeout = cfg.request_timeout_s or self.settings.request_timeout_s
         messages = build_messages(case.system_prompt, sent)
+        circuits = self._circuits.setdefault(run_id, Circuits())
+        if (why := circuits.blocked(snap.name)) is not None:  # an earlier failure closed this model or provider
+            return self._error_fields(StreamCollector(), why)
         retries = 0
         while True:
             col = StreamCollector()
@@ -333,7 +347,7 @@ class Runner:
                     finally:
                         await agen.aclose()
                 if col.final is None:
-                    raise OllamaError("stream ended without a final chunk")
+                    raise ModelBackendError("stream ended without a final chunk")
                 answer, trace = split_thinking(col.text, col.thinking_text)
                 return {"status": "ok", "output": answer, "thinking": trace, "error": None, "metrics": col.finish()}
             except CancelledRun:
@@ -348,7 +362,9 @@ class Runner:
                 out = self._error_fields(col, str(exc))
                 out["fatal"] = f"Ollama unreachable after {retries} attempts: {exc}"
                 return out
-            except OllamaError as exc:
+            except ModelBackendError as exc:
+                if (warning := circuits.record(snap.name, exc)) is not None:
+                    self.hub.publish(run_id, "warning", {"model": snap.name, "message": warning})
                 return self._error_fields(col, str(exc))
 
     @staticmethod
@@ -393,6 +409,7 @@ class Runner:
             cancelled=lambda: self._cancelled(run_id),
             on_progress=progress,
             unload=self._unload_quietly,
+            circuits=self._circuits.setdefault(run_id, Circuits()),  # shared with generation in the same run
         )
 
     async def _execute_rescore(self, session: Session, job: Job) -> None:
@@ -416,6 +433,7 @@ class Runner:
                 cancelled=lambda: self._cancelled(run_id),
                 on_progress=progress,
                 unload=self._unload_quietly,
+                circuits=Circuits(),  # a re-score starts with every provider open
             )
         except Exception as exc:  # noqa: BLE001
             log.exception("rescore of run %s failed", run_id)

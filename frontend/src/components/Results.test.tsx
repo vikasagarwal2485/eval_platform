@@ -58,6 +58,20 @@ describe('9.6 leaderboard', () => {
     expect(within(first).getAllByText('2/2').length).toBeGreaterThan(0);
   });
 
+  it('6.5: marks an enterprise model with a cloud badge and provider, and shows local models plainly', async () => {
+    const rows = [
+      row('alpha:1', { cls: 1, rea: 1, gen: 1, latency: 900, tps: 60 }),
+      row('@oa/gpt-4o', { cls: 1, rea: 1, gen: 1, latency: 1200, tps: 55, cloud: true }),
+    ];
+    setup(rows);
+    await screen.findByRole('table', { name: 'Model leaderboard' });
+    const table = board();
+    const cloudRow = within(table).getByText('@oa/gpt-4o').closest('tr') as HTMLElement;
+    expect(within(cloudRow).getByText('cloud · oa')).toBeInTheDocument();
+    const localRow = within(table).getByText('alpha:1').closest('tr') as HTMLElement;
+    expect(within(localRow).queryByText(/cloud/)).toBeNull();
+  });
+
   it('sorts by any column and toggles direction', async () => {
     const user = setup();
     await screen.findByRole('table', { name: 'Model leaderboard' });

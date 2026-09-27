@@ -25,11 +25,17 @@ describe('routing', () => {
     ['/runs/1/live', 'Live run'],
     ['/runs/1', 'Results'],
     ['/suites', 'Suites'],
+    ['/providers', 'Providers'],
     ['/history', 'History'],
     ['/nope', 'Page not found'],
   ])('renders %s', (path, heading) => {
     renderAt(path);
     expect(screen.getByRole('heading', { level: 1, name: heading })).toBeInTheDocument();
+  });
+
+  it('has a Providers link in the main navigation', () => {
+    renderAt('/');
+    expect(screen.getByRole('link', { name: 'Providers' })).toHaveAttribute('href', '/providers');
   });
 
   it('marks the active nav link', () => {

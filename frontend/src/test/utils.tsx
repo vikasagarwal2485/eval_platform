@@ -57,9 +57,19 @@ export function renderApp(ui: ReactElement, { route = '/', path = '*', stubLive 
 export const HEALTH_OK = {
   status: 'ok',
   ollama: { reachable: true, base_url: 'http://localhost:11434', version: '0.34.2', error: null },
+  providers: [] as { name: string; kind: string; key_env: string; key_available: boolean }[],
   config: { ollama_base_url: 'http://localhost:11434', db_path: 'x', request_timeout_s: 300 },
 };
 
+const LOCAL = {
+  source: 'local',
+  provider: null,
+  provider_kind: null,
+  display_name: null,
+  reasoning: false,
+  available: true,
+  unavailable_reason: null,
+};
 export const MODELS = [
   {
     name: 'gemma4:e4b',
@@ -70,6 +80,7 @@ export const MODELS = [
     family: 'gemma4',
     capabilities: ['completion', 'vision', 'thinking'],
     thinking: true,
+    ...LOCAL,
   },
   {
     name: 'llama3:8b',
@@ -80,6 +91,7 @@ export const MODELS = [
     family: 'llama',
     capabilities: ['completion'],
     thinking: false,
+    ...LOCAL,
   },
   {
     name: 'qwen3:8b',
@@ -90,6 +102,62 @@ export const MODELS = [
     family: 'qwen3',
     capabilities: ['completion', 'thinking'],
     thinking: true,
+    ...LOCAL,
+  },
+];
+
+/** Enterprise models as `/api/models` returns them. */
+export const CLOUD_MODELS = [
+  {
+    name: '@oa/gpt-4o',
+    digest: '',
+    size_bytes: null,
+    parameter_size: null,
+    quantization: null,
+    family: null,
+    capabilities: ['completion'],
+    thinking: false,
+    source: 'cloud',
+    provider: 'oa',
+    provider_kind: 'openai',
+    display_name: 'GPT-4o',
+    reasoning: false,
+    available: true,
+    unavailable_reason: null,
+  },
+  {
+    name: '@oa/o3',
+    digest: '',
+    size_bytes: null,
+    parameter_size: null,
+    quantization: null,
+    family: null,
+    capabilities: ['completion', 'thinking'],
+    thinking: true,
+    source: 'cloud',
+    provider: 'oa',
+    provider_kind: 'openai',
+    display_name: 'o3',
+    reasoning: true,
+    available: true,
+    unavailable_reason: null,
+  },
+  {
+    name: '@an/claude',
+    digest: '',
+    size_bytes: null,
+    parameter_size: null,
+    quantization: null,
+    family: null,
+    capabilities: ['completion'],
+    thinking: false,
+    source: 'cloud',
+    provider: 'an',
+    provider_kind: 'anthropic',
+    display_name: 'claude',
+    reasoning: false,
+    available: false,
+    unavailable_reason: 'API key not set: environment variable AN_KEY is empty',
   },
 ];
 
@@ -140,6 +208,7 @@ export const SUITE_DETAIL = {
 export const baseRoutes = {
   'GET /health': HEALTH_OK,
   'GET /models': MODELS,
+  'GET /providers': [],
   'GET /suites': SUITES,
   'GET /suites/1': SUITE_DETAIL,
 };

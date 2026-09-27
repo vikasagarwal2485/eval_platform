@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import type { JudgeMode, LeaderRow } from '../api/types';
 import { dash, fmtBytes, fmtMs, fmtNum, fmtPct } from '../lib/format';
+import ModelChip from './ModelChip';
 
 type Row = LeaderRow & { composite: number | null; judgeMode?: JudgeMode };
 
@@ -64,7 +65,16 @@ export const COLUMNS: Col[] = [
     key: 'model',
     label: 'Model',
     value: (r) => r.model,
-    render: (r) => <strong>{r.model}</strong>,
+    render: (r) => (
+      <strong>
+        <ModelChip
+          name={r.model}
+          source={r.source}
+          provider={r.provider}
+          providerKind={r.provider_kind}
+        />
+      </strong>
+    ),
   },
   {
     key: 'composite',

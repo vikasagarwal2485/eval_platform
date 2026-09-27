@@ -11,12 +11,14 @@ from sqlalchemy.orm import Session
 
 from app import repo
 from app.api.deps import get_session
+from app.core.model_meta import provider_of, versions_by_model
 from app.core.runner import TERMINAL_STATUSES, Job
 from app.core.scoring.judging import resolve_judging
 from app.core.scoring.service import primary_kind
 from app.core.summary import build_summary, parse_weights
 from app.models import Result, Run
 from app.ollama.client import OllamaError, OllamaUnreachable
+from app.providers.refs import is_cloud_ref
 from app.repo import CaseSource
 from app.schemas import CaseIn, RunConfig, RunCreate
 
@@ -41,6 +43,42 @@ async def _installed(request: Request):
         ) from None
 
 
+async def _availability(request: Request, refs: list[str]) -> tuple[list[dict], dict]:
+    """(problems, infos) for every model reference a request will call, judges included.
+
+    Ollama is only consulted when a local model is involved, so runs that use enterprise models alone keep working
+    while Ollama is down. Enterprise references must be registered, enabled, and have their key available.
+    """
+    refs = list(dict.fromkeys(refs))
+    local = [r for r in refs if not is_cloud_ref(r)]
+    cloud = [r for r in refs if is_cloud_ref(r)]
+    problems: list[dict] = []
+    infos: dict = {}
+    if local:
+        installed = await _installed(request)  # 503 if Ollama is unreachable
+        for r in local:
+            if r in installed:
+                infos[r] = installed[r]
+            else:
+                problems.append({"ref": r, "reason": "not installed in Ollama"})
+    router = request.app.state.router
+    bad = {u.ref: u.reason for u in router.preflight(cloud)}
+    for r in cloud:
+        if r in bad:
+            problems.append({"ref": r, "reason": bad[r]})
+        else:
+            infos[r] = router.model_info(r)
+    return problems, infos
+
+
+def _unavailable_response(problems: list[dict]):
+    refs = [p["ref"] for p in problems]
+    if all(p["reason"] == "not installed in Ollama" for p in problems):  # unchanged shape for Ollama-only callers
+        return _err(422, "model_not_installed", f"Not installed in Ollama: {', '.join(refs)}", models=refs)
+    detail = "; ".join(f"{p['ref']} ({p['reason']})" for p in problems)
+    return _err(422, "model_unavailable", f"Unavailable: {detail}", problems=problems, models=refs)
+
+
 def _progress(session: Session, run: Run) -> dict:
     done = session.scalar(select(func.count()).select_from(Result).where(Result.run_id == run.id)) or 0
     cfg = RunConfig(**run.config)
@@ -49,6 +87,7 @@ def _progress(session: Session, run: Run) -> dict:
 
 def run_out(session: Session, run: Run, *, detail: bool = False, request: Request | None = None) -> dict:
     snaps = repo.run_snapshots(session, run)
+    versions = versions_by_model(repo.list_results(session, run.id)) if detail else {}
     out = {
         "id": run.id,
         "name": run.name,
@@ -66,6 +105,10 @@ def run_out(session: Session, run: Run, *, detail: bool = False, request: Reques
                 "family": s.family,
                 "size_bytes": s.size_bytes,
                 "thinking": "thinking" in (s.capabilities or []),
+                "source": s.source,
+                "provider": provider_of(s.name),
+                "provider_kind": s.provider_kind,
+                "model_versions": versions.get(s.id, []),
                 "memory": run.footprints.get(str(s.id)),
             }
             for s in snaps
@@ -132,14 +175,13 @@ async def create_run(body: RunCreate, request: Request, session: Session = Depen
     cases = _collect_cases(session, body)
     if not cases:
         return _err(422, "no_cases", "Select at least one test case or enter an ad-hoc prompt.")
-    installed = await _installed(request)
-    missing = [n for n in names + ([judge_model] if judge_model else []) if n not in installed]
-    if missing:
-        return _err(422, "model_not_installed", f"Not installed in Ollama: {', '.join(missing)}", models=missing)
-    snaps = [repo.get_or_create_snapshot(session, installed[n]) for n in names]
+    problems, infos = await _availability(request, names + ([judge_model] if judge_model else []))
+    if problems:
+        return _unavailable_response(problems)
+    snaps = [repo.get_or_create_snapshot(session, infos[n]) for n in names]
     try:
         version = await request.app.state.ollama.version()
-    except OllamaError:
+    except OllamaError:  # Ollama may be down when only enterprise models are used
         version = None
     run = repo.create_run(
         session,
@@ -188,12 +230,11 @@ def delete_run(run_id: int, request: Request, session: Session = Depends(get_ses
 async def rerun(run_id: int, request: Request, session: Session = Depends(get_session)):
     """New run with the same models, frozen cases, configuration and judge; linked via parent_run_id."""
     orig = repo.get_run(session, run_id)
-    installed = await _installed(request)
     names = [s.name for s in repo.run_snapshots(session, orig)]
-    missing = [n for n in names + ([orig.judge_model] if orig.judge_model else []) if n not in installed]
-    if missing:
-        raise repo.Conflict(f"Cannot re-run: no longer installed: {', '.join(missing)}")
-    snaps = [repo.get_or_create_snapshot(session, installed[n]) for n in names]
+    problems, infos = await _availability(request, names + ([orig.judge_model] if orig.judge_model else []))
+    if problems:
+        raise repo.Conflict("Cannot re-run: " + "; ".join(f"{p['ref']} ({p['reason']})" for p in problems))
+    snaps = [repo.get_or_create_snapshot(session, infos[n]) for n in names]
     cases = [CaseSource(CaseIn.from_row(c), c.source_case_id) for c in orig.cases]
     run = repo.create_run(
         session,
@@ -229,9 +270,12 @@ async def rescore(run_id: int, body: RescoreBody, request: Request, session: Ses
         mode, judge_model = resolve_judging(body.judge_mode, body.judge_model, names)
     except ValueError as exc:
         return _err(422, "invalid_judging", str(exc))
-    if judge_model:
-        if judge_model not in await _installed(request):
-            return _err(422, "model_not_installed", f"Not installed in Ollama: {judge_model}", models=[judge_model])
+    # A single judge must be usable now. In cross-model mode the judges are the run's own models: local ones that
+    # have gone missing simply produce error judgements, but an enterprise judge is refused up front (its key must exist).
+    to_check = [judge_model] if judge_model else [n for n in names if is_cloud_ref(n)]
+    problems, _ = await _availability(request, to_check)
+    if problems:
+        return _unavailable_response(problems)
     request.app.state.runner.submit(Job("rescore", run_id, judge_model, body.judge_reasoning, mode))
     return {"status": "queued"}
 
@@ -283,7 +327,8 @@ def run_results(
         for s in repo.list_scores(session, run_id, att.id):
             scores.setdefault(s.result_id, []).append(s)
     cases = {c.id: c for c in run.cases}
-    names = {s.id: s.name for s in repo.run_snapshots(session, run)}
+    snaps = {s.id: s for s in repo.run_snapshots(session, run)}
+    names = {i: s.name for i, s in snaps.items()}
     out = []
     for r in repo.list_results(session, run_id):
         case = cases[r.run_case_id]
@@ -308,6 +353,12 @@ def run_results(
                 "is_cold": r.is_cold,
                 "sent_prompt": r.sent_prompt,
                 "template_version": r.template_version,
+                "source": snaps[r.model_snapshot_id].source,
+                "provider": provider_of(names[r.model_snapshot_id]),
+                "model_version": (r.metrics or {}).get("model_version"),
+                "attempts": (r.metrics or {}).get("attempts", 1),
+                "params_applied": (r.metrics or {}).get("params_applied", {}),
+                "params_ignored": (r.metrics or {}).get("params_ignored", []),
                 "latency_ms": r.latency_ms,
                 "ttft_ms": r.ttft_ms,
                 "tokens_per_s": r.tokens_per_s,

@@ -231,3 +231,73 @@ describe('9.5 live run view', () => {
     expect(await screen.findByText(/run 5 not found/)).toBeInTheDocument();
   });
 });
+
+describe('6.5 enterprise models in the live view', () => {
+  const withCloudModel = {
+    ...baseRun,
+    models: [
+      {
+        id: 1,
+        name: '@oa/gpt-4o',
+        digest: '',
+        source: 'cloud',
+        provider: 'oa',
+        provider_kind: 'openai',
+      },
+    ],
+  };
+
+  it('shows a cloud badge in the "Running" status line for an enterprise model', async () => {
+    setup(withCloudModel);
+    await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
+    act(() => {
+      es().open();
+      es().emit('run_started', { total: 2 });
+      es().emit('request_started', {
+        model: '@oa/gpt-4o',
+        case_id: 1,
+        case_title: 'Spam check',
+        repeat: 0,
+      });
+    });
+    const status = screen.getByText(/Running/).closest('p') as HTMLElement;
+    expect(status).toHaveTextContent('Running @oa/gpt-4o');
+    expect(within(status).getByText('cloud · oa')).toBeInTheDocument();
+  });
+
+  it('shows a cloud badge in the streaming preview heading', async () => {
+    setup(withCloudModel);
+    await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
+    act(() => {
+      es().open();
+      es().emit('request_started', { model: '@oa/gpt-4o', case_id: 1, repeat: 0 });
+      es().emit('token', { model: '@oa/gpt-4o', case_id: 1, answer: 'hi', thinking: '' });
+    });
+    const preview = screen.getByRole('region', { name: 'Streaming preview' });
+    expect(within(preview).getByText('cloud · oa')).toBeInTheDocument();
+  });
+
+  it('shows a cloud badge for the model in the completed-requests table', async () => {
+    setup(withCloudModel);
+    await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
+    act(() => {
+      es().open();
+      es().emit('result_completed', {
+        result_id: 20,
+        model: '@oa/gpt-4o',
+        case_id: 1,
+        repeat: 0,
+        status: 'ok',
+        outcome: 'correct',
+        value: 1,
+        latency_ms: 900,
+        tokens_per_s: 55,
+        is_cold: false,
+        error: null,
+      });
+    });
+    const table = screen.getByRole('table');
+    const row = within(table).getByText('@oa/gpt-4o').closest('tr') as HTMLElement;
+    expect(within(row).getByText('cloud · oa')).toBeInTheDocument();
+  });
+});

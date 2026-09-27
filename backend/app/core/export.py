@@ -8,12 +8,16 @@ import io
 from sqlalchemy.orm import Session
 
 from app import repo
+from app.core.model_meta import provider_of
 from app.core.scoring.service import primary_kind
 
 COLUMNS = [
     "run_id",
     "judge_mode",
     "model",
+    "source",
+    "provider",
+    "model_version",
     "category",
     "case_id",
     "case_title",
@@ -37,6 +41,8 @@ COLUMNS = [
     "thinking_tokens",
     "prompt_tokens",
     "load_ms",
+    "attempts",
+    "params_ignored",
 ]
 
 
@@ -60,7 +66,9 @@ def export_rows(session: Session, run, attempt_id: int | None = None) -> list[di
         for s in repo.list_scores(session, run.id, attempt.id):
             scores.setdefault(s.result_id, {})[s.kind] = s
     cases = {c.id: c for c in run.cases}
-    names = {s.id: s.name for s in repo.run_snapshots(session, run)}
+    snaps = repo.run_snapshots(session, run)
+    names = {s.id: s.name for s in snaps}
+    sources = {s.id: s.source for s in snaps}
     rows = []
     for r in repo.list_results(session, run.id):
         case = cases[r.run_case_id]
@@ -75,6 +83,12 @@ def export_rows(session: Session, run, attempt_id: int | None = None) -> list[di
                 "run_id": run.id,
                 "judge_mode": attempt.judge_mode if attempt else "none",
                 "model": names[r.model_snapshot_id],
+                "source": sources[r.model_snapshot_id],
+                "provider": provider_of(names[r.model_snapshot_id]),
+                "model_version": m.get("model_version"),
+                "attempts": m.get("attempts", 1),
+                "params_ignored": ";".join(i["name"] for i in m.get("params_ignored", [])),
+                "params_ignored_detail": m.get("params_ignored", []),  # JSON export only
                 "category": case.category,
                 "case_id": case.id,
                 "case_title": case.title,

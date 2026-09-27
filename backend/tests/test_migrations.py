@@ -1,3 +1,4 @@
+import pytest
 from sqlalchemy import create_engine, inspect, text
 
 import app.models  # noqa: F401
@@ -69,3 +70,73 @@ def test_0002_downgrade_restores_0001_shape(tmp_path):
     insp = inspect(create_engine(url))
     assert "judgement" not in insp.get_table_names()
     assert "judge_mode" not in {c["name"] for c in insp.get_columns("run")}
+
+
+def test_0003_keeps_existing_snapshots_as_local(tmp_path):
+    """A database at 0002 with a real model snapshot upgrades in place; existing models read as local."""
+    from alembic import command
+    from app.migrate import alembic_config
+
+    url = f"sqlite:///{tmp_path / 'at0002.db'}"
+    cfg = alembic_config(url)
+    command.upgrade(cfg, "0002")
+    eng = create_engine(url)
+    with eng.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO model_snapshot (id, name, digest, capabilities) "
+                "VALUES (1, 'qwen3:8b', 'abc123', '[\"completion\", \"thinking\"]')"
+            )
+        )
+    command.upgrade(cfg, "head")
+    with eng.connect() as conn:
+        row = conn.execute(text("SELECT name, digest, source, provider_kind FROM model_snapshot")).one()
+    assert tuple(row) == ("qwen3:8b", "abc123", "local", None)
+    tables = set(inspect(eng).get_table_names())
+    assert {"provider", "registered_model"} <= tables
+
+
+def test_0003_downgrade_removes_provider_tables_and_columns(tmp_path):
+    from alembic import command
+    from app.migrate import alembic_config
+
+    url = f"sqlite:///{tmp_path / 'down3.db'}"
+    cfg = alembic_config(url)
+    command.upgrade(cfg, "head")
+    command.downgrade(cfg, "0002")
+    insp = inspect(create_engine(url))
+    assert not ({"provider", "registered_model"} & set(insp.get_table_names()))
+    cols = {c["name"] for c in insp.get_columns("model_snapshot")}
+    assert "source" not in cols and "provider_kind" not in cols and "name" in cols
+
+
+def test_registered_model_is_unique_per_provider_and_cascades(tmp_path):
+    from sqlalchemy.exc import IntegrityError
+
+    from app.migrate import upgrade_to_head
+
+    url = f"sqlite:///{tmp_path / 'uq.db'}"
+    upgrade_to_head(url)
+    from app.db import make_engine
+
+    eng = make_engine(url)
+    with eng.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO provider (id, kind, name, key_env, created_at) VALUES (1, 'openai', 'p', 'K', '2026-01-01')"
+            )
+        )
+        conn.execute(
+            text(
+                "INSERT INTO registered_model (provider_id, model_id, display_name, enabled, reasoning) VALUES (1, 'gpt-4o', '', 1, 0)"
+            )
+        )
+    with pytest.raises(IntegrityError), eng.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO registered_model (provider_id, model_id, display_name, enabled, reasoning) VALUES (1, 'gpt-4o', '', 1, 0)"
+            )
+        )
+    with eng.begin() as conn:
+        conn.execute(text("DELETE FROM provider WHERE id = 1"))  # FK cascade removes its models
+        assert conn.execute(text("SELECT count(*) FROM registered_model")).scalar() == 0

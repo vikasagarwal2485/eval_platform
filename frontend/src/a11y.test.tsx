@@ -4,7 +4,7 @@ import userEvent from '@testing-library/user-event';
 import App from './App';
 import { FakeEventSource } from './test/fakeEventSource';
 import { result, row, runOf, summary, THREE_MODELS } from './test/fixtures';
-import { baseRoutes, jsonError, mockApi, renderApp } from './test/utils';
+import { baseRoutes, CLOUD_MODELS, jsonError, mockApi, MODELS, renderApp } from './test/utils';
 
 /** jsdom has no layout, so colour-contrast is checked by the palette validator instead. */
 async function audit() {
@@ -306,5 +306,112 @@ describe('cross-model judging accessibility (5.6)', () => {
       expect(radio).toHaveAccessibleName();
       expect(radio).toHaveAccessibleDescription();
     }
+  });
+});
+
+describe('enterprise providers accessibility (6.6)', () => {
+  const providerFixture = (over = {}) => ({
+    id: 1,
+    kind: 'openai',
+    name: 'oa',
+    key_env: 'OA_KEY',
+    base_url: null,
+    key_available: true,
+    data_sharing_acknowledged_at: '2026-01-01T00:00:00Z',
+    created_at: '2026-01-01T00:00:00Z',
+    models: [
+      {
+        id: 10,
+        model_id: 'gpt-4o',
+        ref: '@oa/gpt-4o',
+        display_name: 'gpt-4o',
+        enabled: true,
+        reasoning: false,
+      },
+    ],
+    ...over,
+  });
+
+  const MIXED = [...MODELS, ...CLOUD_MODELS];
+  const cloudRun = runOf(['alpha:1', '@oa/gpt-4o']);
+  const cloudResults = [
+    result('alpha:1', 1, 'classification', 'correct'),
+    result('@oa/gpt-4o', 1, 'classification', 'correct', {
+      model_version: 'gpt-4o-2024-08-06',
+      attempts: 2,
+      params_ignored: [
+        { name: 'num_ctx', reason: 'context size is not configurable for this provider' },
+      ],
+    }),
+  ];
+  const cloudRoutes = {
+    ...routes,
+    'GET /models': MIXED,
+    'GET /providers': [providerFixture()],
+    'GET /runs/5': cloudRun,
+    'GET /runs/5/summary': summary([
+      row('alpha:1', { cls: 1 }),
+      row('@oa/gpt-4o', { cls: 1, cloud: true }),
+    ]),
+    'GET /runs/5/results': { attempt_id: 1, results: cloudResults },
+  };
+
+  const appWith = (path: string, r: Record<string, unknown>) => {
+    vi.stubGlobal('EventSource', FakeEventSource);
+    mockApi(r);
+    return renderApp(<App />, { route: path, path: '*', stubLive: false });
+  };
+
+  it('providers page: empty state', async () => {
+    appWith('/providers', { ...routes, 'GET /providers': [] });
+    expect(await screen.findByText('No providers registered yet')).toBeInTheDocument();
+    expect(await audit()).toEqual([]);
+  });
+
+  it('providers page: with a registered provider and its model', async () => {
+    appWith('/providers', { ...routes, 'GET /providers': [providerFixture()] });
+    await screen.findByRole('region', { name: 'Provider oa' });
+    expect(await audit()).toEqual([]);
+  });
+
+  it('run setup: grouped model picker with local and enterprise models', async () => {
+    appWith('/', cloudRoutes);
+    await screen.findByRole('checkbox', { name: '@oa/gpt-4o' });
+    expect(await audit()).toEqual([]);
+  });
+
+  it('run setup: data-sharing notice for an enterprise contestant', async () => {
+    const user = userEvent.setup();
+    appWith('/', cloudRoutes);
+    await user.click(await screen.findByRole('checkbox', { name: 'qwen3:8b' }));
+    await user.click(screen.getByRole('checkbox', { name: '@oa/gpt-4o' }));
+    expect(await screen.findByText(/This run will send data to/)).toBeInTheDocument();
+    expect(await audit()).toEqual([]);
+  });
+
+  it('results: cloud badge and per-result parameter details in the drill-down', async () => {
+    appWith('/runs/5', cloudRoutes);
+    await userEvent.setup().click(await screen.findByRole('tab', { name: 'Cases' }));
+    await screen.findByText('Not applied:', { exact: false });
+    expect(await audit()).toEqual([]);
+  });
+
+  it('run setup: the grouped model picker is keyboard-operable with accessible names', async () => {
+    appWith('/', cloudRoutes);
+    const gpt = await screen.findByRole('checkbox', { name: '@oa/gpt-4o' });
+    expect(gpt).toHaveAccessibleName('@oa/gpt-4o');
+    gpt.focus();
+    expect(gpt).toHaveFocus();
+    const claude = screen.getByRole('checkbox', { name: '@an/claude' });
+    expect(claude).toBeDisabled();
+    expect(claude).toHaveAccessibleDescription(/environment variable AN_KEY is empty/);
+  });
+
+  it('providers page controls have accessible names', async () => {
+    appWith('/providers', { ...routes, 'GET /providers': [providerFixture()] });
+    const card = await screen.findByRole('region', { name: 'Provider oa' });
+    for (const b of screen.getAllByRole('button')) expect(b).toHaveAccessibleName();
+    for (const c of screen.getAllByRole('checkbox')) expect(c).toHaveAccessibleName();
+    expect(card).toBeInTheDocument();
   });
 });

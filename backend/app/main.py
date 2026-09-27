@@ -10,7 +10,7 @@ from fastapi.staticfiles import StaticFiles
 
 import app.models  # noqa: F401  (register tables)
 from app import repo
-from app.api import export, health, runs, suites
+from app.api import export, health, providers, runs, suites
 from app.config import Settings, load_settings
 from app.core.events import EventHub
 from app.core.model_discovery import ModelDiscovery
@@ -19,12 +19,15 @@ from app.core.suite_io import seed_starter_suite
 from app.db import make_engine, make_session_factory
 from app.migrate import upgrade_to_head
 from app.ollama.client import HttpOllamaClient, OllamaClient
+from app.providers.backend import ModelRouter
+from app.providers.factories import make_factories
 
 
 def create_app(
     settings: Settings | None = None,
     ollama: OllamaClient | None = None,
     session_factory=None,
+    provider_transport=None,
 ) -> FastAPI:
     settings = settings or load_settings()
 
@@ -33,7 +36,7 @@ def create_app(
         await app.state.runner.start()
         yield
         await app.state.runner.stop()
-        await app.state.ollama.aclose()
+        await app.state.router.aclose()  # closes enterprise backends and the Ollama client
 
     app = FastAPI(title="LLM Eval Platform", lifespan=lifespan)
     app.state.settings = settings
@@ -46,7 +49,10 @@ def create_app(
     app.state.session_factory = session_factory
 
     app.state.hub = EventHub()
-    app.state.runner = Runner(session_factory, app.state.ollama, app.state.discovery, app.state.hub, settings)
+    app.state.router = ModelRouter(
+        app.state.ollama, session_factory, factories=make_factories(settings, provider_transport)
+    )
+    app.state.runner = Runner(session_factory, app.state.router, app.state.discovery, app.state.hub, settings)
 
     with session_factory() as session:
         seed_starter_suite(session)
@@ -62,6 +68,7 @@ def create_app(
 
     app.include_router(health.router)
     app.include_router(suites.router)
+    app.include_router(providers.router)
     app.include_router(export.router)  # before runs: /runs/compare must not match /runs/{id}
     app.include_router(runs.router)
     _mount_frontend(app, settings)

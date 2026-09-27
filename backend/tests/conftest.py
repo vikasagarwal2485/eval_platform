@@ -32,6 +32,8 @@ def settings():
         request_timeout_s=5.0,
         max_retries=1,
         retry_backoff_s=0.0,
+        provider_max_retries=1,
+        provider_backoff_s=0.0,
     )
 
 

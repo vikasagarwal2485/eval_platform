@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from app import repo
 from app.core.metrics import perf_stats
+from app.core.model_meta import provider_of, versions_by_model
 from app.core.scoring.aggregate import DEFAULT_WEIGHTS, ScoredItem, category_scores, composite_score
 from app.core.scoring.classification import classification_metrics
 from app.core.scoring.service import primary_kind
@@ -88,6 +89,7 @@ def build_summary(
     by_model: dict[int, list] = defaultdict(list)
     for r in results:
         by_model[r.model_snapshot_id].append(r)
+    versions = versions_by_model(results)
 
     rows = []
     for snap in snaps:
@@ -122,6 +124,10 @@ def build_summary(
             {
                 "model": snap.name,
                 "model_id": snap.id,
+                "source": snap.source,
+                "provider": provider_of(snap.name),
+                "provider_kind": snap.provider_kind,
+                "model_versions": versions.get(snap.id, []),
                 "digest": snap.digest,
                 "parameter_size": snap.parameter_size,
                 "quantization": snap.quantization,
@@ -159,6 +165,8 @@ def build_summary(
         "judging": judging_summary(session, attempt),
         "models_count": len(snaps),
         "comparable": len(snaps) >= 2,
+        # local and enterprise models together: speed figures are not like-for-like (network time is included)
+        "mixed_sources": len({s.source for s in snaps}) > 1,
         "categories_present": [c for c in CATEGORIES if any(k.category == c for k in run.cases)],
         "leaderboard": rows,
     }

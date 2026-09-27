@@ -14,6 +14,14 @@ class ModelInfo(BaseModel):
     family: str | None = None
     capabilities: list[str] = []
     thinking: bool = False
+    # --- enterprise providers (name is then the @provider/model reference)
+    source: str = "local"  # local | cloud
+    provider: str | None = None  # registered provider name
+    provider_kind: str | None = None  # openai | anthropic
+    display_name: str | None = None
+    reasoning: bool = False
+    available: bool = True
+    unavailable_reason: str | None = None
 
 
 # ---------------------------------------------------------------- test cases / suites

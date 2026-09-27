@@ -7,6 +7,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from sqlalchemy.orm import Session
 
 from app import repo
+from app.core.circuits import Circuits
 from app.core.scoring.base import ScoreResult
 from app.core.scoring.classification import score_classification
 from app.core.scoring.constraints import check_constraints
@@ -74,6 +75,7 @@ async def judge_run(
     cancelled: CancelCheck = lambda: False,
     on_progress: ProgressCb = None,
     unload: UnloadCb = None,
+    circuits: Circuits | None = None,
 ) -> bool:
     """Judge stage. Runs after all generation so judging never disturbs measured latency.
 
@@ -131,7 +133,27 @@ async def judge_run(
             call.extra = {
                 "self_judged": judge_mode == "single" and author_names.get(r.model_snapshot_id) == task.judge_model
             }
-            score, jm = await run_judge(client, task.judge_model, call, think=judge_think.get(task.judge_model))
+            if circuits is not None and (why := circuits.blocked(task.judge_model)) is not None:
+                # a provider failure earlier in this run closed this judge: record the error without sending
+                score, jm = (
+                    ScoreResult(
+                        task.kind,
+                        None,
+                        "error",
+                        {"error": why, "judge_model": task.judge_model, "attempts": 0, **call.extra},
+                    ),
+                    [],
+                )
+            else:
+                score, jm = await run_judge(
+                    client,
+                    task.judge_model,
+                    call,
+                    think=judge_think.get(task.judge_model),
+                    on_error=(lambda exc, m=task.judge_model: circuits.record(m, exc))
+                    if circuits is not None
+                    else None,
+                )
             score.detail["judge_metrics"] = jm  # kept apart from the evaluated model's own metrics
             repo.add_judgement(
                 session,
@@ -166,6 +188,7 @@ async def rescore_run(
     cancelled: CancelCheck = lambda: False,
     on_progress: ProgressCb = None,
     unload: UnloadCb = None,
+    circuits: Circuits | None = None,
 ) -> int:
     """New scoring attempt over stored outputs. Results and performance metrics are untouched;
     earlier attempts stay readable. Returns the new attempt id."""
@@ -188,6 +211,7 @@ async def rescore_run(
         cancelled=cancelled,
         on_progress=on_progress,
         unload=unload,
+        circuits=circuits,
     )
     session.commit()
     return attempt.id

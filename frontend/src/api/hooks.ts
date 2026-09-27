@@ -3,10 +3,15 @@ import { api } from './client';
 import type {
   CaseIn,
   CaseOut,
+  AvailableModel,
   Compare,
+  ConnectionTest,
   Health,
   JudgeMode,
   ModelInfo,
+  Provider,
+  ProviderCreate,
+  ProviderModel,
   ResultsResponse,
   Run,
   RunCreate,
@@ -23,6 +28,7 @@ export const keys = {
   models: ['models'] as const,
   suites: ['suites'] as const,
   suite: (id: number) => ['suite', id] as const,
+  providers: ['providers'] as const,
   runs: ['runs'] as const,
   run: (id: number) => ['run', id] as const,
   summary: (id: number, w?: string, cold?: boolean, attempt?: number | null) =>
@@ -220,6 +226,78 @@ export function useSuiteMutations() {
       mutationFn: (b: { case: CaseIn; suite_id?: number; new_suite_name?: string }) =>
         api.post<CaseOut>('/suites/save-adhoc', b),
       onSuccess: () => refresh(),
+    }),
+  };
+}
+
+// ---------------------------------------------------------------- providers (enterprise models)
+export const useProviders = () =>
+  useQuery({ queryKey: keys.providers, queryFn: () => api.get<Provider[]>('/providers') });
+
+/** Anything that changes providers or their models also changes what Run setup can offer. */
+function useProviderRefresh() {
+  const qc = useQueryClient();
+  return () => {
+    qc.invalidateQueries({ queryKey: keys.providers });
+    qc.invalidateQueries({ queryKey: keys.models });
+    qc.invalidateQueries({ queryKey: keys.health });
+  };
+}
+
+export function useProviderMutations() {
+  const refresh = useProviderRefresh();
+  return {
+    create: useMutation({
+      mutationFn: (b: ProviderCreate) => api.post<Provider>('/providers', b),
+      onSuccess: refresh,
+    }),
+    update: useMutation({
+      mutationFn: ({ id, ...b }: { id: number; key_env?: string; base_url?: string }) =>
+        api.patch<Provider>(`/providers/${id}`, b),
+      onSuccess: refresh,
+    }),
+    remove: useMutation({
+      mutationFn: (id: number) => api.delete(`/providers/${id}`),
+      onSuccess: refresh,
+    }),
+    addModel: useMutation({
+      mutationFn: ({
+        providerId,
+        ...b
+      }: {
+        providerId: number;
+        model_id: string;
+        display_name?: string;
+        reasoning?: boolean;
+        enabled?: boolean;
+      }) => api.post<ProviderModel>(`/providers/${providerId}/models`, b),
+      onSuccess: refresh,
+    }),
+    updateModel: useMutation({
+      mutationFn: ({
+        providerId,
+        modelId,
+        ...b
+      }: {
+        providerId: number;
+        modelId: number;
+        enabled?: boolean;
+        reasoning?: boolean;
+        display_name?: string;
+      }) => api.patch<ProviderModel>(`/providers/${providerId}/models/${modelId}`, b),
+      onSuccess: refresh,
+    }),
+    removeModel: useMutation({
+      mutationFn: ({ providerId, modelId }: { providerId: number; modelId: number }) =>
+        api.delete(`/providers/${providerId}/models/${modelId}`),
+      onSuccess: refresh,
+    }),
+    test: useMutation({
+      mutationFn: (id: number) => api.post<ConnectionTest>(`/providers/${id}/test`),
+    }),
+    fetchModels: useMutation({
+      mutationFn: (id: number) =>
+        api.get<{ models: AvailableModel[] }>(`/providers/${id}/available-models`),
     }),
   };
 }

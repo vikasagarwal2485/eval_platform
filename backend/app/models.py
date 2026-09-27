@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
@@ -27,6 +27,43 @@ class ModelSnapshot(Base):
     family: Mapped[str | None] = mapped_column(String(100), nullable=True)
     size_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     capabilities: Mapped[list] = mapped_column(JSON, default=list)
+    # None = Ollama; otherwise the provider kind (openai | anthropic). `name` is then the @provider/model reference.
+    provider_kind: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    source: Mapped[str] = mapped_column(String(10), default="local", server_default="local")  # local | cloud
+
+
+class Provider(Base):
+    """A registered enterprise provider. Holds the *name* of the env var with the key, never the key (design D4)."""
+
+    __tablename__ = "provider"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    kind: Mapped[str] = mapped_column(String(20))  # openai | anthropic
+    name: Mapped[str] = mapped_column(String(40), unique=True)
+    key_env: Mapped[str] = mapped_column(String(64))
+    base_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    ack_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )  # data-sharing acknowledgment
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    models: Mapped[list[RegisteredModel]] = relationship(
+        back_populates="provider", cascade="all, delete-orphan", order_by="RegisteredModel.id"
+    )
+
+
+class RegisteredModel(Base):
+    __tablename__ = "registered_model"
+    __table_args__ = (UniqueConstraint("provider_id", "model_id", name="uq_registered_model_provider_model"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    provider_id: Mapped[int] = mapped_column(ForeignKey("provider.id", ondelete="CASCADE"), index=True)
+    model_id: Mapped[str] = mapped_column(String(200))
+    display_name: Mapped[str] = mapped_column(String(200), default="")
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    reasoning: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    provider: Mapped[Provider] = relationship(back_populates="models")
 
 
 class Suite(Base):
