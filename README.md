@@ -107,7 +107,7 @@ used as a judge (including a neutral hosted judge for two local models that woul
 Benchmark runs answer "which model is better on my test cases?". Live agent evaluation answers a different
 question: "is the agent I already deployed behaving well on real traffic, right now?" An agent runs **outside**
 this platform - anywhere - and streams every interaction in; a model that is never the agent's own scores each
-turn. See `openspec/changes/add-live-agent-evaluation/` for the full design.
+turn. See `openspec/changes/archive/2026-09-27-add-live-agent-evaluation/` for the full design.
 
 ### Connect an agent
 
@@ -115,9 +115,10 @@ turn. See `openspec/changes/add-live-agent-evaluation/` for the full design.
    declares it uses. You get an **ingest token, shown once** - copy it now; only its hash is ever stored.
 2. Configure its **evaluators** on the Settings tab: one or more models (local or, once acknowledged, enterprise)
    that are not the agent's own model - saving an evaluator equal to the declared model is rejected up front.
-3. Run the agent anywhere, pointed at this platform's URL and the token, using the small SDK in `agents/`:
+3. Run the agent anywhere, pointed at this platform's URL and the token, using the small SDK in `agents/`
+   (`make agents-setup` creates its own venv - see `agents/README.md`):
    ```bash
-   python -m agents.chatbot --model qwen3:8b --platform-url http://localhost:8000 --token <TOKEN>
+   agents/.venv/bin/python -m agents.chatbot --model qwen3:8b --platform-url http://localhost:8000 --token <TOKEN>
    ```
    Two reference agents ship in `agents/` - a REPL **chatbot** (one LLM call per turn) and a multi-step
    **reasoning agent** (plan/solve/verify, three calls per turn, with a `--suite` mode that replays a suite's
@@ -318,9 +319,9 @@ summaries, and the agent side: `eligibility.py`/`eval_resolution.py` for the nev
 `agents/` (repository root, alongside `backend/` and `frontend/`): `eval_agent_sdk/`, the client agents use to
 stream into the platform, plus the two reference agents (`chatbot.py`, `reasoning_agent.py`) - see
 `agents/README.md`.
-Design notes and specs live under `openspec/`: the finished proposals are archived in `openspec/changes/archive/`,
-the in-progress ones in `openspec/changes/add-enterprise-model-providers/` and
-`openspec/changes/add-live-agent-evaluation/`, and the synced capability specs in `openspec/specs/`.
+Design notes and specs live under `openspec/`: finished proposals are archived in `openspec/changes/archive/`
+(including `2026-09-27-add-enterprise-model-providers/` and `2026-09-27-add-live-agent-evaluation/`), and the
+synced capability specs are in `openspec/specs/`.
 
 The backend tests need no Ollama and no real provider key: they use in-process fakes and, for the end-to-end tests,
 fake HTTP servers that speak the real wire protocols - Ollama (`backend/tests/fake_ollama_server.py`, replaying a

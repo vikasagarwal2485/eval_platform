@@ -9,13 +9,28 @@ a model that never produced their answers.
   has multiple spans. `--suite` replays a suite file's reasoning cases and sends each one's expected answer as the
   turn's reference, so the platform's deterministic correctness check runs alongside the evaluator's score.
 
-Both need only `httpx` (see [`eval_agent_sdk`](eval_agent_sdk/__init__.py)) - no platform backend dependency.
+Both need only `httpx` (see [`eval_agent_sdk`](eval_agent_sdk/__init__.py)) - no platform backend dependency -
+plus `pyyaml` for `reasoning_agent.py --suite <file>.yaml` (a `.json` suite needs nothing extra). See
+[`requirements.txt`](requirements.txt).
+
+## Setup
+
+These agents are meant to run **anywhere** - not necessarily on the same machine or in the same Python
+environment as the platform itself - so they get their own small venv, separate from `backend/.venv`:
+
+```bash
+make agents-setup   # from the repo root: creates agents/.venv and installs requirements.txt
+```
+
+Run either agent from the **repo root** with that venv's interpreter, e.g.
+`agents/.venv/bin/python -m agents.chatbot --help`. If you're already inside `backend/.venv` (it depends on
+`httpx` and `pyyaml` too), that works as well - a separate venv is a convenience, not a requirement.
 
 ## Demonstration setup: agent and evaluator on different models
 
 The point of this capability is that an agent is never evaluated by the model that answered. Use two different
-local models (or register an enterprise model as the evaluator via `/api/providers`, once `add-enterprise-model
--providers` is in place).
+local models, or register an enterprise model as the evaluator via `/api/providers` (see the main README's
+*Enterprise model providers* section).
 
 1. **Start the platform** (from the repo root): `make run` (serves on `http://localhost:8000`), with Ollama
    running and at least two models pulled, e.g. `qwen3:8b` (the agent) and `gemma3:4b` (the evaluator).
@@ -38,20 +53,20 @@ local models (or register an enterprise model as the evaluator via `/api/provide
      -d '{"eval_config": {"evaluators": ["gemma3:4b"], "quiet_period_s": 5}}'
    ```
 
-4. **Run the chatbot** against the platform:
+4. **Run the chatbot** against the platform (from the repo root, using the venv from *Setup* above):
 
    ```bash
-   python -m agents.chatbot --model qwen3:8b --platform-url http://localhost:8000 --token <TOKEN>
+   agents/.venv/bin/python -m agents.chatbot --model qwen3:8b --platform-url http://localhost:8000 --token <TOKEN>
    ```
 
    Or the reasoning agent, once on a single problem and once replaying a suite's reasoning cases:
 
    ```bash
-   python -m agents.reasoning_agent --model qwen3:8b --platform-url http://localhost:8000 --token <TOKEN> \
-     --problem "A train travels 60 miles in 40 minutes. What is its speed in mph?"
+   agents/.venv/bin/python -m agents.reasoning_agent --model qwen3:8b --platform-url http://localhost:8000 \
+     --token <TOKEN> --problem "A train travels 60 miles in 40 minutes. What is its speed in mph?"
 
-   python -m agents.reasoning_agent --model qwen3:8b --platform-url http://localhost:8000 --token <TOKEN> \
-     --suite backend/app/data/starter_suite.yaml
+   agents/.venv/bin/python -m agents.reasoning_agent --model qwen3:8b --platform-url http://localhost:8000 \
+     --token <TOKEN> --suite backend/app/data/starter_suite.yaml
    ```
 
 5. **Watch it get evaluated.** After the configured quiet period, open the agent in the UI (Agents -> demo-chatbot)

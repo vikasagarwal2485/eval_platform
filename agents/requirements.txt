@@ -1,0 +1,10 @@
+# Dependencies to run the reference agents and eval_agent_sdk standalone (design D3/D12: the SDK is
+# deliberately dependency-light - httpx only - so it can run inside any agent's own process).
+#
+#   make agents-setup      # from the repo root, creates agents/.venv with these installed
+#
+# httpx: the SDK's HTTP client, and the reference agents' own calls to their local Ollama.
+httpx>=0.27
+# pyyaml: only needed for `reasoning_agent.py --suite <file>.yaml` (a .json suite needs no extra dependency).
+# Its absence is handled gracefully (a clear error naming this package) if you skip it.
+pyyaml>=6.0
