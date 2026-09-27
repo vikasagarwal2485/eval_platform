@@ -147,3 +147,64 @@ def test_full_agent_evaluation_lifecycle(settings, file_session_factory, monkeyp
         assert "judge:1=" in csv_text
         json_body = client.get(f"/api/agents/{agent['id']}/export?format=json").json()
         assert any("judge:1=" in row["judges"] for row in json_body["turns"])
+
+
+def _turn_events(ext: str) -> list[dict]:
+    return [
+        {"v": 1, "event_id": f"{ext}s", "session_id": "s1", "turn_id": ext, "type": "turn.start", "input": ext},
+        {
+            "v": 1, "event_id": f"{ext}sp", "session_id": "s1", "turn_id": ext, "type": "span", "span_id": f"{ext}sp1",
+            "kind": "llm", "model": "author:1", "output": "hello",
+        },
+        {"v": 1, "event_id": f"{ext}e", "session_id": "s1", "turn_id": ext, "type": "turn.end", "status": "ok", "output": "hello"},
+    ]
+
+
+def test_a_continuously_chatting_agent_still_gets_evaluated(settings, file_session_factory):
+    """Reproduces the reported bug end to end through the real ingest API and the real background evaluation
+    worker: an agent that keeps getting new turns (like someone actively testing a chatbot) must not have that
+    ongoing activity block evaluation of its already-finished turns forever - only an actually in-flight turn
+    should defer evaluation. Regression: `agent.last_seen_at` used to gate evaluation, and every ingest call
+    (including a brand new turn's `turn.start`) touches it - so an agent that never truly goes quiet (the exact
+    shape of someone actively chatting with it) would never get anything evaluated, which defeats the point of
+    evaluating *live* traffic. The fix only defers while the agent has a turn actually open (in flight)."""
+    fake = FakeOllama([make_tag("author:1"), make_tag("judge:1")], _agent_aware_responder())
+    app = create_app(settings, ollama=fake, session_factory=file_session_factory)
+    with TestClient(app) as client:
+        r = client.post(
+            "/api/agents",
+            json={
+                "name": "bot", "kind": "chatbot", "declared_model": "author:1",
+                "eval_config": {"evaluators": ["judge:1"], "quiet_period_s": 2},
+            },
+        )
+        agent = r.json()
+        token = agent["token"]
+
+        r = client.post("/api/ingest/v1/events", json=_turn_events("t1"), headers={"Authorization": f"Bearer {token}"})
+        assert r.status_code == 200
+        turns = {t["external_id"]: t for t in client.get(f"/api/agents/{agent['id']}/turns").json()}
+        t1_id = turns["t1"]["id"]
+
+        def t1_evaluation():
+            e = client.get(f"/api/agents/{agent['id']}/turns/{t1_id}").json()["latest_evaluation"]
+            return e if e and e["status"] in ("done", "error") else None
+
+        # Keep the agent "recently seen" with fresh, unrelated, completed turns - simulating someone actively
+        # chatting faster than the quiet period - for the *entire* window we give evaluation to happen, so it
+        # never truly goes quiet. Under the bug this loop exhausts its budget with t1 still unevaluated.
+        deadline = time.time() + 15.0
+        n = 2
+        evaluated = None
+        while time.time() < deadline:
+            client.post(
+                "/api/ingest/v1/events", json=_turn_events(f"t{n}"), headers={"Authorization": f"Bearer {token}"}
+            )
+            n += 1
+            evaluated = t1_evaluation()
+            if evaluated:
+                break
+            time.sleep(0.4)  # well under quiet_period_s: the agent never goes quiet on its own
+
+        assert evaluated is not None, "t1 was never evaluated while the agent stayed continuously active"
+        assert evaluated["status"] == "done"

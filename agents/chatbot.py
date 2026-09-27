@@ -71,7 +71,13 @@ def run_repl(client: AgentClient, model: str, ollama_url: str, system_prompt: st
             break
         if not user_message or user_message.lower() in ("quit", "exit"):
             break
-        content = answer(client, session_id, model, ollama_url, system_prompt, history, user_message)
+        try:
+            content = answer(client, session_id, model, ollama_url, system_prompt, history, user_message)
+        except httpx.HTTPError as exc:
+            # The turn is still recorded (as an error, via Turn.__exit__) so it shows up on the platform - only
+            # the local REPL loop must survive this and keep taking input, rather than crashing the whole agent.
+            print(f"[error calling {model} at {ollama_url}: {exc}]")
+            continue
         history += [{"role": "user", "content": user_message}, {"role": "assistant", "content": content}]
         print(f"Bot: {content}")
 

@@ -828,14 +828,29 @@ def list_pending_evaluations(session: Session, *, limit: int = 50) -> list[TurnE
     return list(session.scalars(q))
 
 
+def agents_with_open_turns(session: Session, agent_ids: list[int]) -> set[int]:
+    """Which of `agent_ids` currently have a turn in flight (`turn.start` seen, no `turn.end` yet). This is the
+    actual GPU/model-contention risk a quiet period protects against - unlike recent *activity*, which a
+    continuously-active agent (the very traffic this feature exists to evaluate) would never clear, silently
+    starving it of any evaluation at all."""
+    if not agent_ids:
+        return set()
+    rows = session.execute(
+        select(AgentTurn.agent_id).where(AgentTurn.agent_id.in_(agent_ids), AgentTurn.status == "open").distinct()
+    )
+    return {r[0] for r in rows}
+
+
 def list_ready_pending_evaluations(session: Session, *, limit: int = 50, overfetch: int = 4) -> list[TurnEvaluation]:
     """Pending evaluations whose turn has been quiet for at least the agent's configured quiet period, and whose
-    agent has been idle that long too (design D7). Filtered in Python after a bounded fetch - fine at the single
-    -machine scale this queue targets (design Goals)."""
+    agent has no *other* turn actually in flight right now (design D7). Filtered in Python after a bounded fetch -
+    fine at the single-machine scale this queue targets (design Goals)."""
     now = utcnow()
     q = select(TurnEvaluation).where(TurnEvaluation.status == "pending").order_by(TurnEvaluation.id).limit(limit * overfetch)
+    candidates = list(session.scalars(q))
+    busy_agents = agents_with_open_turns(session, [c.turn.agent_id for c in candidates])
     out: list[TurnEvaluation] = []
-    for ev in session.scalars(q):
+    for ev in candidates:
         turn = ev.turn
         if turn.ended_at is None:
             continue
@@ -843,7 +858,7 @@ def list_ready_pending_evaluations(session: Session, *, limit: int = 50, overfet
         quiet = timedelta(seconds=float((agent.eval_config or {}).get("quiet_period_s", 20.0)))
         if now - _aware(turn.ended_at) < quiet:
             continue
-        if agent.last_seen_at is not None and now - _aware(agent.last_seen_at) < quiet:
+        if agent.id in busy_agents:
             continue
         out.append(ev)
         if len(out) >= limit:

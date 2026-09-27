@@ -91,7 +91,10 @@ def _load_reasoning_cases(path: Path) -> list[dict]:
 
 def run_once(client: AgentClient, model: str, ollama_url: str, problem: str) -> None:
     session_id = uuid.uuid4().hex
-    final = solve_one(client, session_id, model, ollama_url, problem)
+    try:
+        final = solve_one(client, session_id, model, ollama_url, problem)
+    except httpx.HTTPError as exc:
+        raise SystemExit(f"error calling {model} at {ollama_url}: {exc}") from exc
     print(final)
 
 
@@ -102,8 +105,14 @@ def run_suite(client: AgentClient, model: str, ollama_url: str, suite_path: Path
         return
     session_id = uuid.uuid4().hex
     for case in cases:
-        final = solve_one(client, session_id, model, ollama_url, case["prompt"], reference=case.get("expected"))
         title = case.get("title") or case["prompt"][:60]
+        try:
+            final = solve_one(client, session_id, model, ollama_url, case["prompt"], reference=case.get("expected"))
+        except httpx.HTTPError as exc:
+            # The turn is still recorded (as an error, via Turn.__exit__) - only replaying the rest of the suite
+            # must survive this one case's failure, not stop at it.
+            print(f"[{title}] -> error calling {model} at {ollama_url}: {exc}")
+            continue
         print(f"[{title}] -> {final.strip()[:120]}")
 
 

@@ -106,6 +106,54 @@ def test_within_quiet_period_is_deferred(session_factory, settings):
         assert len(pending) == 1  # still waiting, not skipped or errored
 
 
+def test_a_continuously_active_agent_still_gets_its_finished_turns_evaluated(session_factory, settings):
+    """Regression: ingest touches `agent.last_seen_at` on every call, including a brand new turn's `turn.start`.
+    A chatbot mid-conversation is *always* recently seen - if that alone blocked evaluation, an agent that never
+    goes quiet would never be evaluated at all, defeating the point of evaluating live traffic. Only an actually
+    in-flight (open) turn should defer evaluation, not mere recent activity."""
+    fake = FakeOllama([make_tag("author:1"), make_tag("judge:1")], _make_responder())
+    worker = EvaluationWorker(session_factory, _StubRouter(fake), ModelDiscovery(fake))
+    with session_factory() as session:
+        agent = _agent(session, evaluators=["judge:1"], quiet_period_s=5)
+        old_turn = _closed_turn(session, agent, ext="old", quiet_seconds=100)
+        session.commit()
+        repo.maybe_queue_evaluation(session, agent, old_turn)
+        session.commit()
+        # the agent is mid-conversation: it just started a brand new turn, so it was "seen" moments ago
+        repo.touch_agent_liveness(session, agent)
+        session.commit()
+
+    stats = asyncio.run(worker.tick())
+    assert stats.evaluated == 1  # the older, already-quiet turn is still evaluated
+
+
+def test_evaluation_defers_only_while_the_agent_has_a_turn_actually_in_flight(session_factory, settings):
+    fake = FakeOllama([make_tag("author:1"), make_tag("judge:1")], _make_responder())
+    worker = EvaluationWorker(session_factory, _StubRouter(fake), ModelDiscovery(fake))
+    with session_factory() as session:
+        agent = _agent(session, evaluators=["judge:1"], quiet_period_s=5)
+        old_turn = _closed_turn(session, agent, ext="old", quiet_seconds=100)
+        session.commit()
+        repo.maybe_queue_evaluation(session, agent, old_turn)
+        # a second turn is still open (its turn.start arrived, no turn.end yet)
+        sess = repo.get_or_create_agent_session(session, agent, "s1")
+        repo.get_or_create_turn(session, agent, sess, "open-turn")
+        session.commit()
+
+    stats = asyncio.run(worker.tick())
+    assert stats.evaluated == 0  # deferred while a request is actually in flight
+
+    with session_factory() as session:
+        turn = repo.get_turn(session, repo.list_turns(session, agent.id, status="open")[0].id)
+        repo.apply_turn_end(
+            session, turn, TurnEndEvent(v=1, event_id="e", session_id="s1", turn_id="open-turn", status="ok", output="done")
+        )
+        session.commit()
+
+    stats = asyncio.run(worker.tick())
+    assert stats.evaluated == 1  # released once nothing is in flight any more
+
+
 def test_benchmark_run_defers_evaluation_and_a_later_tick_processes_it(session_factory, settings):
     fake = FakeOllama([make_tag("author:1"), make_tag("judge:1")], _make_responder())
     measuring = {"value": True}
