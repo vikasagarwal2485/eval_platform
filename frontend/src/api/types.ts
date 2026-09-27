@@ -374,3 +374,166 @@ export interface AvailableModel {
   id: string;
   already_added: boolean;
 }
+
+// ---------------------------------------------------------------- agents (live evaluation)
+export type AgentKind = 'chatbot' | 'reasoning';
+export type AgentStatus = 'active' | 'paused';
+export type AgentLiveness = 'live' | 'idle' | 'offline' | 'paused';
+
+export interface EvalConfig {
+  evaluators: string[];
+  sample_rate: number;
+  quiet_period_s: number;
+  context_turns: number;
+  attention_threshold: number;
+  abandon_after_s: number;
+  retention_days: number | null;
+}
+export const DEFAULT_EVAL_CONFIG: EvalConfig = {
+  evaluators: [],
+  sample_rate: 1,
+  quiet_period_s: 20,
+  context_turns: 4,
+  attention_threshold: 0.5,
+  abandon_after_s: 600,
+  retention_days: null,
+};
+
+export interface Agent {
+  id: number;
+  name: string;
+  kind: AgentKind;
+  declared_model: string;
+  status: AgentStatus;
+  liveness: AgentLiveness;
+  token_prefix: string;
+  eval_config: EvalConfig;
+  rubric: RubricCriterion[] | null;
+  provider_acks: string[];
+  last_seen_at: string | null;
+  created_at: string;
+  /** present only on create and on token rotation - shown once, never stored client-side beyond that response */
+  token?: string;
+}
+export interface AgentCreate {
+  name: string;
+  kind: AgentKind;
+  declared_model: string;
+  eval_config?: Partial<EvalConfig>;
+  rubric?: RubricCriterion[] | null;
+  provider_acks?: string[];
+}
+export interface AgentSettingsUpdate {
+  declared_model?: string;
+  eval_config?: Partial<EvalConfig>;
+  rubric?: RubricCriterion[] | null;
+  clear_rubric?: boolean;
+  provider_acks?: string[];
+}
+
+export type TurnStatus = 'open' | 'ok' | 'error' | 'abandoned';
+export type EvaluationStatus = 'pending' | 'running' | 'done' | 'skipped' | 'error';
+
+export interface AgentJudgement {
+  judge_model: string;
+  value: number | null;
+  outcome: 'judged' | 'error';
+  detail: {
+    criteria?: Record<string, { score: number; reason: string }>;
+    error?: string;
+    raw_mean?: number;
+    [key: string]: unknown;
+  };
+}
+export interface AgentEvaluation {
+  id: number;
+  attempt_no: number;
+  status: EvaluationStatus;
+  skip_reason: string | null;
+  evaluators: string[];
+  rubric: RubricCriterion[];
+  value: number | null;
+  detail: {
+    self_judged?: boolean;
+    judges_used?: number;
+    judgements?: AgentJudgement[];
+    [key: string]: unknown;
+  };
+  reference_result: {
+    value: number | null;
+    outcome: string;
+    detail: Record<string, unknown>;
+  } | null;
+  created_at: string;
+  finished_at: string | null;
+}
+export interface AgentSpan {
+  id: number;
+  kind: 'llm' | 'tool';
+  model: string | null;
+  name: string | null;
+  input: Record<string, unknown>;
+  output: string;
+  thinking: string | null;
+  error: string | null;
+  started_at: string | null;
+  ended_at: string | null;
+  latency_ms: number | null;
+  ttft_ms: number | null;
+  prompt_tokens: number | null;
+  completion_tokens: number | null;
+}
+export interface AgentTurn {
+  id: number;
+  external_id: string;
+  session_id: string | null;
+  seq: number;
+  status: TurnStatus;
+  input: string;
+  output: string;
+  reference: string | null;
+  error: string | null;
+  models: string[];
+  models_unknown: boolean;
+  truncated: boolean;
+  latency_ms: number | null;
+  prompt_tokens: number | null;
+  completion_tokens: number | null;
+  started_at: string | null;
+  ended_at: string | null;
+  latest_evaluation: { status: EvaluationStatus; value: number | null } | null;
+}
+export interface AgentTurnDetail extends AgentTurn {
+  spans: AgentSpan[];
+  evaluations: AgentEvaluation[];
+}
+
+export interface AgentSummarySeriesPoint {
+  bucket: string;
+  count: number;
+  quality_mean: number | null;
+}
+export interface AgentEvaluatorStat {
+  model: string;
+  mean_score: number | null;
+  judged: number;
+  errors: number;
+}
+export interface AgentSummary {
+  window: string;
+  turns: { total: number; ok?: number; error?: number; open?: number; abandoned?: number };
+  quality: { mean: number | null; evaluated: number; below_threshold: number; threshold: number };
+  latency_ms: { p50: number | null; p95: number | null };
+  error_rate: number | null;
+  tokens: { prompt: number; completion: number };
+  evaluators: AgentEvaluatorStat[];
+  backlog: { pending: number; skipped: Record<string, number> };
+  series: AgentSummarySeriesPoint[];
+}
+export interface AttentionItem {
+  turn_id: number;
+  value: number;
+  input: string;
+  output: string;
+  ended_at: string | null;
+}

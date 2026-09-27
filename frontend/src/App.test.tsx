@@ -26,6 +26,7 @@ describe('routing', () => {
     ['/runs/1', 'Results'],
     ['/suites', 'Suites'],
     ['/providers', 'Providers'],
+    ['/agents', 'Agents'],
     ['/history', 'History'],
     ['/nope', 'Page not found'],
   ])('renders %s', (path, heading) => {
@@ -36,6 +37,11 @@ describe('routing', () => {
   it('has a Providers link in the main navigation', () => {
     renderAt('/');
     expect(screen.getByRole('link', { name: 'Providers' })).toHaveAttribute('href', '/providers');
+  });
+
+  it('has an Agents link in the main navigation', () => {
+    renderAt('/');
+    expect(screen.getByRole('link', { name: 'Agents' })).toHaveAttribute('href', '/agents');
   });
 
   it('marks the active nav link', () => {

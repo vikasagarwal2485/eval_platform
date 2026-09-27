@@ -1,4 +1,6 @@
 import { NavLink, Route, Routes } from 'react-router-dom';
+import AgentPage from './pages/AgentPage';
+import AgentsPage from './pages/AgentsPage';
 import HistoryPage from './pages/HistoryPage';
 import NotFound from './pages/NotFound';
 import ProvidersPage from './pages/ProvidersPage';
@@ -21,6 +23,7 @@ export default function App() {
           </NavLink>
           <NavLink to="/suites">Suites</NavLink>
           <NavLink to="/providers">Providers</NavLink>
+          <NavLink to="/agents">Agents</NavLink>
           <NavLink to="/history">History</NavLink>
         </nav>
         <span className="spacer" />
@@ -32,6 +35,8 @@ export default function App() {
           <Route path="/runs/:id" element={<ResultsPage />} />
           <Route path="/suites" element={<SuitesPage />} />
           <Route path="/providers" element={<ProvidersPage />} />
+          <Route path="/agents" element={<AgentsPage />} />
+          <Route path="/agents/:id" element={<AgentPage />} />
           <Route path="/history" element={<HistoryPage />} />
           <Route path="*" element={<NotFound />} />
         </Routes>

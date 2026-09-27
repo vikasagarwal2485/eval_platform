@@ -5,15 +5,25 @@ of models hosted by OpenAI or Anthropic. Pick several models in a web UI, send t
 text-generation prompts (your own or a reusable suite), and get a leaderboard, charts, side-by-side outputs and
 exportable results.
 
+It also evaluates **deployed AI agents' live traffic**: an agent running anywhere streams every LLM interaction in
+over a small SDK, and each turn is scored by a model that never produced it. See
+[Live agent evaluation](#live-agent-evaluation) below.
+
 **Data sharing:** local (Ollama) evaluations never leave your machine. If you register an enterprise provider,
-prompts and model outputs used with its models - including other models' answers when it judges them - are sent to
-that provider. See [Enterprise model providers](#enterprise-model-providers) below.
+prompts and model outputs used with its models - including other models' answers when it judges them, and an
+agent's live conversations when it evaluates them - are sent to that provider. See
+[Enterprise model providers](#enterprise-model-providers) below.
 
 ```
                                      +-->  Ollama (localhost:11434)
 Browser (React)  <--REST + SSE-->  FastAPI  --HTTP-->  OpenAI API
                                      |          `-->  Anthropic API
-                                  SQLite (runs, results, scores)
+                                     |
+                                  SQLite (runs, results, scores, agents, turns, evaluations)
+                                     ^
+                                     |  ingest (HTTP)
+                          agent SDK  |
+                         (your own agent process, anywhere)
 ```
 
 ## Prerequisites
@@ -57,6 +67,8 @@ Open <http://127.0.0.1:8000>. For development with hot reload use `make dev` (UI
    it did not honour. Export CSV/JSON, re-score with another judge, or re-run.
 5. **History** lists past runs; select two to see what changed (e.g. before/after a new quantization).
 6. **Providers** - register OpenAI or Anthropic and their models; see below.
+7. **Agents** - register a deployed agent, watch its live traffic get evaluated by a different model; see
+   [Live agent evaluation](#live-agent-evaluation) below.
 
 ## Enterprise model providers
 
@@ -89,6 +101,67 @@ used as a judge (including a neutral hosted judge for two local models that woul
   An unreachable *Ollama*, by contrast, still fails the whole run, as it did before enterprise providers existed.
 - Removing a provider or a model does not touch past runs; they keep their own results and display the model as
   removed.
+
+## Live agent evaluation
+
+Benchmark runs answer "which model is better on my test cases?". Live agent evaluation answers a different
+question: "is the agent I already deployed behaving well on real traffic, right now?" An agent runs **outside**
+this platform - anywhere - and streams every interaction in; a model that is never the agent's own scores each
+turn. See `openspec/changes/add-live-agent-evaluation/` for the full design.
+
+### Connect an agent
+
+1. On the **Agents** page, register one: give it a name, a kind (`chatbot` or `reasoning`) and the model it
+   declares it uses. You get an **ingest token, shown once** - copy it now; only its hash is ever stored.
+2. Configure its **evaluators** on the Settings tab: one or more models (local or, once acknowledged, enterprise)
+   that are not the agent's own model - saving an evaluator equal to the declared model is rejected up front.
+3. Run the agent anywhere, pointed at this platform's URL and the token, using the small SDK in `agents/`:
+   ```bash
+   python -m agents.chatbot --model qwen3:8b --platform-url http://localhost:8000 --token <TOKEN>
+   ```
+   Two reference agents ship in `agents/` - a REPL **chatbot** (one LLM call per turn) and a multi-step
+   **reasoning agent** (plan/solve/verify, three calls per turn, with a `--suite` mode that replays a suite's
+   reasoning cases and sends each one's expected answer along). See `agents/README.md` for a full walk-through,
+   including running the two on different models so neither ever judges itself.
+4. Watch it on the agent's page: a **Live** feed of turns as they arrive and get scored, **Conversations** with
+   full drill-down, and **Quality** (score over time, latency, evaluator strictness, a needs-attention list).
+
+### The event contract and the SDK
+
+Agents never call this platform's REST API directly for ingest - they use `agents/eval_agent_sdk`
+(`AgentClient`, `httpx` only). It queues three event types (`turn.start`, `span`, `turn.end`) in memory and sends
+them from a background thread, so **a platform outage, a slow evaluator, or a network hiccup never slows or
+breaks the agent**: under sustained backpressure the oldest queued events are dropped, counted, and the agent
+keeps running. Ingest itself (`POST /api/ingest/v1/events`) is idempotent (safe to retry a whole batch) and
+tolerant of out-of-order events (a `turn.end` may arrive before its `turn.start`).
+
+### An evaluator never scores a turn it helped produce
+
+This is the whole point, so it is enforced at evaluation time, not just at registration: the platform looks at
+which models actually appear in a turn's own LLM calls (not the agent's *declared* model, which is only a hint)
+and only ever asks a *different* model to score it. If every configured evaluator also produced the turn, or the
+agent didn't report which model it used, the turn is marked **not evaluated** with the reason - it is never
+scored by one of its own models as a fallback. An evaluator that is temporarily unavailable (disabled, or a
+hosted one whose key isn't set) is skipped with its own reason; the rest of the panel still runs. When more than
+one evaluator judges a turn, the turn's score is the mean of the successful ones, exactly like benchmark-run
+cross-model judging (same rubric mechanics, same "never self-judged" guarantee - see *Cross-model judging* above).
+
+### Data sharing and operational notes
+
+- Choosing a registered **enterprise model** as an evaluator sends that agent's live conversations to its
+  provider on every evaluation; the Settings tab requires the same data-sharing acknowledgment as a benchmark run
+  before it becomes selectable, scoped to that agent.
+- **Evaluation is paced to protect the agent.** A turn is only evaluated after a configurable quiet period since
+  it ended, one evaluator call runs at a time, and evaluation **pauses entirely while a benchmark run is
+  measuring models** and resumes once it finishes - so live judging never distorts either the agent's own
+  latency or a benchmark run's numbers on a shared local Ollama. If you run an agent and benchmark runs on the
+  same small machine, expect judging to queue up behind whichever ran first; the backlog is shown and, past a
+  cap, the oldest excess is skipped rather than growing without bound.
+- Turns can be **re-evaluated** (one turn, or a bulk selection by score threshold or time window) without asking
+  the agent to run again; every attempt stays readable, so you can compare a cheap local evaluator against a
+  stronger one on the same real traffic.
+- A turn's agent-reported latency and token counts are **not comparable** to a benchmark run's own measurements -
+  they come from the agent's side, not this platform's.
 
 ## How scoring works
 
@@ -235,18 +308,29 @@ make format
 
 `backend/app`: `ollama/` (the only code that talks to Ollama), `providers/` (the enterprise backend abstraction,
 model references, secrets/redaction, the OpenAI and Anthropic adapters, and the router that picks a backend per
-model), `core/` (runner, scorers, metrics, summaries), `api/` (FastAPI routes), `models.py` + `alembic/` (SQLite
-schema and migrations).
-`frontend/src`: `pages/`, `components/` (incl. hand-rolled SVG `charts/`), `api/` (typed client, query hooks, SSE hook).
+model), `traces/` (the agent ingest event contract), `core/` (the benchmark-run worker, scorers, metrics,
+summaries, and the agent side: `eligibility.py`/`eval_resolution.py` for the never-self-judged invariant,
+`eval_context.py` for rubrics and conversation context, `eval_worker.py` for the evaluation queue, and
+`agent_summary.py`/`agent_export.py`), `api/` (FastAPI routes, including `ingest.py` and `agents.py`),
+`models.py` + `alembic/` (SQLite schema and migrations).
+`frontend/src`: `pages/`, `components/` (incl. hand-rolled SVG `charts/` and the `agents/` subcomponents), `api/`
+(typed client, query hooks, SSE hooks for both runs and agents).
+`agents/` (repository root, alongside `backend/` and `frontend/`): `eval_agent_sdk/`, the client agents use to
+stream into the platform, plus the two reference agents (`chatbot.py`, `reasoning_agent.py`) - see
+`agents/README.md`.
 Design notes and specs live under `openspec/`: the finished proposals are archived in `openspec/changes/archive/`,
-the current one in `openspec/changes/add-enterprise-model-providers/`, and the synced capability specs in
-`openspec/specs/`.
+the in-progress ones in `openspec/changes/add-enterprise-model-providers/` and
+`openspec/changes/add-live-agent-evaluation/`, and the synced capability specs in `openspec/specs/`.
 
 The backend tests need no Ollama and no real provider key: they use in-process fakes and, for the end-to-end tests,
 fake HTTP servers that speak the real wire protocols - Ollama (`backend/tests/fake_ollama_server.py`, replaying a
 recorded stream from `backend/tests/fixtures`) and OpenAI/Anthropic (`backend/tests/fake_providers.py`). An opt-in
 live smoke test against the *real* OpenAI and Anthropic APIs (`backend/tests/test_live_smoke_enterprise.py`) is
-skipped unless you export a real `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` yourself; it never runs in CI.
+skipped unless you export a real `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` yourself; it never runs in CI. The agent
+SDK and reference agents are tested the same way, from `backend/tests/` (`test_agent_sdk.py`,
+`test_reference_agents.py`, `test_agent_e2e.py`), against fake Ollama/provider servers - importing the
+separate `agents/` package directly rather than installing it, since it is meant to run inside a deployed agent's
+own process, not inside this backend.
 
 ## Troubleshooting
 
@@ -265,3 +349,12 @@ skipped unless you export a real `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` yourself
 - **`npm install` fails with `EACCES` on `~/.npm/_cacache`** - an old npm bug left root-owned files in your npm cache.
   Fix it with `sudo chown -R "$(id -u):$(id -g)" ~/.npm`, or install with a private cache:
   `npm install --cache /tmp/npm-cache` (or `npm_config_cache=/tmp/npm-cache make setup`).
+- **An agent's turn stays "not evaluated"** - open it for the reason: `no_eligible_evaluator` means every
+  configured evaluator also produced (part of) that turn; `agent_model_unknown` means the agent didn't report
+  which model an LLM call used. Neither ever falls back to grading with the agent's own model.
+- **An agent's turns aren't getting scored at all** - check whether a benchmark run is queued or running:
+  evaluation pauses entirely while one is measuring models, and resumes once it finishes.
+- **An agent shows "offline"** even though it's running - it hasn't sent an event recently (`last_seen_at`); check
+  the ingest token and that the agent process can reach this platform's URL.
+- **`401` from `/api/ingest/v1/events`** - the ingest token is wrong, was rotated, or the agent is paused (`403`
+  names that explicitly). Rotating a token immediately invalidates the previous one.

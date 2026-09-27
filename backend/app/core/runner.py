@@ -99,6 +99,11 @@ class Runner:
     def is_busy(self, run_id: int) -> bool:
         return run_id in self._cancel
 
+    def is_measuring(self) -> bool:
+        """True while a benchmark job is queued or running (design D7/D-Context: read-only, used by the
+        `EvaluationWorker` so live evaluation never overlaps and disturbs a benchmark run's own measurements)."""
+        return self._running > 0 or not self.queue.empty()
+
     def cancel(self, run_id: int) -> str:
         """Returns 'cancelled' (was queued), 'cancelling' (in flight) or 'inactive'."""
         ev = self._cancel.get(run_id)

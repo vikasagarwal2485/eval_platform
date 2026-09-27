@@ -213,3 +213,65 @@ class RunCreate(_BM):
     judge_model: str | None = None
     # none | single | cross_model; omitted = inferred from judge_model (backward compatible)
     judge_mode: Literal["none", "single", "cross_model"] | None = None
+
+
+# ---------------------------------------------------------------- live agent evaluation
+AgentKind = Literal["chatbot", "reasoning"]
+
+
+class RubricCriterionIn(_BM):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=100)
+    description: str = ""
+
+
+class EvalConfigIn(_BM):
+    """Per-agent evaluation settings (design D4). Every field has a default so an agent needs none of them set."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    evaluators: list[str] = []
+    sample_rate: float = Field(default=1.0, ge=0.0, le=1.0)
+    quiet_period_s: float = Field(default=20.0, ge=0.0, le=3600.0)
+    context_turns: int = Field(default=4, ge=0, le=50)
+    attention_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
+    abandon_after_s: float = Field(default=600.0, gt=0.0, le=86_400.0)
+    retention_days: int | None = Field(default=None, ge=1, le=3650)
+
+
+class AgentCreate(_BM):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=200)
+    kind: AgentKind
+    declared_model: str = Field(min_length=1, max_length=300)
+    eval_config: EvalConfigIn = EvalConfigIn()
+    rubric: list[RubricCriterionIn] | None = None
+    provider_acks: list[str] = []  # provider names being acknowledged in this same request
+
+
+class AgentSettingsUpdate(_BM):
+    model_config = ConfigDict(extra="forbid")
+
+    declared_model: str | None = Field(default=None, min_length=1, max_length=300)
+    eval_config: EvalConfigIn | None = None
+    rubric: list[RubricCriterionIn] | None = None
+    clear_rubric: bool = False
+    provider_acks: list[str] = []
+
+
+class EvaluateTurnRequest(_BM):
+    model_config = ConfigDict(extra="forbid")
+
+    evaluators: list[str] | None = None
+    rubric: list[RubricCriterionIn] | None = None
+
+
+class BulkReevaluateRequest(_BM):
+    model_config = ConfigDict(extra="forbid")
+
+    since: str | None = None
+    until: str | None = None
+    below_score: float | None = Field(default=None, ge=0.0, le=1.0)
+    evaluators: list[str] | None = None

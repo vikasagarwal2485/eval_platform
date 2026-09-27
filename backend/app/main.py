@@ -10,9 +10,10 @@ from fastapi.staticfiles import StaticFiles
 
 import app.models  # noqa: F401  (register tables)
 from app import repo
-from app.api import export, health, providers, runs, suites
+from app.api import agents, export, health, ingest, providers, runs, suites
 from app.config import Settings, load_settings
-from app.core.events import EventHub
+from app.core.eval_worker import EvaluationWorker
+from app.core.events import EventHub, agent_channel
 from app.core.model_discovery import ModelDiscovery
 from app.core.runner import Runner
 from app.core.suite_io import seed_starter_suite
@@ -34,7 +35,9 @@ def create_app(
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         await app.state.runner.start()
+        await app.state.eval_worker.start()
         yield
+        await app.state.eval_worker.stop()
         await app.state.runner.stop()
         await app.state.router.aclose()  # closes enterprise backends and the Ollama client
 
@@ -54,6 +57,17 @@ def create_app(
     )
     app.state.runner = Runner(session_factory, app.state.router, app.state.discovery, app.state.hub, settings)
 
+    async def _publish_eval_event(agent_id: int, type_: str, data: dict) -> None:
+        app.state.hub.publish(agent_channel(agent_id), type_, data)
+
+    app.state.eval_worker = EvaluationWorker(
+        session_factory,
+        app.state.router,
+        app.state.discovery,
+        is_measuring=app.state.runner.is_measuring,
+        on_event=_publish_eval_event,
+    )
+
     with session_factory() as session:
         seed_starter_suite(session)
         session.commit()
@@ -71,6 +85,8 @@ def create_app(
     app.include_router(providers.router)
     app.include_router(export.router)  # before runs: /runs/compare must not match /runs/{id}
     app.include_router(runs.router)
+    app.include_router(ingest.router)
+    app.include_router(agents.router)
     _mount_frontend(app, settings)
     return app
 

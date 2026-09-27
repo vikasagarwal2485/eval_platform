@@ -110,6 +110,85 @@ def test_0003_downgrade_removes_provider_tables_and_columns(tmp_path):
     assert "source" not in cols and "provider_kind" not in cols and "name" in cols
 
 
+def test_0004_upgrades_a_populated_0003_database(tmp_path):
+    """A database at 0003 with a real run and snapshot upgrades in place; existing runs stay readable."""
+    from alembic import command
+    from app.migrate import alembic_config
+
+    url = f"sqlite:///{tmp_path / 'at0003.db'}"
+    cfg = alembic_config(url)
+    command.upgrade(cfg, "0003")
+    eng = create_engine(url)
+    with eng.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO model_snapshot (id, name, digest, capabilities, provider_kind, source) "
+                "VALUES (1, 'qwen3:8b', 'abc123', '[]', NULL, 'local')"
+            )
+        )
+        conn.execute(
+            text(
+                "INSERT INTO run (id, name, status, config, model_ids, footprints, judge_mode, created_at) "
+                "VALUES (1, 'r', 'completed', '{}', '[1]', '{}', 'none', '2026-01-01')"
+            )
+        )
+    command.upgrade(cfg, "head")
+    tables = set(inspect(eng).get_table_names())
+    assert {"agent", "agent_session", "agent_turn", "agent_span", "turn_evaluation", "turn_judgement"} <= tables
+    with eng.connect() as conn:
+        row = conn.execute(text("SELECT name FROM run WHERE id = 1")).one()
+    assert row[0] == "r"  # existing run still reads fine
+
+
+def test_0004_downgrade_removes_agent_tables(tmp_path):
+    from alembic import command
+    from app.migrate import alembic_config
+
+    url = f"sqlite:///{tmp_path / 'down4.db'}"
+    cfg = alembic_config(url)
+    command.upgrade(cfg, "head")
+    command.downgrade(cfg, "0003")
+    tables = set(inspect(create_engine(url)).get_table_names())
+    assert not (
+        {"agent", "agent_session", "agent_turn", "agent_span", "turn_evaluation", "turn_judgement"} & tables
+    )
+
+
+def test_agent_turn_and_session_are_unique_per_agent_and_cascade(tmp_path):
+    from sqlalchemy.exc import IntegrityError
+
+    from app.db import make_engine
+    from app.migrate import upgrade_to_head
+
+    url = f"sqlite:///{tmp_path / 'agent_uq.db'}"
+    upgrade_to_head(url)
+    eng = make_engine(url)
+    with eng.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO agent (id, name, kind, declared_model, status, token_hash, token_prefix, "
+                "eval_config, provider_acks, created_at) "
+                "VALUES (1, 'bot', 'chatbot', 'qwen3:8b', 'active', 'h', 'p', '{}', '{}', '2026-01-01')"
+            )
+        )
+        conn.execute(
+            text(
+                "INSERT INTO agent_session (id, agent_id, external_id, started_at, last_event_at) "
+                "VALUES (1, 1, 's1', '2026-01-01', '2026-01-01')"
+            )
+        )
+    with pytest.raises(IntegrityError), eng.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO agent_session (agent_id, external_id, started_at, last_event_at) "
+                "VALUES (1, 's1', '2026-01-01', '2026-01-01')"
+            )
+        )
+    with eng.begin() as conn:
+        conn.execute(text("DELETE FROM agent WHERE id = 1"))  # cascades to sessions
+        assert conn.execute(text("SELECT count(*) FROM agent_session")).scalar() == 0
+
+
 def test_registered_model_is_unique_per_provider_and_cascades(tmp_path):
     from sqlalchemy.exc import IntegrityError
 

@@ -1,7 +1,11 @@
-"""In-memory per-run event hub feeding the SSE endpoint.
+"""Event hub feeding SSE endpoints, keyed by an opaque channel string (design D9).
 
-Buffered events let a reconnecting client catch up; `token` events are live-only. The database is the
-source of truth - the client resyncs via GET /api/runs/{id} (design D4).
+Buffered events let a reconnecting client catch up; `token` events are live-only. The database is the source of
+truth - a run client resyncs via GET /api/runs/{id}, an agent client via GET /api/agents/{id}/turns (design D4/D9).
+
+Existing call sites pass a bare integer `run_id`; it is transparently namespaced as `run:{id}` so it can never
+collide with an agent channel (`agent:{id}`), and their behaviour is unchanged. Agent code passes the string
+channel directly.
 """
 
 from __future__ import annotations
@@ -10,6 +14,8 @@ import asyncio
 from collections import defaultdict
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
+
+Channel = int | str
 
 TERMINAL = {"run_finished", "rescore_finished"}
 BUFFER_LIMIT = 2000
@@ -23,7 +29,7 @@ class Event:
 
 
 @dataclass
-class _RunStream:
+class _Stream:
     events: list[Event] = field(default_factory=list)
     next_id: int = 1
     active: bool = False
@@ -31,25 +37,36 @@ class _RunStream:
     current: dict = field(default_factory=dict)
 
 
+def agent_channel(agent_id: int) -> str:
+    return f"agent:{agent_id}"
+
+
 class EventHub:
     def __init__(self) -> None:
-        self._runs: dict[int, _RunStream] = defaultdict(_RunStream)
+        self._streams: dict[str, _Stream] = defaultdict(_Stream)
 
-    def begin(self, run_id: int) -> None:
-        """A new job for this run starts: reset the buffer."""
-        s = self._runs[run_id]
+    @staticmethod
+    def _key(channel: Channel) -> str:
+        return f"run:{channel}" if isinstance(channel, int) else channel
+
+    def begin(self, channel: Channel) -> None:
+        """A new job for this channel starts: reset the buffer. Runs only - agent channels are continuous and
+        never `begin()` (there is no job to reset between)."""
+        s = self._streams[self._key(channel)]
         s.events.clear()
         s.current = {}
         s.active = True
 
-    def is_active(self, run_id: int) -> bool:
-        return run_id in self._runs and self._runs[run_id].active
+    def is_active(self, channel: Channel) -> bool:
+        k = self._key(channel)
+        return k in self._streams and self._streams[k].active
 
-    def current(self, run_id: int) -> dict:
-        return dict(self._runs[run_id].current) if run_id in self._runs else {}
+    def current(self, channel: Channel) -> dict:
+        k = self._key(channel)
+        return dict(self._streams[k].current) if k in self._streams else {}
 
-    def publish(self, run_id: int, type_: str, data: dict | None = None) -> Event:
-        s = self._runs[run_id]
+    def publish(self, channel: Channel, type_: str, data: dict | None = None) -> Event:
+        s = self._streams[self._key(channel)]
         data = data or {}
         if type_ in ("model_started", "request_started"):
             s.current.update({k: v for k, v in data.items() if k in ("model", "case_id", "case_title", "repeat")})
@@ -65,9 +82,9 @@ class EventHub:
             q.put_nowait(ev)
         return ev
 
-    async def subscribe(self, run_id: int, after: int = 0) -> AsyncIterator[Event]:
-        """Yield buffered events after `after`, then live ones, until a terminal event or inactivity."""
-        s = self._runs[run_id]
+    async def subscribe(self, channel: Channel, after: int = 0) -> AsyncIterator[Event]:
+        """Yield buffered events after `after`, then live ones, until a terminal event or inactivity (runs)."""
+        s = self._streams[self._key(channel)]
         q: asyncio.Queue = asyncio.Queue()
         backlog = [e for e in s.events if e.id > after]
         s.subscribers.append(q)
@@ -85,5 +102,23 @@ class EventHub:
                 yield e
                 if e.type in TERMINAL:
                     return
+        finally:
+            s.subscribers.remove(q)
+
+    async def subscribe_open(self, channel: Channel, after: int = 0) -> AsyncIterator[Event]:
+        """Like `subscribe`, but for a channel with no terminal event (an agent's live feed): it never stops on
+        its own, only when the caller stops iterating (the client disconnects)."""
+        s = self._streams[self._key(channel)]
+        q: asyncio.Queue = asyncio.Queue()
+        backlog = [e for e in s.events if e.id > after]
+        s.subscribers.append(q)
+        try:
+            for e in backlog:
+                yield e
+            while True:
+                e = await q.get()
+                if e.id <= after:
+                    continue
+                yield e
         finally:
             s.subscribers.remove(q)

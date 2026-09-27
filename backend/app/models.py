@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
@@ -209,3 +209,141 @@ class Judgement(Base):
     outcome: Mapped[str] = mapped_column(String(20))  # judged | error
     detail: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+# ------------------------------------------------------------------ live agent evaluation (design D4)
+class Agent(Base):
+    """A registered deployed agent. Holds only a hash of its ingest token, never the token (mirrors Provider/D4)."""
+
+    __tablename__ = "agent"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(200), unique=True)
+    kind: Mapped[str] = mapped_column(String(20))  # chatbot | reasoning
+    declared_model: Mapped[str] = mapped_column(String(300), default="")
+    status: Mapped[str] = mapped_column(String(20), default="active")  # active | paused
+    token_hash: Mapped[str] = mapped_column(String(100))
+    token_prefix: Mapped[str] = mapped_column(String(16))
+    eval_config: Mapped[dict] = mapped_column(JSON, default=dict)
+    rubric: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    provider_acks: Mapped[dict] = mapped_column(JSON, default=dict)  # provider name -> ack timestamp (iso)
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    sessions: Mapped[list[AgentSession]] = relationship(back_populates="agent", cascade="all, delete-orphan")
+    turns: Mapped[list[AgentTurn]] = relationship(back_populates="agent", cascade="all, delete-orphan")
+
+
+class AgentSession(Base):
+    __tablename__ = "agent_session"
+    __table_args__ = (UniqueConstraint("agent_id", "external_id", name="uq_agent_session_external"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    agent_id: Mapped[int] = mapped_column(ForeignKey("agent.id", ondelete="CASCADE"), index=True)
+    external_id: Mapped[str] = mapped_column(String(200))  # the agent's own session id
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    last_event_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    agent: Mapped[Agent] = relationship(back_populates="sessions")
+    turns: Mapped[list[AgentTurn]] = relationship(back_populates="session", cascade="all, delete-orphan")
+
+
+class AgentTurn(Base):
+    __tablename__ = "agent_turn"
+    __table_args__ = (
+        UniqueConstraint("agent_id", "external_id", name="uq_agent_turn_external"),
+        Index("ix_agent_turn_agent_ended", "agent_id", "ended_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    agent_id: Mapped[int] = mapped_column(ForeignKey("agent.id", ondelete="CASCADE"), index=True)
+    session_id: Mapped[int] = mapped_column(ForeignKey("agent_session.id", ondelete="CASCADE"), index=True)
+    external_id: Mapped[str] = mapped_column(String(200))  # the agent's own turn id
+    seq: Mapped[int] = mapped_column(Integer, default=0)  # order within the session (by first-seen)
+    input: Mapped[str] = mapped_column(Text, default="")
+    output: Mapped[str] = mapped_column(Text, default="")
+    reference: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # open (turn.start seen, no turn.end yet) | ok | error | abandoned
+    status: Mapped[str] = mapped_column(String(20), default="open", index=True)
+    models: Mapped[list] = mapped_column(JSON, default=list)  # distinct model refs used by this turn's llm spans
+    models_unknown: Mapped[bool] = mapped_column(Boolean, default=False)  # an llm span reported no model
+    truncated: Mapped[bool] = mapped_column(Boolean, default=False)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    latency_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+    prompt_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    completion_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    agent: Mapped[Agent] = relationship(back_populates="turns")
+    session: Mapped[AgentSession] = relationship(back_populates="turns")
+    spans: Mapped[list[AgentSpan]] = relationship(
+        back_populates="turn", cascade="all, delete-orphan", order_by="AgentSpan.id"
+    )
+    evaluations: Mapped[list[TurnEvaluation]] = relationship(back_populates="turn", cascade="all, delete-orphan")
+
+
+class AgentSpan(Base):
+    __tablename__ = "agent_span"
+    __table_args__ = (UniqueConstraint("turn_id", "external_id", name="uq_agent_span_external"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    turn_id: Mapped[int] = mapped_column(ForeignKey("agent_turn.id", ondelete="CASCADE"), index=True)
+    external_id: Mapped[str] = mapped_column(String(200))
+    kind: Mapped[str] = mapped_column(String(10))  # llm | tool
+    model: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    name: Mapped[str | None] = mapped_column(String(200), nullable=True)  # tool name
+    input: Mapped[dict] = mapped_column(JSON, default=dict)
+    output: Mapped[str] = mapped_column(Text, default="")
+    thinking: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    latency_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+    ttft_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+    prompt_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    completion_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    turn: Mapped[AgentTurn] = relationship(back_populates="spans")
+
+
+class TurnEvaluation(Base):
+    """The per-turn aggregate (analogue of Score) - one current row per (turn, attempt_no)."""
+
+    __tablename__ = "turn_evaluation"
+    __table_args__ = (UniqueConstraint("turn_id", "attempt_no", name="uq_turn_evaluation_attempt"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    turn_id: Mapped[int] = mapped_column(ForeignKey("agent_turn.id", ondelete="CASCADE"), index=True)
+    attempt_no: Mapped[int] = mapped_column(Integer, default=1)
+    # pending | running | done | skipped | error
+    status: Mapped[str] = mapped_column(String(20), default="pending", index=True)
+    skip_reason: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    rubric: Mapped[list] = mapped_column(JSON, default=list)  # snapshotted at creation time
+    evaluators: Mapped[list] = mapped_column(JSON, default=list)  # configured evaluator refs at creation time
+    value: Mapped[float | None] = mapped_column(Float, nullable=True)
+    detail: Mapped[dict] = mapped_column(JSON, default=dict)
+    reference_result: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # separate correctness check
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    turn: Mapped[AgentTurn] = relationship(back_populates="evaluations")
+    judgements: Mapped[list[TurnJudgement]] = relationship(back_populates="evaluation", cascade="all, delete-orphan")
+
+
+class TurnJudgement(Base):
+    """One evaluator's verdict on one turn (analogue of Judgement)."""
+
+    __tablename__ = "turn_judgement"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    evaluation_id: Mapped[int] = mapped_column(ForeignKey("turn_evaluation.id", ondelete="CASCADE"), index=True)
+    judge_model: Mapped[str] = mapped_column(String(300))
+    value: Mapped[float | None] = mapped_column(Float, nullable=True)
+    outcome: Mapped[str] = mapped_column(String(20))  # judged | error
+    detail: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    evaluation: Mapped[TurnEvaluation] = relationship(back_populates="judgements")

@@ -680,3 +680,35 @@ details > summary {
   margin: 0;
   font-weight: 400;
 }
+
+/* agents */
+.agent-card {
+  display: block;
+  text-decoration: none;
+  color: inherit;
+}
+.agent-card:hover {
+  border-color: var(--accent);
+}
+.turn-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 70vh;
+  overflow: auto;
+}
+.turn-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  text-align: left;
+  align-items: flex-start;
+}
+.turn-row.selected {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}

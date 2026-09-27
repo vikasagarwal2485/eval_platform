@@ -415,3 +415,203 @@ describe('enterprise providers accessibility (6.6)', () => {
     expect(card).toBeInTheDocument();
   });
 });
+
+describe('live agent evaluation accessibility (6.6)', () => {
+  const agentFixture = (over = {}) => ({
+    id: 1,
+    name: 'demo-chatbot',
+    kind: 'chatbot',
+    declared_model: 'qwen3:8b',
+    status: 'active',
+    liveness: 'idle',
+    token_prefix: 'abcd1234',
+    eval_config: {
+      evaluators: ['llama3:8b'],
+      sample_rate: 1,
+      quiet_period_s: 20,
+      context_turns: 4,
+      attention_threshold: 0.5,
+      abandon_after_s: 600,
+      retention_days: null,
+    },
+    rubric: null,
+    provider_acks: [],
+    last_seen_at: '2026-01-01T00:00:00Z',
+    created_at: '2026-01-01T00:00:00Z',
+    ...over,
+  });
+
+  const agentTurn = (over = {}) => ({
+    id: 5,
+    external_id: 't1',
+    session_id: 's1',
+    seq: 0,
+    status: 'ok',
+    input: 'What is the weather like?',
+    output: "I don't have live weather access, but I can help with something else.",
+    reference: null,
+    error: null,
+    models: ['qwen3:8b'],
+    models_unknown: false,
+    truncated: false,
+    latency_ms: 120,
+    prompt_tokens: 12,
+    completion_tokens: 20,
+    started_at: '2026-01-01T00:00:00Z',
+    ended_at: '2026-01-01T00:00:01Z',
+    latest_evaluation: { status: 'done', value: 0.8 },
+    ...over,
+  });
+
+  const agentTurnDetail = {
+    ...agentTurn(),
+    spans: [
+      {
+        id: 1,
+        kind: 'llm',
+        model: 'qwen3:8b',
+        name: null,
+        input: {},
+        output: agentTurn().output,
+        thinking: null,
+        error: null,
+        started_at: null,
+        ended_at: null,
+        latency_ms: 100,
+        ttft_ms: null,
+        prompt_tokens: 12,
+        completion_tokens: 20,
+      },
+    ],
+    evaluations: [
+      {
+        id: 9,
+        attempt_no: 1,
+        status: 'done',
+        skip_reason: null,
+        evaluators: ['llama3:8b'],
+        rubric: [],
+        value: 0.8,
+        detail: {
+          self_judged: false,
+          judges_used: 1,
+          judgements: [
+            {
+              judge_model: 'llama3:8b',
+              value: 0.8,
+              outcome: 'judged',
+              detail: { criteria: { Relevance: { score: 4, reason: 'on topic' } } },
+            },
+          ],
+        },
+        reference_result: null,
+        created_at: '2026-01-01T00:00:01Z',
+        finished_at: '2026-01-01T00:00:02Z',
+      },
+    ],
+  };
+
+  const agentSummaryFixture = {
+    window: '24h',
+    turns: { total: 1, ok: 1 },
+    quality: { mean: 0.8, evaluated: 1, below_threshold: 0, threshold: 0.5 },
+    latency_ms: { p50: 100, p95: 150 },
+    error_rate: 0,
+    tokens: { prompt: 12, completion: 20 },
+    evaluators: [{ model: 'llama3:8b', mean_score: 0.8, judged: 1, errors: 0 }],
+    backlog: { pending: 0, skipped: {} },
+    series: [{ bucket: '2026-01-01T00:00', count: 1, quality_mean: 0.8 }],
+  };
+
+  const agentRoutes = {
+    ...baseRoutes,
+    'GET /agents': [agentFixture()],
+    'GET /agents/1': agentFixture(),
+    'GET /agents/1/turns': [agentTurn()],
+    'GET /agents/1/turns/5': agentTurnDetail,
+    'GET /agents/1/summary': agentSummaryFixture,
+    'GET /agents/1/attention': [],
+  };
+
+  const appWith = (path: string, r: Record<string, unknown>) => {
+    vi.stubGlobal('EventSource', FakeEventSource);
+    mockApi(r);
+    return renderApp(<App />, { route: path, path: '*', stubLive: false });
+  };
+
+  it('agents list: empty state', async () => {
+    appWith('/agents', { ...baseRoutes, 'GET /agents': [] });
+    expect(await screen.findByText('No agents connected yet')).toBeInTheDocument();
+    expect(await audit()).toEqual([]);
+  });
+
+  it('agents list: with a registered agent', async () => {
+    appWith('/agents', agentRoutes);
+    expect(await screen.findByRole('link', { name: /demo-chatbot/ })).toBeInTheDocument();
+    expect(await audit()).toEqual([]);
+  });
+
+  it('agent detail: live tab', async () => {
+    appWith('/agents/1', agentRoutes);
+    await screen.findByText('What is the weather like?', { exact: false });
+    expect(await audit()).toEqual([]);
+  });
+
+  it('agent detail: conversations tab with the per-evaluator breakdown open', async () => {
+    const user = userEvent.setup();
+    appWith('/agents/1', agentRoutes);
+    await user.click(await screen.findByRole('tab', { name: 'Conversations' }));
+    await user.click(await screen.findByText('What is the weather like?', { exact: false }));
+    await screen.findByText('llama3:8b');
+    expect(await audit()).toEqual([]);
+  });
+
+  it('agent detail: quality tab', async () => {
+    const user = userEvent.setup();
+    appWith('/agents/1', agentRoutes);
+    await user.click(await screen.findByRole('tab', { name: 'Quality' }));
+    await screen.findByRole('heading', { name: 'Evaluator strictness' });
+    expect(await audit()).toEqual([]);
+  });
+
+  it('agent detail: settings tab with the evaluator picker', async () => {
+    const user = userEvent.setup();
+    appWith('/agents/1', agentRoutes);
+    await user.click(await screen.findByRole('tab', { name: 'Settings' }));
+    await screen.findByRole('group', { name: 'Evaluators' });
+    expect(await audit()).toEqual([]);
+  });
+
+  it('agent detail: self-evaluator is disabled with an accessible description', async () => {
+    appWith('/agents/1', agentRoutes);
+    await userEvent.setup().click(await screen.findByRole('tab', { name: 'Settings' }));
+    const own = await screen.findByRole('checkbox', { name: 'qwen3:8b' });
+    expect(own).toBeDisabled();
+    expect(own).toHaveAccessibleDescription(/cannot evaluate its own declared model/);
+  });
+
+  it('agent detail: hosted evaluator needing acknowledgment is explained', async () => {
+    appWith('/agents/1', { ...agentRoutes, 'GET /models': [...MODELS, ...CLOUD_MODELS] });
+    await userEvent.setup().click(await screen.findByRole('tab', { name: 'Settings' }));
+    const gpt = await screen.findByRole('checkbox', { name: '@oa/gpt-4o' });
+    expect(gpt).toHaveAccessibleDescription(/Acknowledge data sharing/);
+    expect(await audit()).toEqual([]);
+  });
+
+  it('agent detail: tabs are keyboard-operable with accessible names', async () => {
+    appWith('/agents/1', agentRoutes);
+    const tabs = await screen.findAllByRole('tab');
+    for (const t of tabs) expect(t).toHaveAccessibleName();
+    tabs[0].focus();
+    expect(tabs[0]).toHaveFocus();
+  });
+
+  it('agent detail: every control has an accessible name', async () => {
+    const user = userEvent.setup();
+    appWith('/agents/1', agentRoutes);
+    await user.click(await screen.findByRole('tab', { name: 'Settings' }));
+    await screen.findByRole('group', { name: 'Evaluators' });
+    for (const b of screen.getAllByRole('button')) expect(b).toHaveAccessibleName();
+    for (const c of screen.getAllByRole('checkbox')) expect(c).toHaveAccessibleName();
+  });
+});
