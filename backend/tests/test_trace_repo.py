@@ -93,6 +93,32 @@ def test_turn_end_before_start_creates_and_closes_the_turn(session):
     assert turn.status == "ok"  # still closed
 
 
+def test_turn_end_arriving_in_a_separate_request_from_turn_start(session_factory):
+    """Regression: a real agent sends `turn.start` immediately and `turn.end` only once its LLM call returns,
+    so - unlike every test above - they arrive as *separate* ingest requests, each with its own session. Reading
+    `turn.started_at` back fresh from SQLite (naive) and subtracting it from a same-request-parsed `ended_at`
+    (aware) must not raise, or the whole `turn.end` batch 500s and the turn is stuck open forever."""
+    with session_factory() as s1:
+        agent = _agent(s1)
+        turn = _turn(s1, agent)
+        repo.apply_turn_start(s1, turn, _start())
+        s1.commit()
+        turn_id = turn.id
+
+    # a brand new session, as a separate HTTP request would get via `Depends(get_session)`
+    with session_factory() as s2:
+        turn = repo.get_turn(s2, turn_id)
+        repo.apply_span(s2, turn, _span())
+        repo.apply_turn_end(s2, turn, _end())  # must not raise TypeError (naive vs aware datetimes)
+        s2.commit()
+
+    with session_factory() as s3:
+        turn = repo.get_turn(s3, turn_id)
+        assert turn.status == "ok"
+        assert turn.output == "hello"
+        assert turn.latency_ms is not None and turn.latency_ms >= 0
+
+
 def test_llm_span_without_model_flags_unknown(session):
     agent = _agent(session)
     turn = _turn(session, agent)

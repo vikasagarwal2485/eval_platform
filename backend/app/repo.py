@@ -743,7 +743,13 @@ def apply_turn_end(session: Session, turn: AgentTurn, event, *, was_truncated: b
         turn.ended_at = _parse_event_ts(event.ts) or utcnow()
         turn.truncated = turn.truncated or was_truncated
         if turn.started_at:
-            turn.latency_ms = max((turn.ended_at - turn.started_at).total_seconds() * 1000, 0.0)
+            # `turn.started_at` may have been loaded fresh from SQLite in *this* request (naive) while
+            # `turn.ended_at` was just parsed from the event's own ISO string (aware) - normalize both before
+            # subtracting, or a turn whose start and end arrive in separate ingest requests (the normal case for
+            # a real agent, since turn.start is sent immediately and turn.end only after the LLM responds)
+            # raises `TypeError: can't subtract offset-naive and offset-aware datetimes` here and the whole
+            # batch 500s, silently dropping the span and turn.end (design.md D-context `_aware`).
+            turn.latency_ms = max((_aware(turn.ended_at) - _aware(turn.started_at)).total_seconds() * 1000, 0.0)
         turn.prompt_tokens = sum(s.prompt_tokens or 0 for s in turn.spans) or None
         turn.completion_tokens = sum(s.completion_tokens or 0 for s in turn.spans) or None
     session.flush()

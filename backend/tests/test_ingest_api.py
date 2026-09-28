@@ -58,6 +58,27 @@ def test_batch_accepted_and_stored(settings, file_session_factory):
         assert repo.get_agent(session, agent_id).last_seen_at is not None
 
 
+def test_turn_end_in_a_later_request_than_turn_start(settings, file_session_factory):
+    """Regression: a real agent (and the reference SDK) sends `turn.start` the instant a turn begins and
+    `turn.end` only once its LLM call returns - two *separate* requests, not one batch like `_events()` above.
+    `turn.started_at` is then read back fresh from the database in the second request; subtracting it from the
+    freshly-parsed `ended_at` must not raise (naive vs. aware datetimes), or the whole `turn.end` request 500s
+    and the turn is stuck `open` until the abandonment sweep - exactly the reported "output is never fed" bug."""
+    events = _events()
+    agent_id, token = _make_agent(file_session_factory)
+    with new_client(settings, file_session_factory, FakeOllama()) as c:
+        r = c.post("/api/ingest/v1/events", json=[events[0]], headers={"Authorization": f"Bearer {token}"})
+        assert r.status_code == 200, r.text
+        r = c.post("/api/ingest/v1/events", json=events[1:], headers={"Authorization": f"Bearer {token}"})
+        assert r.status_code == 200, r.text  # must not 500
+        assert r.json() == {"accepted": 2, "duplicates": 0, "rejected": []}
+    with file_session_factory() as session:
+        turn = repo.list_turns(session, agent_id)[0]
+        assert turn.status == "ok"
+        assert turn.output == "hello"
+        assert turn.latency_ms is not None
+
+
 def test_retried_batch_is_all_duplicates(settings, file_session_factory):
     _, token = _make_agent(file_session_factory)
     with new_client(settings, file_session_factory, FakeOllama()) as c:
