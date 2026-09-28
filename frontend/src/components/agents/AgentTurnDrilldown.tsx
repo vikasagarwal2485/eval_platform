@@ -56,8 +56,8 @@ function EvaluationBlock({ evaluation, open }: { evaluation: AgentEvaluation; op
           <li key={j.judge_model}>
             <strong>{j.judge_model}</strong>{' '}
             {j.outcome === 'judged' ? fmtPct(j.value) : <span className="badge bad">failed</span>}{' '}
-            {j.outcome === 'error' && <span className="muted">{j.detail.error}</span>}
-            <CriteriaList criteria={j.detail.criteria} />
+            {j.outcome === 'error' && <span className="muted">{j.error}</span>}
+            <CriteriaList criteria={j.criteria} />
           </li>
         ))}
       </ul>

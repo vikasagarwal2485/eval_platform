@@ -434,16 +434,17 @@ export interface AgentSettingsUpdate {
 export type TurnStatus = 'open' | 'ok' | 'error' | 'abandoned';
 export type EvaluationStatus = 'pending' | 'running' | 'done' | 'skipped' | 'error';
 
+/** API-facing view of one evaluator's verdict (backend `judgement_summary`) - a flat shape, not nested under a
+ * `detail` key: only the aggregate `AgentEvaluation.detail` wraps things. */
 export interface AgentJudgement {
   judge_model: string;
   value: number | null;
   outcome: 'judged' | 'error';
-  detail: {
-    criteria?: Record<string, { score: number; reason: string }>;
-    error?: string;
-    raw_mean?: number;
-    [key: string]: unknown;
-  };
+  criteria?: Record<string, { score: number; reason: string }>;
+  raw_mean?: number;
+  error?: string;
+  attempts?: number;
+  judge_metrics?: unknown;
 }
 export interface AgentEvaluation {
   id: number;

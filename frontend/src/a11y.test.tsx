@@ -500,7 +500,7 @@ describe('live agent evaluation accessibility (6.6)', () => {
               judge_model: 'llama3:8b',
               value: 0.8,
               outcome: 'judged',
-              detail: { criteria: { Relevance: { score: 4, reason: 'on topic' } } },
+              criteria: { Relevance: { score: 4, reason: 'on topic' } },
             },
           ],
         },

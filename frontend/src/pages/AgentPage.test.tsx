@@ -148,7 +148,7 @@ const TURN_DETAIL = {
             judge_model: 'judge:1',
             value: 0.8,
             outcome: 'judged',
-            detail: { criteria: { Relevance: { score: 4, reason: 'good' } } },
+            criteria: { Relevance: { score: 4, reason: 'good' } },
           },
         ],
       },

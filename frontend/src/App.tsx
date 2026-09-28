@@ -1,6 +1,7 @@
-import { NavLink, Route, Routes } from 'react-router-dom';
+import { NavLink, Route, Routes, useLocation } from 'react-router-dom';
 import AgentPage from './pages/AgentPage';
 import AgentsPage from './pages/AgentsPage';
+import ErrorBoundary from './components/ErrorBoundary';
 import HistoryPage from './pages/HistoryPage';
 import NotFound from './pages/NotFound';
 import ProvidersPage from './pages/ProvidersPage';
@@ -29,17 +30,19 @@ export default function App() {
         <span className="spacer" />
       </header>
       <main id="main">
-        <Routes>
-          <Route path="/" element={<RunSetupPage />} />
-          <Route path="/runs/:id/live" element={<RunLivePage />} />
-          <Route path="/runs/:id" element={<ResultsPage />} />
-          <Route path="/suites" element={<SuitesPage />} />
-          <Route path="/providers" element={<ProvidersPage />} />
-          <Route path="/agents" element={<AgentsPage />} />
-          <Route path="/agents/:id" element={<AgentPage />} />
-          <Route path="/history" element={<HistoryPage />} />
-          <Route path="*" element={<NotFound />} />
-        </Routes>
+        <ErrorBoundary key={useLocation().pathname}>
+          <Routes>
+            <Route path="/" element={<RunSetupPage />} />
+            <Route path="/runs/:id/live" element={<RunLivePage />} />
+            <Route path="/runs/:id" element={<ResultsPage />} />
+            <Route path="/suites" element={<SuitesPage />} />
+            <Route path="/providers" element={<ProvidersPage />} />
+            <Route path="/agents" element={<AgentsPage />} />
+            <Route path="/agents/:id" element={<AgentPage />} />
+            <Route path="/history" element={<HistoryPage />} />
+            <Route path="*" element={<NotFound />} />
+          </Routes>
+        </ErrorBoundary>
       </main>
     </>
   );
