@@ -68,7 +68,9 @@ def test_oversized_output_is_truncated_not_rejected():
 
 
 def test_unknown_event_type_is_rejected_individually():
-    result = validate_batch([_turn_start(), {"v": 1, "event_id": "e9", "session_id": "s1", "turn_id": "t1", "type": "span.delta"}])
+    result = validate_batch(
+        [_turn_start(), {"v": 1, "event_id": "e9", "session_id": "s1", "turn_id": "t1", "type": "span.delta"}]
+    )
     assert len(result.accepted) == 1
     assert len(result.rejected) == 1
 

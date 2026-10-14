@@ -30,7 +30,9 @@ class _FailingOllamaResponse:
     """Simulates a 404 (e.g. --model not pulled): raise_for_status() raises, as httpx does for real."""
 
     def raise_for_status(self) -> None:
-        raise httpx.HTTPStatusError("404 Not Found", request=httpx.Request("POST", "http://x"), response=httpx.Response(404))
+        raise httpx.HTTPStatusError(
+            "404 Not Found", request=httpx.Request("POST", "http://x"), response=httpx.Response(404)
+        )
 
 
 def _platform_handler(received: list):
@@ -51,7 +53,12 @@ def test_chatbot_one_exchange_produces_one_turn_one_span(monkeypatch):
     monkeypatch.setattr(chatbot.httpx, "post", fake_post)
 
     received: list = []
-    client = AgentClient("http://platform.local", "tok", transport=httpx.MockTransport(_platform_handler(received)), flush_interval_s=0.02)
+    client = AgentClient(
+        "http://platform.local",
+        "tok",
+        transport=httpx.MockTransport(_platform_handler(received)),
+        flush_interval_s=0.02,
+    )
     chatbot.answer(client, "s1", "qwen3:8b", "http://ollama.local", chatbot.DEFAULT_SYSTEM_PROMPT, [], "hi")
     client.close(timeout_s=2.0)
 
@@ -72,7 +79,12 @@ def test_reasoning_agent_one_problem_produces_three_spans_under_one_turn(monkeyp
     monkeypatch.setattr(reasoning_agent.httpx, "post", fake_post)
 
     received: list = []
-    client = AgentClient("http://platform.local", "tok", transport=httpx.MockTransport(_platform_handler(received)), flush_interval_s=0.02)
+    client = AgentClient(
+        "http://platform.local",
+        "tok",
+        transport=httpx.MockTransport(_platform_handler(received)),
+        flush_interval_s=0.02,
+    )
     final = reasoning_agent.solve_one(client, "s1", "qwen3:8b", "http://ollama.local", "2+3?", reference="5")
     client.close(timeout_s=2.0)
 
@@ -99,7 +111,10 @@ def test_chatbot_repl_survives_a_failed_call_and_keeps_taking_input(monkeypatch,
 
     received: list = []
     client = AgentClient(
-        "http://platform.local", "tok", transport=httpx.MockTransport(_platform_handler(received)), flush_interval_s=0.02
+        "http://platform.local",
+        "tok",
+        transport=httpx.MockTransport(_platform_handler(received)),
+        flush_interval_s=0.02,
     )
     chatbot.run_repl(client, "qwen3:8b", "http://ollama.local", chatbot.DEFAULT_SYSTEM_PROMPT)  # must not raise
     client.close(timeout_s=2.0)
@@ -139,7 +154,10 @@ def test_reasoning_agent_suite_mode_continues_past_a_connection_failure(tmp_path
 
     received: list = []
     client = AgentClient(
-        "http://platform.local", "tok", transport=httpx.MockTransport(_platform_handler(received)), flush_interval_s=0.02
+        "http://platform.local",
+        "tok",
+        transport=httpx.MockTransport(_platform_handler(received)),
+        flush_interval_s=0.02,
     )
     reasoning_agent.run_suite(client, "qwen3:8b", "http://ollama.local", suite)  # must not raise
     client.close(timeout_s=2.0)
@@ -168,7 +186,12 @@ def test_reasoning_agent_suite_mode_sends_expected_answer_as_reference(tmp_path,
     monkeypatch.setattr(reasoning_agent.httpx, "post", fake_post)
 
     received: list = []
-    client = AgentClient("http://platform.local", "tok", transport=httpx.MockTransport(_platform_handler(received)), flush_interval_s=0.02)
+    client = AgentClient(
+        "http://platform.local",
+        "tok",
+        transport=httpx.MockTransport(_platform_handler(received)),
+        flush_interval_s=0.02,
+    )
     reasoning_agent.run_suite(client, "qwen3:8b", "http://ollama.local", suite)
     client.close(timeout_s=2.0)
 

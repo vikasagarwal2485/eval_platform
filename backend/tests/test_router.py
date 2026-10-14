@@ -16,7 +16,16 @@ class FakeBackend:
         self.kind, self.cfg, self.calls, self.closed = cfg.kind, cfg, [], False
 
     async def chat_stream(
-        self, *, model, messages, options=None, think=None, format=None, keep_alive=None, reasoning=False
+        self,
+        *,
+        model,
+        messages,
+        options=None,
+        think=None,
+        format=None,
+        keep_alive=None,
+        reasoning=False,
+        reasoning_effort=None,
     ):
         self.calls.append(
             {
@@ -26,6 +35,7 @@ class FakeBackend:
                 "think": think,
                 "format": format,
                 "reasoning": reasoning,
+                "reasoning_effort": reasoning_effort,
             }
         )
         for c in make_stream(f"cloud:{self.cfg.name}:{model}"):
@@ -34,7 +44,7 @@ class FakeBackend:
     async def list_models(self):
         return []
 
-    async def ping(self):
+    async def ping(self, model=None, reasoning=False):
         pass
 
     async def aclose(self):
@@ -49,7 +59,7 @@ def router(session_factory):
             s, kind="anthropic", name="an", key_env="AN_KEY", base_url="https://gw.example", ack_at=None
         )
         repo.add_registered_model(s, p.id, "gpt-4o")
-        repo.add_registered_model(s, p.id, "o3", reasoning=True)
+        repo.add_registered_model(s, p.id, "o3", reasoning=True, reasoning_effort="low")
         repo.add_registered_model(s, q.id, "gpt-4o")  # same id, different provider
         repo.add_registered_model(s, p.id, "off", enabled=False)
         s.commit()
@@ -76,8 +86,10 @@ def test_capability_flags():
     oa, an = caps_for_kind("openai"), caps_for_kind("anthropic")
     assert not (oa.warmup or oa.unload or oa.footprint or oa.context_size) and oa.seed is True
     assert not (an.warmup or an.unload or an.footprint or an.context_size) and an.seed is False
+    az = caps_for_kind("azure-openai")
+    assert not (az.warmup or az.unload or az.footprint or az.context_size) and az.seed is True
     assert not any([caps_for_kind("mystery").warmup, caps_for_kind("mystery").unload, caps_for_kind("mystery").seed])
-    assert set(CLOUD_CAPS) == {"openai", "anthropic"}
+    assert set(CLOUD_CAPS) == {"openai", "anthropic", "azure-openai"}
 
 
 # ---------------------------------------------------------------- routing
@@ -113,6 +125,7 @@ async def test_reasoning_flag_comes_from_the_registry(router):
     await collect(router.chat_stream(model="@oa/gpt-4o", messages=[]))
     calls = next(iter(router._backends.values())).calls
     assert [c["reasoning"] for c in calls] == [True, False]
+    assert [c["reasoning_effort"] for c in calls] == ["low", None]
 
 
 async def test_same_model_id_under_two_providers_uses_two_backends(router):

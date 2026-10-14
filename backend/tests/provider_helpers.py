@@ -37,11 +37,12 @@ def make(
     jitter=lambda: 1.0,
     name="prov",
     key_env="PROV_KEY",
+    api_version: str | None = None,
 ):
     env = {key_env: key} if key is not None else {}
     keys = KeyProvider(env)
     backend = cls(
-        ProviderConfig(kind, name, key_env, url),
+        ProviderConfig(kind, name, key_env, url, api_version),
         keys,
         Redactor(lambda: [v for v in env.values()]),
         settings(retries, backoff, cap),

@@ -1,5 +1,6 @@
 """5.5: no API key value may reach the database, any API response, an export, the event stream, logs or stored errors."""
 
+import json
 import logging
 from datetime import UTC, datetime
 
@@ -9,13 +10,18 @@ from fastapi.testclient import TestClient
 from app import repo
 from app.main import create_app
 from app.providers.secrets import Redactor
-from tests.fake_providers import FakeAnthropic, FakeOpenAI, Step
+from tests.fake_providers import FakeAnthropic, FakeAzureOpenAI, FakeOpenAI, Step
 from tests.fakes import FakeOllama, make_tag
 from tests.helpers import GEN, make_responder, wait_for
 
 SENTINEL = "sk-proj-LEAKCHECK0123456789abcdefghijKLMN"
 PARTIAL = SENTINEL[10:30]  # a long stretch of the key: partial echoes count as leaks too
 GPT, O3, CLAUDE = "@oa/gpt-4o", "@oa/o3", "@an/claude"
+
+# Azure keys are plain hex strings with no "sk-" prefix, so this one is NOT caught by the generic sk-...
+# patterns in Redactor - only by the exact/partial match against the provider's own registered secret (design D4).
+AZURE_SENTINEL = "07b74ccaabcdef0123456789abcdef012e"
+AZURE_PARTIAL = AZURE_SENTINEL[5:25]
 
 
 def find_leaks(text: str) -> list[str]:
@@ -171,3 +177,84 @@ def test_a_run_whose_errors_do_not_echo_the_key_is_also_clean(stack):
 def test_find_leaks_helper_flags_full_and_partial_keys():
     assert find_leaks("x") == [] and find_leaks(f"a {SENTINEL} b") == ["full key", "partial key"]
     assert find_leaks(f"key ends {PARTIAL} ...") == ["partial key"]
+
+
+# ---------------------------------------------------------------- 5.3: Azure OpenAI's key shape
+def find_azure_leaks(text: str) -> list[str]:
+    return [what for what, needle in (("full key", AZURE_SENTINEL), ("partial key", AZURE_PARTIAL)) if needle in text]
+
+
+@pytest.fixture
+def azure_stack(settings, file_session_factory, monkeypatch):
+    monkeypatch.setenv("AZ_KEY", AZURE_SENTINEL)
+    az = FakeAzureOpenAI()
+    az.expected_key = AZURE_SENTINEL
+    az_url = az.start()
+    with file_session_factory() as s:
+        p = repo.create_provider(
+            s,
+            kind="azure-openai",
+            name="az",
+            key_env="AZ_KEY",
+            base_url=az_url,
+            api_version="2024-12-01-preview",
+            ack_at=datetime.now(UTC),
+        )
+        repo.add_registered_model(s, p.id, "o3-mini")
+        s.commit()
+    fake = FakeOllama([make_tag("qwen3:8b")], make_responder())
+    with TestClient(create_app(settings, ollama=fake, session_factory=file_session_factory)) as client:
+        yield client, az, file_session_factory
+    az.stop()
+
+
+def _azure_leak_scenario(client, az) -> int:
+    az.script.extend([Step(kind="status", status=401, body={"error": {"message": f"Invalid key: {AZURE_SENTINEL}"}})])
+    r = client.post("/api/runs", json={"models": ["@az/o3-mini"], "adhoc_cases": [GEN], "config": {"warmup": False}})
+    assert r.status_code == 201, r.text
+    run_id = r.json()["id"]
+    wait_for(client, run_id, timeout=30)
+    return run_id
+
+
+def _azure_haystack(client, run_id: int, pid: int) -> str:
+    payload = {
+        "providers": client.get("/api/providers").json(),
+        "provider": client.get(f"/api/providers/{pid}").json(),
+        "results": client.get(f"/api/runs/{run_id}/results").json(),
+        "summary": client.get(f"/api/runs/{run_id}/summary").json(),
+        "export_json": client.get(f"/api/runs/{run_id}/export?format=json").json(),
+        "export_csv": client.get(f"/api/runs/{run_id}/export?format=csv").text,
+        "test_connection": client.post(f"/api/providers/{pid}/test").json(),
+    }
+    return json.dumps(payload, default=str)
+
+
+def test_azure_key_shape_is_redacted_everywhere(azure_stack):
+    client, az, sf = azure_stack
+    run_id = _azure_leak_scenario(client, az)
+    pid = client.get("/api/providers").json()[0]["id"]
+
+    results = client.get(f"/api/runs/{run_id}/results").json()["results"]
+    errors = [r["error"] for r in results if r["error"]]
+    assert errors and any("[REDACTED]" in e for e in errors), errors  # the scenario really exercised a leaky error
+    assert az.requests  # and the fake resource really was called
+
+    haystack = _azure_haystack(client, run_id, pid)
+    assert find_azure_leaks(haystack) == [], f"Azure key leaked: {find_azure_leaks(haystack)}"
+    assert find_azure_leaks(db_bytes(sf).decode("latin-1")) == [], "Azure key leaked into the SQLite file"
+    # ...but the key *was* used: it travelled only in the api-key header, never as a bearer token
+    assert {r["headers"].get("api-key") for r in az.requests} == {AZURE_SENTINEL}
+    assert all("authorization" not in r["headers"] for r in az.requests)
+
+
+def test_azure_leak_scan_really_detects_a_leak_when_redaction_is_removed(azure_stack, monkeypatch):
+    """Guards the guard: with redaction disabled the same scenario must be caught by the scan."""
+    client, az, sf = azure_stack
+    monkeypatch.setattr(Redactor, "redact", lambda self, text: text or "")
+    run_id = _azure_leak_scenario(client, az)
+    pid = client.get("/api/providers").json()[0]["id"]
+    haystack = _azure_haystack(client, run_id, pid)
+    assert find_azure_leaks(haystack) or find_azure_leaks(db_bytes(sf).decode("latin-1")), (
+        "the leak detector is blind: it found nothing with redaction switched off"
+    )

@@ -139,6 +139,7 @@ class AnthropicBackend(CloudBackend):
         format: Any = None,
         keep_alive: Any = None,
         reasoning: bool = False,
+        reasoning_effort: str | None = None,  # Anthropic has no equivalent parameter; thinking is controlled by `think`
     ) -> AsyncIterator[dict[str, Any]]:
         mode = self._thinking_mode.get(model, "enabled")
         tried: list[str] = []

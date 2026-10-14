@@ -39,15 +39,17 @@ def test_register_a_provider(client, monkeypatch):
         "name",
         "key_env",
         "base_url",
+        "api_version",
         "key_available",
         "data_sharing_acknowledged_at",
         "created_at",
         "models",
     }
-    assert (p["kind"], p["name"], p["key_env"], p["base_url"], p["models"]) == (
+    assert (p["kind"], p["name"], p["key_env"], p["base_url"], p["api_version"], p["models"]) == (
         "openai",
         "openai-main",
         "OPENAI_API_KEY",
+        None,
         None,
         [],
     )

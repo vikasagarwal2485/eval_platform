@@ -12,7 +12,7 @@ from app.providers.cloud import CloudBackend, final_chunk, iter_sse, text_chunk
 from app.providers.errors import ProviderError, ProviderUnavailable
 
 _UNSUPPORTED = re.compile(r"Unsupported (?:parameter|value): '([A-Za-z_.]+)'")
-DROPPABLE = {"temperature", "seed", "top_p"}  # optional sampling settings that some models reject
+DROPPABLE = {"temperature", "seed", "top_p", "reasoning_effort"}  # optional settings that some models reject
 
 
 def unsupported_param(message: str) -> str | None:
@@ -61,7 +61,9 @@ class OpenAIBackend(CloudBackend):
         data = await self.request_json("GET", "/v1/models")
         return sorted(m["id"] for m in data.get("data", []) if isinstance(m, dict) and "id" in m)
 
-    def build_body(self, model, messages, options, think, format, reasoning) -> tuple[dict, dict, list[dict]]:
+    def build_body(
+        self, model, messages, options, think, format, reasoning, reasoning_effort=None
+    ) -> tuple[dict, dict, list[dict]]:
         """(request body, params applied, params ignored) - what was and was not honoured is recorded (spec)."""
         options = options or {}
         applied: dict[str, Any] = {}
@@ -80,12 +82,17 @@ class OpenAIBackend(CloudBackend):
             else:
                 body["temperature"] = options["temperature"]
                 applied["temperature"] = options["temperature"]
+        if reasoning and reasoning_effort:
+            body["reasoning_effort"] = reasoning_effort
+            applied["reasoning_effort"] = reasoning_effort
         if "seed" in options:
             body["seed"] = options["seed"]
             applied["seed"] = options["seed"]
             applied["seed_note"] = "best effort; determinism is not guaranteed"
         if options.get("num_predict"):
-            body["max_completion_tokens" if self.official else "max_tokens"] = options["num_predict"]
+            # the official endpoint accepts max_completion_tokens universally; a custom base URL (gateways, Azure)
+            # needs it too for a reasoning model, but otherwise generally only accepts the older max_tokens name
+            body["max_completion_tokens" if (self.official or reasoning) else "max_tokens"] = options["num_predict"]
             applied["max_output_tokens"] = options["num_predict"]
         if options.get("num_ctx"):
             ignored.append({"name": "num_ctx", "reason": "context size is not configurable for this provider"})
@@ -122,6 +129,10 @@ class OpenAIBackend(CloudBackend):
             return True
         return False
 
+    def _chat_path(self, model: str) -> str:
+        """The request path for a chat completion. Azure overrides this to address a specific deployment."""
+        return "/v1/chat/completions"
+
     async def chat_stream(
         self,
         *,
@@ -132,11 +143,12 @@ class OpenAIBackend(CloudBackend):
         format: Any = None,
         keep_alive: Any = None,
         reasoning: bool = False,
+        reasoning_effort: str | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
-        body, applied, ignored = self.build_body(model, messages, options, think, format, reasoning)
+        body, applied, ignored = self.build_body(model, messages, options, think, format, reasoning, reasoning_effort)
         for _ in range(4):  # a model may reject several optional settings, one error at a time
             try:
-                opened = await self.open_stream("POST", "/v1/chat/completions", json_body=body)
+                opened = await self.open_stream("POST", self._chat_path(model), json_body=body)
                 break
             except ProviderError as exc:
                 if not self._adjust_for_rejection(exc, body, applied, ignored):

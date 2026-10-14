@@ -4,10 +4,15 @@ export const PROVIDER_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,39}$/;
 const ENV_NAME_RE = /^[A-Z_][A-Z0-9_]{0,63}$/;
 const KEYISH_RE = /^(sk-|sk_|pk-|key-|AIza)/i;
 
-export const KIND_LABEL: Record<string, string> = { openai: 'OpenAI', anthropic: 'Anthropic' };
+export const KIND_LABEL: Record<string, string> = {
+  openai: 'OpenAI',
+  anthropic: 'Anthropic',
+  'azure-openai': 'Azure OpenAI',
+};
 export const KIND_DEFAULTS: Record<string, { name: string; env: string }> = {
   openai: { name: 'openai', env: 'OPENAI_API_KEY' },
   anthropic: { name: 'anthropic', env: 'ANTHROPIC_API_KEY' },
+  'azure-openai': { name: 'azure-openai', env: 'AZURE_OPENAI_API_KEY' },
 };
 
 export function validateName(name: string): string | null {
@@ -38,6 +43,13 @@ export function validateBaseUrl(value: string): string | null {
   }
 }
 
+export function validateApiVersion(value: string): string | null {
+  const v = value.trim();
+  if (!v) return 'Enter the API version your Azure resource expects, e.g. 2024-12-01-preview.';
+  if (v.length > 50) return 'The API version must be at most 50 characters.';
+  return null;
+}
+
 export const STATUS_LABEL: Record<
   string,
   { text: string; kind: 'good' | 'warn' | 'bad' | 'info' }
@@ -47,5 +59,6 @@ export const STATUS_LABEL: Record<
   authentication_failed: { text: 'authentication failed', kind: 'bad' },
   rate_limited: { text: 'rate limited', kind: 'warn' },
   unreachable: { text: 'unreachable', kind: 'bad' },
+  no_deployments: { text: 'no deployment to test', kind: 'warn' },
   error: { text: 'error', kind: 'bad' },
 };

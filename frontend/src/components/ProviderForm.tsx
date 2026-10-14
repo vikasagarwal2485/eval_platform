@@ -4,6 +4,7 @@ import type { ProviderKind } from '../api/types';
 import {
   KIND_DEFAULTS,
   KIND_LABEL,
+  validateApiVersion,
   validateBaseUrl,
   validateEnvName,
   validateName,
@@ -17,9 +18,11 @@ export default function ProviderForm({ onDone }: { onDone?: () => void }) {
   const [name, setName] = useState(KIND_DEFAULTS.openai.name);
   const [env, setEnv] = useState(KIND_DEFAULTS.openai.env);
   const [baseUrl, setBaseUrl] = useState('');
+  const [apiVersion, setApiVersion] = useState('');
   const [ack, setAck] = useState(false);
   const [touched, setTouched] = useState({ name: false, env: false });
   const [errors, setErrors] = useState<Record<string, string>>({});
+  const isAzure = kind === 'azure-openai';
 
   const changeKind = (k: ProviderKind) => {
     setKind(k);
@@ -32,10 +35,19 @@ export default function ProviderForm({ onDone }: { onDone?: () => void }) {
     const found: Record<string, string> = {};
     const n = validateName(name);
     const v = validateEnvName(env);
-    const u = validateBaseUrl(baseUrl);
     if (n) found.name = n;
     if (v) found.env = v;
-    if (u) found.baseUrl = u;
+    if (isAzure) {
+      // required for azure-openai: there is no shared default resource endpoint or API version
+      const u =
+        validateBaseUrl(baseUrl) ?? (baseUrl.trim() ? null : 'Enter your Azure resource endpoint.');
+      const a = validateApiVersion(apiVersion);
+      if (u) found.baseUrl = u;
+      if (a) found.apiVersion = a;
+    } else {
+      const u = validateBaseUrl(baseUrl);
+      if (u) found.baseUrl = u;
+    }
     if (!ack) found.ack = `Acknowledge that evaluation content is sent to ${KIND_LABEL[kind]}.`;
     setErrors(found);
     if (Object.keys(found).length) return;
@@ -45,12 +57,14 @@ export default function ProviderForm({ onDone }: { onDone?: () => void }) {
         name,
         key_env: env.trim(),
         base_url: baseUrl.trim() || null,
+        api_version: isAzure ? apiVersion.trim() : null,
         acknowledge_data_sharing: true,
       },
       {
         onSuccess: () => {
           setAck(false);
           setBaseUrl('');
+          setApiVersion('');
           setTouched({ name: false, env: false });
           onDone?.();
         },
@@ -75,6 +89,7 @@ export default function ProviderForm({ onDone }: { onDone?: () => void }) {
           >
             <option value="openai">OpenAI</option>
             <option value="anthropic">Anthropic</option>
+            <option value="azure-openai">Azure OpenAI</option>
           </select>
         </div>
         <div className="field">
@@ -120,21 +135,41 @@ export default function ProviderForm({ onDone }: { onDone?: () => void }) {
           )}
         </div>
       </div>
-      <div className="field">
-        <label htmlFor="pv-url">
-          Base URL{' '}
-          <span className="hint">(optional: gateways and OpenAI-compatible endpoints)</span>
-        </label>
-        <input
-          id="pv-url"
-          type="text"
-          style={{ width: '100%' }}
-          value={baseUrl}
-          placeholder="https://…"
-          aria-invalid={!!errors.baseUrl}
-          onChange={(e) => setBaseUrl(e.target.value)}
-        />
-        {errors.baseUrl && <div className="field-error">{errors.baseUrl}</div>}
+      <div className="row" style={{ alignItems: 'flex-start' }}>
+        <div className="field" style={{ flex: 1 }}>
+          <label htmlFor="pv-url">
+            Base URL{' '}
+            <span className="hint">
+              {isAzure
+                ? '(required: your Azure resource endpoint)'
+                : '(optional: gateways and OpenAI-compatible endpoints)'}
+            </span>
+          </label>
+          <input
+            id="pv-url"
+            type="text"
+            style={{ width: '100%' }}
+            value={baseUrl}
+            placeholder={isAzure ? 'https://my-resource.openai.azure.com' : 'https://…'}
+            aria-invalid={!!errors.baseUrl}
+            onChange={(e) => setBaseUrl(e.target.value)}
+          />
+          {errors.baseUrl && <div className="field-error">{errors.baseUrl}</div>}
+        </div>
+        {isAzure && (
+          <div className="field">
+            <label htmlFor="pv-api-version">API version</label>
+            <input
+              id="pv-api-version"
+              type="text"
+              value={apiVersion}
+              placeholder="2024-12-01-preview"
+              aria-invalid={!!errors.apiVersion}
+              onChange={(e) => setApiVersion(e.target.value)}
+            />
+            {errors.apiVersion && <div className="field-error">{errors.apiVersion}</div>}
+          </div>
+        )}
       </div>
       <label className="check">
         <input

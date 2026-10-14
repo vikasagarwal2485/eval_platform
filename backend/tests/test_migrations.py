@@ -149,9 +149,7 @@ def test_0004_downgrade_removes_agent_tables(tmp_path):
     command.upgrade(cfg, "head")
     command.downgrade(cfg, "0003")
     tables = set(inspect(create_engine(url)).get_table_names())
-    assert not (
-        {"agent", "agent_session", "agent_turn", "agent_span", "turn_evaluation", "turn_judgement"} & tables
-    )
+    assert not ({"agent", "agent_session", "agent_turn", "agent_span", "turn_evaluation", "turn_judgement"} & tables)
 
 
 def test_agent_turn_and_session_are_unique_per_agent_and_cascade(tmp_path):

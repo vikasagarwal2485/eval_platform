@@ -267,8 +267,15 @@ export function useProviderMutations() {
       onSuccess: refresh,
     }),
     update: useMutation({
-      mutationFn: ({ id, ...b }: { id: number; key_env?: string; base_url?: string }) =>
-        api.patch<Provider>(`/providers/${id}`, b),
+      mutationFn: ({
+        id,
+        ...b
+      }: {
+        id: number;
+        key_env?: string;
+        base_url?: string;
+        api_version?: string;
+      }) => api.patch<Provider>(`/providers/${id}`, b),
       onSuccess: refresh,
     }),
     remove: useMutation({
@@ -284,6 +291,7 @@ export function useProviderMutations() {
         model_id: string;
         display_name?: string;
         reasoning?: boolean;
+        reasoning_effort?: string | null;
         enabled?: boolean;
       }) => api.post<ProviderModel>(`/providers/${providerId}/models`, b),
       onSuccess: refresh,
@@ -298,6 +306,7 @@ export function useProviderMutations() {
         modelId: number;
         enabled?: boolean;
         reasoning?: boolean;
+        reasoning_effort?: string | null;
         display_name?: string;
       }) => api.patch<ProviderModel>(`/providers/${providerId}/models/${modelId}`, b),
       onSuccess: refresh,

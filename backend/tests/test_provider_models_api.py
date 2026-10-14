@@ -5,7 +5,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.main import create_app
-from tests.fake_providers import FakeAnthropic, FakeOpenAI
+from tests.fake_providers import FakeAnthropic, FakeAzureOpenAI, FakeOpenAI
 from tests.fakes import FakeOllama, make_tag
 from tests.helpers import make_responder
 
@@ -14,26 +14,36 @@ KEY = "test-key-123"
 
 @pytest.fixture
 def servers():
-    oa, an = FakeOpenAI(), FakeAnthropic()
-    urls = (oa.start(), an.start())
-    yield oa, an, urls
+    """(oa, an, urls, az) - az kept last so existing servers[2][idx] / servers[0] / servers[1] indices are unchanged."""
+    oa, an, az = FakeOpenAI(), FakeAnthropic(), FakeAzureOpenAI()
+    urls = (oa.start(), an.start(), az.start())
+    yield oa, an, urls, az
     oa.stop()
     an.stop()
+    az.stop()
 
 
 @pytest.fixture
 def client(settings, file_session_factory, servers, monkeypatch):
     monkeypatch.setenv("OA_KEY", KEY)
     monkeypatch.setenv("AN_KEY", KEY)
+    monkeypatch.setenv("AZ_KEY", KEY)
     fake = FakeOllama([make_tag("qwen3:8b")], make_responder())
     with TestClient(create_app(settings, ollama=fake, session_factory=file_session_factory)) as c:
         yield c
 
 
-def provider(client, kind="openai", name="oa", env="OA_KEY", url=None):
+def provider(client, kind="openai", name="oa", env="OA_KEY", url=None, api_version=None):
     r = client.post(
         "/api/providers",
-        json={"kind": kind, "name": name, "key_env": env, "base_url": url, "acknowledge_data_sharing": True},
+        json={
+            "kind": kind,
+            "name": name,
+            "key_env": env,
+            "base_url": url,
+            "api_version": api_version,
+            "acknowledge_data_sharing": True,
+        },
     )
     assert r.status_code == 201, r.text
     return r.json()
@@ -160,6 +170,65 @@ def test_rate_limited_connection_test(client, servers):
 def test_unknown_provider_is_404(client):
     assert client.post("/api/providers/999/test").status_code == 404
     assert client.get("/api/providers/999/available-models").status_code == 404
+
+
+# ---------------------------------------------------------------- Azure OpenAI (3.1/3.4/3.5)
+def test_azure_provider_requires_base_url_and_api_version(client):
+    base = {"kind": "azure-openai", "name": "az", "key_env": "AZ_KEY", "acknowledge_data_sharing": True}
+    r = client.post("/api/providers", json=base)
+    assert r.status_code == 422 and "azure-openai requires" in r.text
+    r = client.post("/api/providers", json={**base, "base_url": "https://my-resource.openai.azure.com"})
+    assert r.status_code == 422 and "api_version" in r.text
+    r = client.post("/api/providers", json={**base, "api_version": "2024-12-01-preview"})
+    assert r.status_code == 422 and "base_url" in r.text
+    r = client.post(
+        "/api/providers",
+        json={**base, "base_url": "https://my-resource.openai.azure.com", "api_version": "2024-12-01-preview"},
+    )
+    assert r.status_code == 201, r.text
+    assert r.json()["api_version"] == "2024-12-01-preview"
+
+
+def test_azure_provider_cannot_be_patched_to_clear_required_fields(client, servers):
+    pid = provider(client, "azure-openai", "az", "AZ_KEY", servers[2][2], "2024-12-01-preview")["id"]
+    assert client.patch(f"/api/providers/{pid}", json={"base_url": None}).status_code == 422
+    assert client.patch(f"/api/providers/{pid}", json={"api_version": None}).status_code == 422
+    r = client.patch(f"/api/providers/{pid}", json={"api_version": "2024-10-01-preview"})
+    assert r.status_code == 200 and r.json()["api_version"] == "2024-10-01-preview"
+
+
+def test_azure_test_connection_needs_a_deployment_first(client, servers):
+    pid = provider(client, "azure-openai", "az", "AZ_KEY", servers[2][2], "2024-12-01-preview")["id"]
+    r = client.post(f"/api/providers/{pid}/test").json()
+    assert r["status"] == "no_deployments"
+    assert servers[3].requests == []  # never attempted a call with no deployment to test
+
+
+def test_azure_test_connection_against_a_registered_deployment(client, servers):
+    pid = provider(client, "azure-openai", "az", "AZ_KEY", servers[2][2], "2024-12-01-preview")["id"]
+    client.post(f"/api/providers/{pid}/models", json={"model_id": "o3-mini"})
+    r = client.post(f"/api/providers/{pid}/test").json()
+    assert r["status"] == "working"
+    rec = servers[3].chat_requests()[0]
+    assert rec["path"] == "/openai/deployments/o3-mini/chat/completions"
+    assert rec["query"] == "api-version=2024-12-01-preview"
+    assert rec["body"]["max_tokens"] == 1  # a non-reasoning deployment needs only a token to answer "ping"
+
+
+def test_azure_test_connection_against_a_reasoning_deployment_uses_a_larger_budget(client, servers):
+    pid = provider(client, "azure-openai", "az", "AZ_KEY", servers[2][2], "2024-12-01-preview")["id"]
+    client.post(f"/api/providers/{pid}/models", json={"model_id": "o3-mini", "reasoning": True})
+    r = client.post(f"/api/providers/{pid}/test").json()
+    assert r["status"] == "working"
+    rec = servers[3].chat_requests()[0]
+    assert rec["body"]["max_completion_tokens"] > 1 and "max_tokens" not in rec["body"]
+
+
+def test_azure_discovery_is_not_offered(client, servers):
+    pid = provider(client, "azure-openai", "az", "AZ_KEY", servers[2][2], "2024-12-01-preview")["id"]
+    r = client.get(f"/api/providers/{pid}/available-models")
+    assert r.status_code == 409 and r.json()["detail"]["code"] == "not_supported"
+    assert servers[3].requests == []  # never attempted a call that would always fail
 
 
 # ---------------------------------------------------------------- discovery

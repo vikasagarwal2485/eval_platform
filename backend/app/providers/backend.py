@@ -35,6 +35,7 @@ LOCAL_CAPS = BackendCaps(warmup=True, unload=True, footprint=True, seed=True, co
 CLOUD_CAPS: dict[str, BackendCaps] = {
     "openai": BackendCaps(warmup=False, unload=False, footprint=False, seed=True, context_size=False),
     "anthropic": BackendCaps(warmup=False, unload=False, footprint=False, seed=False, context_size=False),
+    "azure-openai": BackendCaps(warmup=False, unload=False, footprint=False, seed=True, context_size=False),
 }
 
 
@@ -58,10 +59,11 @@ class ModelBackend(Protocol):
         format: Any = None,
         keep_alive: Any = None,
         reasoning: bool = False,
+        reasoning_effort: str | None = None,
     ) -> AsyncIterator[dict[str, Any]]: ...
 
     async def list_models(self) -> list[str]: ...
-    async def ping(self) -> None: ...
+    async def ping(self, model: str | None = None, reasoning: bool = False) -> None: ...
     async def aclose(self) -> None: ...
 
 
@@ -71,6 +73,7 @@ class ProviderConfig:
     name: str
     key_env: str
     base_url: str | None
+    api_version: str | None = None  # required by azure-openai; unused by other kinds
 
 
 BackendFactory = Callable[[ProviderConfig, "ModelRouter"], ModelBackend]
@@ -110,8 +113,8 @@ class ModelRouter:
             return []
 
     # ------------------------------------------------------------------ resolution
-    def _resolve_cloud(self, provider_name: str, model_id: str) -> tuple[ModelBackend, bool]:
-        """(backend, model is flagged reasoning). Raises ProviderError if the model is not registered."""
+    def _resolve_cloud(self, provider_name: str, model_id: str) -> tuple[ModelBackend, bool, str | None]:
+        """(backend, model is flagged reasoning, reasoning effort). Raises ProviderError if not registered."""
         with self.sf() as s:
             provider, model = repo.find_registered(s, provider_name, model_id)
             if provider is None:
@@ -120,13 +123,15 @@ class ModelRouter:
                 raise ProviderError(
                     f"Model '{model_id}' is not registered under provider '{provider_name}'", provider=provider_name
                 )
-            cfg = ProviderConfig(provider.kind, provider.name, provider.key_env, provider.base_url)
-            reasoning = model.reasoning
-        return self.backend_for(cfg), reasoning
+            cfg = ProviderConfig(
+                provider.kind, provider.name, provider.key_env, provider.base_url, provider.api_version
+            )
+            reasoning, reasoning_effort = model.reasoning, model.reasoning_effort
+        return self.backend_for(cfg), reasoning, reasoning_effort
 
     def backend_for(self, cfg: ProviderConfig) -> ModelBackend:
         """One backend instance per provider configuration; rebuilt if the configuration changes."""
-        key = (cfg.kind, cfg.name, cfg.key_env, cfg.base_url)
+        key = (cfg.kind, cfg.name, cfg.key_env, cfg.base_url, cfg.api_version)
         if key not in self._backends:
             factory = self.factories.get(cfg.kind)
             if factory is None:
@@ -153,9 +158,15 @@ class ModelRouter:
             ):
                 yield chunk
             return
-        backend, reasoning = self._resolve_cloud(ref.provider, ref.model)
+        backend, reasoning, reasoning_effort = self._resolve_cloud(ref.provider, ref.model)
         async for chunk in backend.chat_stream(
-            model=ref.model, messages=messages, options=options, think=think, format=format, reasoning=reasoning
+            model=ref.model,
+            messages=messages,
+            options=options,
+            think=think,
+            format=format,
+            reasoning=reasoning,
+            reasoning_effort=reasoning_effort,
         ):
             yield chunk
 

@@ -5,12 +5,20 @@ import json
 import httpx
 import pytest
 
-from tests.fake_providers import FakeAnthropic, FakeOpenAI, Step
+from tests.fake_providers import FakeAnthropic, FakeAzureOpenAI, FakeOpenAI, Step
 
 
 @pytest.fixture
 def openai():
     srv = FakeOpenAI()
+    url = srv.start()
+    yield srv, url
+    srv.stop()
+
+
+@pytest.fixture
+def azure():
+    srv = FakeAzureOpenAI()
     url = srv.start()
     yield srv, url
     srv.stop()
@@ -46,6 +54,17 @@ def openai_post(url, body=None, key="test-key-123"):
         "stream_options": {"include_usage": True},
     }
     return httpx.post(f"{url}/v1/chat/completions", json=body, headers={"Authorization": f"Bearer {key}"}, timeout=10)
+
+
+def azure_post(url, deployment="o3-mini", api_version="2024-12-01-preview", body=None, key="test-key-123"):
+    body = body or {"messages": [{"role": "user", "content": "hi"}], "stream": True}
+    qs = f"?api-version={api_version}" if api_version is not None else ""
+    return httpx.post(
+        f"{url}/openai/deployments/{deployment}/chat/completions{qs}",
+        json=body,
+        headers={"api-key": key},
+        timeout=10,
+    )
 
 
 def anthropic_post(url, body=None, key="test-key-123", version=True):
@@ -129,6 +148,39 @@ def test_openai_models_endpoint(openai):
     r = httpx.get(f"{url}/v1/models", headers={"Authorization": "Bearer test-key-123"})
     assert [m["id"] for m in r.json()["data"]] == ["gpt-4o", "gpt-4o-mini", "o3"]
     assert httpx.get(f"{url}/v1/models", headers={"Authorization": "Bearer nope"}).status_code == 401
+
+
+# ---------------------------------------------------------------- Azure OpenAI
+def test_azure_streams_text_with_api_key_header_and_deployment_in_path(azure):
+    srv, url = azure
+    srv.answer = "Final answer: 5"
+    r = azure_post(url, deployment="my-o3-mini")
+    assert r.status_code == 200 and r.headers["content-type"].startswith("text/event-stream")
+    ev = sse_events(r.text)
+    deltas = [e[1]["choices"][0]["delta"].get("content", "") for e in ev[:-1] if e[1]["choices"]]
+    assert "".join(deltas) == "Final answer: 5"
+    rec = srv.chat_requests()[0]
+    assert rec["path"] == "/openai/deployments/my-o3-mini/chat/completions"
+    assert rec["headers"]["api-key"] == "test-key-123" and "authorization" not in rec["headers"]
+    assert rec["query"] == "api-version=2024-12-01-preview"
+
+
+def test_azure_rejects_missing_api_version_with_400(azure):
+    srv, url = azure
+    r = azure_post(url, api_version=None)
+    assert r.status_code == 400 and "api-version" in r.json()["error"]["message"]
+
+
+def test_azure_rejects_a_wrong_key_with_401(azure):
+    srv, url = azure
+    r = azure_post(url, key="wrong")
+    assert r.status_code == 401
+
+
+def test_azure_has_no_list_models_route(azure):
+    srv, url = azure
+    assert httpx.get(f"{url}/v1/models").status_code == 404
+    assert httpx.get(f"{url}/openai/models").status_code == 404
 
 
 # ---------------------------------------------------------------- Anthropic

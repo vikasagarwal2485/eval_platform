@@ -109,10 +109,46 @@ def test_official_endpoint_uses_max_completion_tokens():
     assert body["max_tokens"] == 100 and "max_completion_tokens" not in body
 
 
+def test_custom_gateway_reasoning_model_also_uses_max_completion_tokens():
+    """A custom base URL (gateways, Azure) still needs max_completion_tokens for a reasoning model (design D5)."""
+    gw = adapter("https://gw.example/v1")
+    assert not gw.official
+    body, applied, _ = gw.build_body("o3-mini", MSGS, {"num_predict": 100}, None, None, True)
+    assert body["max_completion_tokens"] == 100 and "max_tokens" not in body and applied["max_output_tokens"] == 100
+
+
 def test_reasoning_models_get_no_temperature_and_it_is_recorded():
     body, applied, ignored = adapter(None).build_body("o3", MSGS, {"temperature": 0.0, "seed": 1}, None, None, True)
     assert "temperature" not in body and "temperature" not in applied and body["seed"] == 1
     assert ignored == [{"name": "temperature", "reason": "reasoning models do not accept a temperature setting"}]
+
+
+def test_reasoning_effort_is_applied_and_recorded():
+    body, applied, _ = adapter(None).build_body("o3", MSGS, {}, None, None, True, "low")
+    assert body["reasoning_effort"] == "low" and applied["reasoning_effort"] == "low"
+
+
+def test_reasoning_effort_omitted_for_non_reasoning_model():
+    body, applied, _ = adapter(None).build_body("gpt-4o", MSGS, {}, None, None, False, "low")
+    assert "reasoning_effort" not in body and "reasoning_effort" not in applied
+
+
+def test_reasoning_effort_omitted_when_not_configured():
+    body, _, _ = adapter(None).build_body("o3", MSGS, {}, None, None, True, None)
+    assert "reasoning_effort" not in body
+
+
+async def test_reasoning_effort_rejection_is_dropped_retried_and_recorded(server):
+    srv, url = server
+    srv.script.append(
+        Step(kind="status", status=400, body={"error": {"message": "Unsupported parameter: 'reasoning_effort'"}})
+    )
+    chunks = await collect(adapter(url).chat_stream(model="o3", messages=MSGS, reasoning=True, reasoning_effort="low"))
+    reqs = srv.chat_requests()
+    assert "reasoning_effort" in reqs[0]["body"] and "reasoning_effort" not in reqs[1]["body"]
+    meta = chunks[-1]["_provider"]
+    assert "reasoning_effort" not in meta["params_applied"]
+    assert meta["params_ignored"][0]["name"] == "reasoning_effort"
 
 
 def test_think_setting_is_recorded_as_ignored_not_sent():

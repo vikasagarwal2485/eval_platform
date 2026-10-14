@@ -151,6 +151,9 @@ class FakeOpenAI(_Base):
         rec = await self._record(request)
         if not self._authed(rec):
             return JSONResponse(self.error_body(401), status_code=401)
+        return await self._stream_chat_response(rec)
+
+    async def _stream_chat_response(self, rec: dict):
         step = self._next_step()
         if step.kind == "status":
             return self._error_response(step)
@@ -213,6 +216,37 @@ class FakeOpenAI(_Base):
     def app(self) -> Starlette:
         return Starlette(
             routes=[Route("/v1/models", self.list_models), Route("/v1/chat/completions", self.chat, methods=["POST"])]
+        )
+
+
+class FakeAzureOpenAI(FakeOpenAI):
+    """A fake Azure OpenAI resource: deployment-scoped path, `api-key` header, required `api-version` query
+    parameter, no list-models route (Azure has none on this credential plane). Reuses FakeOpenAI's streaming."""
+
+    kind = "azure-openai"
+    default_model = "o3-mini-2025-01-31"
+
+    def _authed(self, rec: dict) -> bool:
+        return rec["headers"].get("api-key") == self.expected_key
+
+    def chat_requests(self) -> list[dict]:
+        return [
+            r
+            for r in self.requests
+            if r["path"].startswith("/openai/deployments/") and r["path"].endswith("/chat/completions")
+        ]
+
+    async def chat(self, request: Request):
+        rec = await self._record(request)
+        if "api-version" not in request.query_params:
+            return JSONResponse({"error": {"message": "api-version is required"}}, status_code=400)
+        if not self._authed(rec):
+            return JSONResponse(self.error_body(401), status_code=401)
+        return await self._stream_chat_response(rec)
+
+    def app(self) -> Starlette:
+        return Starlette(
+            routes=[Route("/openai/deployments/{deployment}/chat/completions", self.chat, methods=["POST"])]
         )
 
 

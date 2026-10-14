@@ -63,13 +63,27 @@ def test_demo_setup_produces_an_evaluated_turn_with_no_self_judging(session_fact
 
         sess = repo.get_or_create_agent_session(session, agent, "s1")
         turn = repo.get_or_create_turn(session, agent, sess, "t1")
-        repo.apply_turn_start(session, turn, TurnStartEvent(v=1, event_id="e1", session_id="s1", turn_id="t1", input="hi"))
+        repo.apply_turn_start(
+            session, turn, TurnStartEvent(v=1, event_id="e1", session_id="s1", turn_id="t1", input="hi")
+        )
         repo.apply_span(
-            session, turn,
-            SpanEvent(v=1, event_id="e2", session_id="s1", turn_id="t1", span_id="sp1", kind="llm", model="author:1", output="Hello there!"),
+            session,
+            turn,
+            SpanEvent(
+                v=1,
+                event_id="e2",
+                session_id="s1",
+                turn_id="t1",
+                span_id="sp1",
+                kind="llm",
+                model="author:1",
+                output="Hello there!",
+            ),
         )
         repo.apply_turn_end(
-            session, turn, TurnEndEvent(v=1, event_id="e3", session_id="s1", turn_id="t1", status="ok", output="Hello there!")
+            session,
+            turn,
+            TurnEndEvent(v=1, event_id="e3", session_id="s1", turn_id="t1", status="ok", output="Hello there!"),
         )
         turn.ended_at = utcnow()  # quiet_period_s=0, so this is immediately ready
         session.commit()

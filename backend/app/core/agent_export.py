@@ -28,10 +28,16 @@ COLUMNS = [
 
 
 def _judge_cell(j: dict) -> str:
-    return f"{j['judge_model']}={j['value']:.3f}" if j.get("outcome") == "judged" and j.get("value") is not None else f"{j['judge_model']}=error"
+    return (
+        f"{j['judge_model']}={j['value']:.3f}"
+        if j.get("outcome") == "judged" and j.get("value") is not None
+        else f"{j['judge_model']}=error"
+    )
 
 
-def export_rows(session: Session, agent: Agent, *, since: datetime | None = None, until: datetime | None = None) -> list[dict]:
+def export_rows(
+    session: Session, agent: Agent, *, since: datetime | None = None, until: datetime | None = None
+) -> list[dict]:
     q = select(AgentTurn).where(AgentTurn.agent_id == agent.id).order_by(AgentTurn.id)
     if since is not None:
         q = q.where(AgentTurn.ended_at >= since)
@@ -53,7 +59,10 @@ def export_rows(session: Session, agent: Agent, *, since: datetime | None = None
                 "latency_ms": t.latency_ms,
                 "evaluation_status": latest.status if latest else "not_sampled",
                 "evaluated_value": latest.value if latest else None,
-                "judges": "; ".join(_judge_cell({"judge_model": j.judge_model, "value": j.value, "outcome": j.outcome}) for j in judgements),
+                "judges": "; ".join(
+                    _judge_cell({"judge_model": j.judge_model, "value": j.value, "outcome": j.outcome})
+                    for j in judgements
+                ),
             }
         )
     return rows

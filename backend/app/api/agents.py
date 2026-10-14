@@ -233,7 +233,9 @@ def list_turns(
     session: Session = Depends(get_session),
 ):
     repo.get_agent(session, agent_id)
-    turns = repo.list_turns(session, agent_id, session_external_id=session_id, status=status, limit=limit, offset=offset)
+    turns = repo.list_turns(
+        session, agent_id, session_external_id=session_id, status=status, limit=limit, offset=offset
+    )
     return [_turn_out(session, t) for t in turns]
 
 
@@ -306,7 +308,10 @@ async def agent_events(agent_id: int, request: Request, after: int = 0):
 
 @router.get("/{agent_id}/export")
 def export_agent(
-    agent_id: int, format: str = "csv", since: str | None = None, until: str | None = None,
+    agent_id: int,
+    format: str = "csv",
+    since: str | None = None,
+    until: str | None = None,
     session: Session = Depends(get_session),
 ):
     if format not in ("csv", "json"):
@@ -317,4 +322,6 @@ def export_agent(
     headers = {"Content-Disposition": f'attachment; filename="{fname}"'}
     if format == "csv":
         return Response(to_csv(rows), media_type="text/csv", headers=headers)
-    return Response(json.dumps({"agent": agent.name, "turns": rows}, indent=2), media_type="application/json", headers=headers)
+    return Response(
+        json.dumps({"agent": agent.name, "turns": rows}, indent=2), media_type="application/json", headers=headers
+    )

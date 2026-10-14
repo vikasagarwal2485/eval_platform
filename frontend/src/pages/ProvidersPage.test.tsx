@@ -130,6 +130,7 @@ describe('registering a provider', () => {
       name: 'openai',
       key_env: 'OPENAI_API_KEY',
       base_url: null,
+      api_version: null,
       acknowledge_data_sharing: true,
     });
   });
@@ -145,6 +146,41 @@ describe('registering a provider', () => {
     await user.selectOptions(screen.getByLabelText('Provider'), 'openai');
     expect(screen.getByLabelText(/^Name/)).toHaveValue('openai');
     expect(screen.getByLabelText('API key environment variable')).toHaveValue('MY_CLAUDE_KEY'); // edited: left alone
+  });
+
+  it('requires a base URL and API version for Azure OpenAI, shown only for that kind', async () => {
+    const { user, calls } = setup([]);
+    await screen.findByRole('heading', { name: 'Add a provider' });
+    expect(screen.queryByLabelText('API version')).toBeNull(); // not shown for openai
+    await user.selectOptions(screen.getByLabelText('Provider'), 'azure-openai');
+    expect(screen.getByLabelText(/^Name/)).toHaveValue('azure-openai');
+    expect(screen.getByLabelText('API key environment variable')).toHaveValue(
+      'AZURE_OPENAI_API_KEY',
+    );
+    expect(screen.getByLabelText('API version')).toBeInTheDocument();
+    await user.click(screen.getByRole('checkbox', { name: /I understand/ }));
+    await user.click(screen.getByRole('button', { name: 'Register provider' }));
+    expect(await screen.findByText(/Enter your Azure resource endpoint/)).toBeInTheDocument();
+    expect(screen.getByText(/Enter the API version/)).toBeInTheDocument();
+    expect(posted(calls, '/providers')).toHaveLength(0);
+  });
+
+  it('registers an Azure OpenAI provider with its base URL and API version', async () => {
+    const { user, calls } = setup([], { 'POST /providers': provider({ kind: 'azure-openai' }) });
+    await user.selectOptions(await screen.findByLabelText('Provider'), 'azure-openai');
+    await user.type(screen.getByLabelText(/^Base URL/), 'https://my-resource.openai.azure.com');
+    await user.type(screen.getByLabelText('API version'), '2024-12-01-preview');
+    await user.click(screen.getByRole('checkbox', { name: /I understand/ }));
+    await user.click(screen.getByRole('button', { name: 'Register provider' }));
+    await waitFor(() => expect(posted(calls, '/providers')).toHaveLength(1));
+    expect(posted(calls, '/providers')[0]).toEqual({
+      kind: 'azure-openai',
+      name: 'azure-openai',
+      key_env: 'AZURE_OPENAI_API_KEY',
+      base_url: 'https://my-resource.openai.azure.com',
+      api_version: '2024-12-01-preview',
+      acknowledge_data_sharing: true,
+    });
   });
 
   it('refuses a key pasted into the variable field and explains', async () => {
@@ -243,8 +279,27 @@ describe('managing models', () => {
     await user.click(within(c).getByRole('checkbox', { name: 'Reasoning model' }));
     await user.click(within(c).getByRole('button', { name: 'Add model' }));
     await waitFor(() => expect(posted(calls, '/providers/1/models')).toHaveLength(1));
-    expect(posted(calls, '/providers/1/models')[0]).toEqual({ model_id: 'o3', reasoning: true });
+    expect(posted(calls, '/providers/1/models')[0]).toEqual({
+      model_id: 'o3',
+      reasoning: true,
+      reasoning_effort: null,
+    });
     expect(within(c).getByLabelText('Model id')).toHaveValue('');
+  });
+
+  it('sets an optional reasoning effort for a reasoning model', async () => {
+    const { user, calls } = setup([provider()], { 'POST /providers/1/models': model({ id: 11 }) });
+    const c = await card();
+    await user.type(within(c).getByLabelText('Model id'), 'o3-mini');
+    await user.click(within(c).getByRole('checkbox', { name: 'Reasoning model' }));
+    await user.type(within(c).getByLabelText(/Reasoning effort/), 'low');
+    await user.click(within(c).getByRole('button', { name: 'Add model' }));
+    await waitFor(() => expect(posted(calls, '/providers/1/models')).toHaveLength(1));
+    expect(posted(calls, '/providers/1/models')[0]).toEqual({
+      model_id: 'o3-mini',
+      reasoning: true,
+      reasoning_effort: 'low',
+    });
   });
 
   it('shows why adding failed, for example a duplicate', async () => {
@@ -380,5 +435,65 @@ describe('editing and removing a provider', () => {
     await user.click(within(await card()).getByRole('button', { name: 'Remove provider oa' }));
     expect(confirm).toHaveBeenCalledWith(expect.stringContaining('Past runs keep their results'));
     expect(await screen.findByText(/queued or running run/)).toBeInTheDocument();
+  });
+});
+
+describe('Azure OpenAI provider card (4.3)', () => {
+  const azure = (over = {}) =>
+    provider({
+      kind: 'azure-openai',
+      name: 'az',
+      key_env: 'AZ_KEY',
+      base_url: 'https://my-resource.openai.azure.com',
+      api_version: '2024-12-01-preview',
+      models: [],
+      ...over,
+    });
+  const azureCard = async () => screen.findByRole('region', { name: 'Provider az' });
+
+  it('labels the model field "Deployment name" and has no fetch-models action', async () => {
+    setup([azure()]);
+    const c = await azureCard();
+    expect(within(c).getByLabelText('Deployment name')).toBeInTheDocument();
+    expect(within(c).queryByLabelText('Model id')).toBeNull();
+    expect(within(c).queryByRole('button', { name: /Fetch models/ })).toBeNull();
+    expect(within(c).getByText(/can.t be auto-discovered/)).toBeInTheDocument();
+  });
+
+  it('shows the API version and requires it when editing', async () => {
+    const { user, calls } = setup([azure()]);
+    const c = await azureCard();
+    expect(within(c).getByText('2024-12-01-preview')).toBeInTheDocument();
+    await user.click(within(c).getByRole('button', { name: 'Edit' }));
+    const version = within(c).getByLabelText('API version');
+    await user.clear(version);
+    await user.click(within(c).getByRole('button', { name: 'Save' }));
+    expect(await within(c).findByRole('alert')).toHaveTextContent(/enter the api version/i);
+    expect(posted(calls, '/providers/1', 'PATCH')).toHaveLength(0);
+  });
+
+  it('reports no_deployments before any deployment is registered', async () => {
+    const { user } = setup([azure()], {
+      'POST /providers/1/test': {
+        status: 'no_deployments',
+        message: 'Register a deployment first, then test the connection against it.',
+        base_url: 'https://my-resource.openai.azure.com',
+      },
+    });
+    const c = await azureCard();
+    await user.click(within(c).getByRole('button', { name: 'Test connection' }));
+    const out = await within(c).findByRole('status');
+    expect(within(out).getByText('no deployment to test')).toBeInTheDocument();
+  });
+
+  it('adds a deployment by name', async () => {
+    const { user, calls } = setup([azure()], {
+      'POST /providers/1/models': model({ id: 12, model_id: 'o3-mini', ref: '@az/o3-mini' }),
+    });
+    const c = await azureCard();
+    await user.type(within(c).getByLabelText('Deployment name'), 'o3-mini');
+    await user.click(within(c).getByRole('button', { name: 'Add model' }));
+    await waitFor(() => expect(posted(calls, '/providers/1/models')).toHaveLength(1));
+    expect(posted(calls, '/providers/1/models')[0]).toMatchObject({ model_id: 'o3-mini' });
   });
 });

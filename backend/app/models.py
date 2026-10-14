@@ -38,10 +38,11 @@ class Provider(Base):
     __tablename__ = "provider"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    kind: Mapped[str] = mapped_column(String(20))  # openai | anthropic
+    kind: Mapped[str] = mapped_column(String(20))  # openai | anthropic | azure-openai
     name: Mapped[str] = mapped_column(String(40), unique=True)
     key_env: Mapped[str] = mapped_column(String(64))
     base_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    api_version: Mapped[str | None] = mapped_column(String(50), nullable=True)  # required for azure-openai
     ack_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )  # data-sharing acknowledgment
@@ -62,6 +63,7 @@ class RegisteredModel(Base):
     display_name: Mapped[str] = mapped_column(String(200), default="")
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     reasoning: Mapped[bool] = mapped_column(Boolean, default=False)
+    reasoning_effort: Mapped[str | None] = mapped_column(String(20), nullable=True)  # only meaningful if reasoning
 
     provider: Mapped[Provider] = relationship(back_populates="models")
 

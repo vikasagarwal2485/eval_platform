@@ -372,11 +372,18 @@ def list_providers(session: Session) -> list[Provider]:
 
 
 def create_provider(
-    session: Session, *, kind: str, name: str, key_env: str, base_url: str | None, ack_at: datetime | None
+    session: Session,
+    *,
+    kind: str,
+    name: str,
+    key_env: str,
+    base_url: str | None,
+    ack_at: datetime | None,
+    api_version: str | None = None,
 ) -> Provider:
     if get_provider_by_name(session, name):
         raise Conflict(f"A provider named '{name}' already exists")
-    p = Provider(kind=kind, name=name, key_env=key_env, base_url=base_url, ack_at=ack_at)
+    p = Provider(kind=kind, name=name, key_env=key_env, base_url=base_url, ack_at=ack_at, api_version=api_version)
     session.add(p)
     session.flush()
     return p
@@ -389,8 +396,11 @@ def update_provider(
     key_env: str | None = None,
     base_url: str | None = None,
     clear_base_url: bool = False,
+    api_version: str | None = None,
+    clear_api_version: bool = False,
 ) -> Provider:
-    """Change the key variable name or base URL. The name is part of every model reference and never changes."""
+    """Change the key variable name, base URL, or API version. The name is part of every model reference and
+    never changes."""
     p = get_provider(session, provider_id)
     if key_env is not None:
         p.key_env = key_env
@@ -398,6 +408,10 @@ def update_provider(
         p.base_url = None
     elif base_url is not None:
         p.base_url = base_url
+    if clear_api_version:
+        p.api_version = None
+    elif api_version is not None:
+        p.api_version = api_version
     session.flush()
     return p
 
@@ -428,6 +442,7 @@ def add_registered_model(
     display_name: str = "",
     enabled: bool = True,
     reasoning: bool = False,
+    reasoning_effort: str | None = None,
 ) -> RegisteredModel:
     p = get_provider(session, provider_id)
     if session.scalar(
@@ -435,7 +450,12 @@ def add_registered_model(
     ):
         raise Conflict(f"'{model_id}' is already registered under provider '{p.name}'")
     m = RegisteredModel(
-        provider_id=p.id, model_id=model_id, display_name=display_name, enabled=enabled, reasoning=reasoning
+        provider_id=p.id,
+        model_id=model_id,
+        display_name=display_name,
+        enabled=enabled,
+        reasoning=reasoning,
+        reasoning_effort=reasoning_effort,
     )
     session.add(m)
     session.flush()
@@ -456,6 +476,8 @@ def update_registered_model(
     enabled: bool | None = None,
     reasoning: bool | None = None,
     display_name: str | None = None,
+    reasoning_effort: str | None = None,
+    clear_reasoning_effort: bool = False,
 ) -> RegisteredModel:
     m = get_registered_model(session, model_pk)
     if enabled is not None:
@@ -464,6 +486,10 @@ def update_registered_model(
         m.reasoning = reasoning
     if display_name is not None:
         m.display_name = display_name
+    if clear_reasoning_effort:
+        m.reasoning_effort = None
+    elif reasoning_effort is not None:
+        m.reasoning_effort = reasoning_effort
     session.flush()
     return m
 
@@ -638,9 +664,7 @@ def get_or_create_agent_session(session: Session, agent: Agent, external_id: str
 
 
 def get_or_create_turn(session: Session, agent: Agent, sess: AgentSession, external_id: str) -> AgentTurn:
-    row = session.scalar(
-        select(AgentTurn).where(AgentTurn.agent_id == agent.id, AgentTurn.external_id == external_id)
-    )
+    row = session.scalar(select(AgentTurn).where(AgentTurn.agent_id == agent.id, AgentTurn.external_id == external_id))
     if row:
         return row
     seq = (session.scalar(select(func.max(AgentTurn.seq)).where(AgentTurn.session_id == sess.id)) or -1) + 1
@@ -658,8 +682,13 @@ def get_turn(session: Session, turn_id: int) -> AgentTurn:
 
 
 def list_turns(
-    session: Session, agent_id: int, *, session_external_id: str | None = None, status: str | None = None,
-    limit: int = 50, offset: int = 0,
+    session: Session,
+    agent_id: int,
+    *,
+    session_external_id: str | None = None,
+    status: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
 ) -> list[AgentTurn]:
     q = select(AgentTurn).where(AgentTurn.agent_id == agent_id)
     if status:
@@ -852,7 +881,12 @@ def list_ready_pending_evaluations(session: Session, *, limit: int = 50, overfet
     agent has no *other* turn actually in flight right now (design D7). Filtered in Python after a bounded fetch -
     fine at the single-machine scale this queue targets (design Goals)."""
     now = utcnow()
-    q = select(TurnEvaluation).where(TurnEvaluation.status == "pending").order_by(TurnEvaluation.id).limit(limit * overfetch)
+    q = (
+        select(TurnEvaluation)
+        .where(TurnEvaluation.status == "pending")
+        .order_by(TurnEvaluation.id)
+        .limit(limit * overfetch)
+    )
     candidates = list(session.scalars(q))
     busy_agents = agents_with_open_turns(session, [c.turn.agent_id for c in candidates])
     out: list[TurnEvaluation] = []
@@ -944,7 +978,9 @@ def add_turn_judgement(
 
 def list_turn_judgements(session: Session, evaluation_id: int) -> list[TurnJudgement]:
     return list(
-        session.scalars(select(TurnJudgement).where(TurnJudgement.evaluation_id == evaluation_id).order_by(TurnJudgement.id))
+        session.scalars(
+            select(TurnJudgement).where(TurnJudgement.evaluation_id == evaluation_id).order_by(TurnJudgement.id)
+        )
     )
 
 
@@ -968,13 +1004,18 @@ def rebuild_evaluation_aggregate(session: Session, evaluation_id: int) -> TurnEv
 
 def latest_turn_evaluation(session: Session, turn_id: int) -> TurnEvaluation | None:
     return session.scalar(
-        select(TurnEvaluation).where(TurnEvaluation.turn_id == turn_id).order_by(TurnEvaluation.attempt_no.desc()).limit(1)
+        select(TurnEvaluation)
+        .where(TurnEvaluation.turn_id == turn_id)
+        .order_by(TurnEvaluation.attempt_no.desc())
+        .limit(1)
     )
 
 
 def list_turn_evaluations(session: Session, turn_id: int) -> list[TurnEvaluation]:
     return list(
-        session.scalars(select(TurnEvaluation).where(TurnEvaluation.turn_id == turn_id).order_by(TurnEvaluation.attempt_no))
+        session.scalars(
+            select(TurnEvaluation).where(TurnEvaluation.turn_id == turn_id).order_by(TurnEvaluation.attempt_no)
+        )
     )
 
 

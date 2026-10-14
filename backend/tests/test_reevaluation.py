@@ -8,7 +8,11 @@ from app.traces.schemas import TurnEndEvent, TurnStartEvent
 
 def _agent(session, **eval_kwargs):
     agent, _ = repo.create_agent(
-        session, name="bot", kind="reasoning", declared_model="qwen3:8b", eval_config=EvalConfigIn(**eval_kwargs),
+        session,
+        name="bot",
+        kind="reasoning",
+        declared_model="qwen3:8b",
+        eval_config=EvalConfigIn(**eval_kwargs),
         rubric=None,
     )
     return agent
@@ -18,7 +22,9 @@ def _turn(session, agent, ext, *, reference=None, output="5", quiet_seconds=100)
     sess = repo.get_or_create_agent_session(session, agent, "s1")
     turn = repo.get_or_create_turn(session, agent, sess, ext)
     repo.apply_turn_start(
-        session, turn, TurnStartEvent(v=1, event_id=f"{ext}s", session_id="s1", turn_id=ext, input="2+3?", reference=reference)
+        session,
+        turn,
+        TurnStartEvent(v=1, event_id=f"{ext}s", session_id="s1", turn_id=ext, input="2+3?", reference=reference),
     )
     repo.apply_turn_end(
         session, turn, TurnEndEvent(v=1, event_id=f"{ext}e", session_id="s1", turn_id=ext, status="ok", output=output)

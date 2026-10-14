@@ -1,13 +1,50 @@
 import { useState } from 'react';
 import { useProviderMutations } from '../api/hooks';
 import type { AvailableModel, ConnectionTest, Provider } from '../api/types';
-import { KIND_LABEL, STATUS_LABEL, validateBaseUrl, validateEnvName } from '../lib/providers';
+import {
+  KIND_LABEL,
+  STATUS_LABEL,
+  validateApiVersion,
+  validateBaseUrl,
+  validateEnvName,
+} from '../lib/providers';
 import { fmtDate } from '../lib/format';
 import { Banner, ErrorBox } from './ui';
+
+function ReasoningEffortCell({
+  providerId,
+  modelId,
+  modelRef,
+  value,
+}: {
+  providerId: number;
+  modelId: number;
+  modelRef: string;
+  value: string | null;
+}) {
+  const m = useProviderMutations();
+  const [draft, setDraft] = useState(value ?? '');
+  const commit = () => {
+    const next = draft.trim() || null;
+    if (next !== value) m.updateModel.mutate({ providerId, modelId, reasoning_effort: next });
+  };
+  return (
+    <input
+      type="text"
+      aria-label={`Reasoning effort: ${modelRef}`}
+      value={draft}
+      placeholder="low"
+      style={{ width: 80 }}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={commit}
+    />
+  );
+}
 
 function ModelsTable({ provider }: { provider: Provider }) {
   const m = useProviderMutations();
   const error = m.updateModel.error ?? m.removeModel.error;
+  const isAzure = provider.kind === 'azure-openai';
   if (!provider.models.length) return <p className="muted small">No models registered yet.</p>;
   return (
     <>
@@ -16,8 +53,9 @@ function ModelsTable({ provider }: { provider: Provider }) {
         <table aria-label={`Models of ${provider.name}`}>
           <thead>
             <tr>
-              <th>Model</th>
+              <th>{isAzure ? 'Deployment' : 'Model'}</th>
               <th>Reasoning model</th>
+              <th>Reasoning effort</th>
               <th>Enabled</th>
               <th>
                 <span className="sr-only">Actions</span>
@@ -46,6 +84,18 @@ function ModelsTable({ provider }: { provider: Provider }) {
                       })
                     }
                   />
+                </td>
+                <td>
+                  {mo.reasoning ? (
+                    <ReasoningEffortCell
+                      providerId={provider.id}
+                      modelId={mo.id}
+                      modelRef={mo.ref}
+                      value={mo.reasoning_effort}
+                    />
+                  ) : (
+                    <span className="muted small">n/a</span>
+                  )}
                 </td>
                 <td>
                   <input
@@ -82,10 +132,18 @@ function ModelsTable({ provider }: { provider: Provider }) {
   );
 }
 
+const MODEL_ID_PLACEHOLDER: Record<string, string> = {
+  openai: 'gpt-4o',
+  anthropic: 'claude-sonnet-4-20250514',
+  'azure-openai': 'my-o3-mini-deployment',
+};
+
 function AddModels({ provider }: { provider: Provider }) {
   const m = useProviderMutations();
+  const isAzure = provider.kind === 'azure-openai';
   const [modelId, setModelId] = useState('');
   const [reasoning, setReasoning] = useState(false);
+  const [reasoningEffort, setReasoningEffort] = useState('');
   const [available, setAvailable] = useState<AvailableModel[] | null>(null);
   const [picked, setPicked] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
@@ -94,11 +152,17 @@ function AddModels({ provider }: { provider: Provider }) {
     e.preventDefault();
     if (!modelId.trim()) return;
     m.addModel.mutate(
-      { providerId: provider.id, model_id: modelId.trim(), reasoning },
+      {
+        providerId: provider.id,
+        model_id: modelId.trim(),
+        reasoning,
+        reasoning_effort: reasoning && reasoningEffort.trim() ? reasoningEffort.trim() : null,
+      },
       {
         onSuccess: () => {
           setModelId('');
           setReasoning(false);
+          setReasoningEffort('');
         },
       },
     );
@@ -127,12 +191,12 @@ function AddModels({ provider }: { provider: Provider }) {
         style={{ alignItems: 'flex-end' }}
       >
         <div className="field" style={{ margin: 0 }}>
-          <label htmlFor={`mid-${provider.id}`}>Model id</label>
+          <label htmlFor={`mid-${provider.id}`}>{isAzure ? 'Deployment name' : 'Model id'}</label>
           <input
             id={`mid-${provider.id}`}
             type="text"
             value={modelId}
-            placeholder={provider.kind === 'openai' ? 'gpt-4o' : 'claude-sonnet-4-20250514'}
+            placeholder={MODEL_ID_PLACEHOLDER[provider.kind]}
             onChange={(e) => setModelId(e.target.value)}
           />
         </div>
@@ -144,19 +208,42 @@ function AddModels({ provider }: { provider: Provider }) {
           />
           <span>Reasoning model</span>
         </label>
+        {reasoning && (
+          <div className="field" style={{ margin: 0 }}>
+            <label htmlFor={`mre-${provider.id}`}>
+              Reasoning effort <span className="hint">(optional)</span>
+            </label>
+            <input
+              id={`mre-${provider.id}`}
+              type="text"
+              value={reasoningEffort}
+              placeholder="low"
+              onChange={(e) => setReasoningEffort(e.target.value)}
+            />
+          </div>
+        )}
         <button type="submit" disabled={!modelId.trim() || m.addModel.isPending}>
           Add model
         </button>
-        <button
-          type="button"
-          onClick={() =>
-            m.fetchModels.mutate(provider.id, { onSuccess: (r) => setAvailable(r.models) })
-          }
-          disabled={m.fetchModels.isPending}
-        >
-          {m.fetchModels.isPending ? 'Fetching…' : `Fetch models from ${KIND_LABEL[provider.kind]}`}
-        </button>
+        {!isAzure && (
+          <button
+            type="button"
+            onClick={() =>
+              m.fetchModels.mutate(provider.id, { onSuccess: (r) => setAvailable(r.models) })
+            }
+            disabled={m.fetchModels.isPending}
+          >
+            {m.fetchModels.isPending
+              ? 'Fetching…'
+              : `Fetch models from ${KIND_LABEL[provider.kind]}`}
+          </button>
+        )}
       </form>
+      {isAzure && (
+        <p className="small muted">
+          Azure OpenAI deployments can&rsquo;t be auto-discovered; add each deployment name above.
+        </p>
+      )}
       {!!m.addModel.error && <ErrorBox error={m.addModel.error} title="Could not add the model." />}
       {!!m.fetchModels.error && (
         <ErrorBox error={m.fetchModels.error} title="Could not fetch the model list.">
@@ -209,16 +296,25 @@ function AddModels({ provider }: { provider: Provider }) {
 
 function EditProvider({ provider, onDone }: { provider: Provider; onDone: () => void }) {
   const { update } = useProviderMutations();
+  const isAzure = provider.kind === 'azure-openai';
   const [env, setEnv] = useState(provider.key_env);
   const [url, setUrl] = useState(provider.base_url ?? '');
+  const [apiVersion, setApiVersion] = useState(provider.api_version ?? '');
   const [err, setErr] = useState<string | null>(null);
   const save = (e: React.FormEvent) => {
     e.preventDefault();
-    const problem = validateEnvName(env) ?? validateBaseUrl(url);
+    let problem = validateEnvName(env) ?? validateBaseUrl(url);
+    if (!problem && isAzure && !url.trim()) problem = 'Azure OpenAI requires a base URL.';
+    if (!problem && isAzure && !apiVersion.trim()) problem = validateApiVersion(apiVersion);
     setErr(problem);
     if (problem) return;
     update.mutate(
-      { id: provider.id, key_env: env.trim(), base_url: url.trim() },
+      {
+        id: provider.id,
+        key_env: env.trim(),
+        base_url: url.trim(),
+        ...(isAzure ? { api_version: apiVersion.trim() } : {}),
+      },
       { onSuccess: onDone },
     );
   };
@@ -245,6 +341,17 @@ function EditProvider({ provider, onDone }: { provider: Provider; onDone: () => 
             onChange={(e) => setUrl(e.target.value)}
           />
         </div>
+        {isAzure && (
+          <div className="field" style={{ margin: 0 }}>
+            <label htmlFor={`eav-${provider.id}`}>API version</label>
+            <input
+              id={`eav-${provider.id}`}
+              type="text"
+              value={apiVersion}
+              onChange={(e) => setApiVersion(e.target.value)}
+            />
+          </div>
+        )}
       </div>
       {err && (
         <div className="field-error" role="alert">
@@ -311,6 +418,12 @@ export default function ProviderCard({ provider }: { provider: Provider }) {
           <>
             {' '}
             · base URL <code>{provider.base_url}</code>
+          </>
+        )}
+        {provider.api_version && (
+          <>
+            {' '}
+            · API version <code>{provider.api_version}</code>
           </>
         )}{' '}
         · data sharing acknowledged {fmtDate(provider.data_sharing_acknowledged_at)}

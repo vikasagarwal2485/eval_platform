@@ -66,7 +66,13 @@ def test_turn_response_text_includes_thinking_for_multi_span_turns(session):
         session,
         turn,
         SpanEvent(
-            v=1, event_id="s1", session_id="s1", turn_id="t1", span_id="sp1", kind="llm", model="qwen3:8b",
+            v=1,
+            event_id="s1",
+            session_id="s1",
+            turn_id="t1",
+            span_id="sp1",
+            kind="llm",
+            model="qwen3:8b",
             thinking="step one, step two",
         ),
     )

@@ -12,8 +12,7 @@ from tests.fakes import FakeOllama, make_stream, make_tag
 
 def _judge_reply(score: int = 4):
     scores = {
-        name: {"score": score, "reason": "ok"}
-        for name in ("Relevance", "Helpfulness", "Coherence", "Tone and safety")
+        name: {"score": score, "reason": "ok"} for name in ("Relevance", "Helpfulness", "Coherence", "Tone and safety")
     }
     return json.dumps({"scores": scores})
 
@@ -39,7 +38,11 @@ class _StubRouter:
 
 def _agent(session, **eval_kwargs):
     agent, _ = repo.create_agent(
-        session, name="bot", kind="chatbot", declared_model="author:1", eval_config=EvalConfigIn(**eval_kwargs),
+        session,
+        name="bot",
+        kind="chatbot",
+        declared_model="author:1",
+        eval_config=EvalConfigIn(**eval_kwargs),
         rubric=None,
     )
     return agent
@@ -48,10 +51,22 @@ def _agent(session, **eval_kwargs):
 def _closed_turn(session, agent, ext="t1", author="author:1", quiet_seconds=100):
     sess = repo.get_or_create_agent_session(session, agent, "s1")
     turn = repo.get_or_create_turn(session, agent, sess, ext)
-    repo.apply_turn_start(session, turn, TurnStartEvent(v=1, event_id=f"{ext}s", session_id="s1", turn_id=ext, input="hi"))
+    repo.apply_turn_start(
+        session, turn, TurnStartEvent(v=1, event_id=f"{ext}s", session_id="s1", turn_id=ext, input="hi")
+    )
     repo.apply_span(
-        session, turn,
-        SpanEvent(v=1, event_id=f"{ext}sp", session_id="s1", turn_id=ext, span_id="sp1", kind="llm", model=author, output="hello"),
+        session,
+        turn,
+        SpanEvent(
+            v=1,
+            event_id=f"{ext}sp",
+            session_id="s1",
+            turn_id=ext,
+            span_id="sp1",
+            kind="llm",
+            model=author,
+            output="hello",
+        ),
     )
     repo.apply_turn_end(
         session, turn, TurnEndEvent(v=1, event_id=f"{ext}e", session_id="s1", turn_id=ext, status="ok", output="hello")
@@ -146,7 +161,9 @@ def test_evaluation_defers_only_while_the_agent_has_a_turn_actually_in_flight(se
     with session_factory() as session:
         turn = repo.get_turn(session, repo.list_turns(session, agent.id, status="open")[0].id)
         repo.apply_turn_end(
-            session, turn, TurnEndEvent(v=1, event_id="e", session_id="s1", turn_id="open-turn", status="ok", output="done")
+            session,
+            turn,
+            TurnEndEvent(v=1, event_id="e", session_id="s1", turn_id="open-turn", status="ok", output="done"),
         )
         session.commit()
 

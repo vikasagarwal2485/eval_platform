@@ -20,7 +20,7 @@ export interface ModelInfo {
   unavailable_reason: string | null;
 }
 export type ModelSource = 'local' | 'cloud';
-export type ProviderKind = 'openai' | 'anthropic';
+export type ProviderKind = 'openai' | 'anthropic' | 'azure-openai';
 
 export interface Health {
   status: string;
@@ -343,6 +343,8 @@ export interface ProviderModel {
   display_name: string;
   enabled: boolean;
   reasoning: boolean;
+  /** only meaningful when reasoning is true; e.g. "low" | "medium" | "high" */
+  reasoning_effort: string | null;
 }
 export interface Provider {
   id: number;
@@ -350,6 +352,8 @@ export interface Provider {
   name: string;
   key_env: string;
   base_url: string | null;
+  /** required for azure-openai; unused by other kinds */
+  api_version: string | null;
   /** whether the environment variable currently holds a key; the key itself is never exposed */
   key_available: boolean;
   data_sharing_acknowledged_at: string | null;
@@ -361,10 +365,17 @@ export interface ProviderCreate {
   name: string;
   key_env: string;
   base_url?: string | null;
+  api_version?: string | null;
   acknowledge_data_sharing: boolean;
 }
 export type ConnectionStatus =
-  'working' | 'key_not_set' | 'authentication_failed' | 'rate_limited' | 'unreachable' | 'error';
+  | 'working'
+  | 'key_not_set'
+  | 'authentication_failed'
+  | 'rate_limited'
+  | 'unreachable'
+  | 'no_deployments'
+  | 'error';
 export interface ConnectionTest {
   status: ConnectionStatus;
   message: string;

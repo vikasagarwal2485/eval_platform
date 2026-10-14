@@ -63,7 +63,11 @@ def test_full_agent_evaluation_lifecycle(settings, file_session_factory, monkeyp
     )
     with file_session_factory() as s:
         provider = repo.create_provider(
-            s, kind="openai", name="oa", key_env="MISSING_KEY", base_url="http://unused.invalid",
+            s,
+            kind="openai",
+            name="oa",
+            key_env="MISSING_KEY",
+            base_url="http://unused.invalid",
             ack_at=datetime.now(UTC),
         )
         repo.add_registered_model(s, provider.id, "gpt-4o")
@@ -75,7 +79,9 @@ def test_full_agent_evaluation_lifecycle(settings, file_session_factory, monkeyp
         r = client.post(
             "/api/agents",
             json={
-                "name": "bot", "kind": "chatbot", "declared_model": "author:1",
+                "name": "bot",
+                "kind": "chatbot",
+                "declared_model": "author:1",
                 "eval_config": {"evaluators": ["judge:1", "@oa/gpt-4o"], "quiet_period_s": 0},
                 "provider_acks": ["oa"],
             },
@@ -93,10 +99,25 @@ def test_full_agent_evaluation_lifecycle(settings, file_session_factory, monkeyp
 
         # ---- ingest one turn, out of order (end and span arrive before start), in a single batch
         events = [
-            {"v": 1, "event_id": "e3", "session_id": "s1", "turn_id": "t1", "type": "turn.end", "status": "ok", "output": "hello"},
             {
-                "v": 1, "event_id": "e2", "session_id": "s1", "turn_id": "t1", "type": "span", "span_id": "sp1",
-                "kind": "llm", "model": "author:1", "output": "hello",
+                "v": 1,
+                "event_id": "e3",
+                "session_id": "s1",
+                "turn_id": "t1",
+                "type": "turn.end",
+                "status": "ok",
+                "output": "hello",
+            },
+            {
+                "v": 1,
+                "event_id": "e2",
+                "session_id": "s1",
+                "turn_id": "t1",
+                "type": "span",
+                "span_id": "sp1",
+                "kind": "llm",
+                "model": "author:1",
+                "output": "hello",
             },
             {"v": 1, "event_id": "e1", "session_id": "s1", "turn_id": "t1", "type": "turn.start", "input": "hi"},
         ]
@@ -118,9 +139,11 @@ def test_full_agent_evaluation_lifecycle(settings, file_session_factory, monkeyp
 
         # ---- now the evaluation queue drains: judge:1 (available) judges it, @oa/gpt-4o (no key) is skipped
         evaluated = _wait_until(
-            lambda: (e := client.get(f"/api/agents/{agent['id']}/turns/{turn['id']}").json()["latest_evaluation"])
-            and e["status"] in ("done", "error")
-            and e,
+            lambda: (
+                (e := client.get(f"/api/agents/{agent['id']}/turns/{turn['id']}").json()["latest_evaluation"])
+                and e["status"] in ("done", "error")
+                and e
+            ),
             timeout=30,
         )
         assert evaluated["status"] == "done"
@@ -153,10 +176,25 @@ def _turn_events(ext: str) -> list[dict]:
     return [
         {"v": 1, "event_id": f"{ext}s", "session_id": "s1", "turn_id": ext, "type": "turn.start", "input": ext},
         {
-            "v": 1, "event_id": f"{ext}sp", "session_id": "s1", "turn_id": ext, "type": "span", "span_id": f"{ext}sp1",
-            "kind": "llm", "model": "author:1", "output": "hello",
+            "v": 1,
+            "event_id": f"{ext}sp",
+            "session_id": "s1",
+            "turn_id": ext,
+            "type": "span",
+            "span_id": f"{ext}sp1",
+            "kind": "llm",
+            "model": "author:1",
+            "output": "hello",
         },
-        {"v": 1, "event_id": f"{ext}e", "session_id": "s1", "turn_id": ext, "type": "turn.end", "status": "ok", "output": "hello"},
+        {
+            "v": 1,
+            "event_id": f"{ext}e",
+            "session_id": "s1",
+            "turn_id": ext,
+            "type": "turn.end",
+            "status": "ok",
+            "output": "hello",
+        },
     ]
 
 
@@ -174,7 +212,9 @@ def test_a_continuously_chatting_agent_still_gets_evaluated(settings, file_sessi
         r = client.post(
             "/api/agents",
             json={
-                "name": "bot", "kind": "chatbot", "declared_model": "author:1",
+                "name": "bot",
+                "kind": "chatbot",
+                "declared_model": "author:1",
                 "eval_config": {"evaluators": ["judge:1"], "quiet_period_s": 2},
             },
         )

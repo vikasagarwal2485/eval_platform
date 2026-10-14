@@ -72,8 +72,9 @@ Open <http://127.0.0.1:8000>. For development with hot reload use `make dev` (UI
 
 ## Enterprise model providers
 
-Register OpenAI or Anthropic on the **Providers** page so their models can be evaluated next to your local ones, or
-used as a judge (including a neutral hosted judge for two local models that would otherwise have to judge each other).
+Register OpenAI, Anthropic, or Azure OpenAI on the **Providers** page so their models can be evaluated next to your
+local ones, or used as a judge (including a neutral hosted judge for two local models that would otherwise have to
+judge each other).
 
 - **The application never handles the key itself.** You register a provider with the *name of the environment
   variable* that holds its API key (e.g. `OPENAI_API_KEY`) - there is no field anywhere that accepts a key value. The
@@ -101,6 +102,26 @@ used as a judge (including a neutral hosted judge for two local models that woul
   An unreachable *Ollama*, by contrast, still fails the whole run, as it did before enterprise providers existed.
 - Removing a provider or a model does not touch past runs; they keep their own results and display the model as
   removed.
+
+### Azure OpenAI
+
+Azure OpenAI is registered as its own provider kind (`azure-openai`), not as a custom base URL under `openai` -
+despite sharing OpenAI's chat-completions wire format, it needs a different auth header, URL shape, and a mandatory
+API version on every call, so pointing `openai` at an Azure endpoint will not work.
+
+- **Base URL and API version are required, not optional.** Set the base URL to your Azure resource endpoint and the
+  API version to whatever your resource expects (e.g. `2024-12-01-preview`); there is no shared default for either,
+  since every Azure resource and API version differs. Editing a provider afterwards cannot clear them.
+- **A registered "model" is your Azure deployment name**, not a model id - the screen labels the field accordingly.
+  Requests address that deployment directly (`.../openai/deployments/<deployment>/chat/completions`), and the key
+  travels in an `api-key` header rather than `Authorization: Bearer`.
+- **Deployments can't be auto-discovered.** Listing them needs Azure Resource Manager and an Azure AD credential -
+  a different scheme entirely from the API key this app uses - so there is no "fetch models" action for this kind;
+  add each deployment name directly.
+- **Test connection needs a deployment to test against**, since Azure has no provider-wide endpoint to ping; add a
+  deployment first, or the result explains that one is needed.
+- **Reasoning effort**: a model flagged as a reasoning model can also be given a reasoning-effort level (e.g. `low`),
+  sent on every request to it - the same setting works for official OpenAI reasoning models too.
 
 ## Live agent evaluation
 
@@ -295,8 +316,10 @@ cases:
 | `PORT` / `HOST` | `8000` / `127.0.0.1` | For `make run` |
 
 **Provider API keys are not configured here.** Register a provider on the Providers page by the *name* of the
-environment variable that holds its key (commonly `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`), then export that variable
-yourself in the environment you start the application from - see *Enterprise model providers* above.
+environment variable that holds its key (commonly `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, or `AZURE_OPENAI_API_KEY`),
+then export that variable yourself in the environment you start the application from - see *Enterprise model
+providers* above. An `azure-openai` provider additionally needs its Base URL and API version, set on the Providers
+page itself (not as environment variables).
 
 ## Development
 
@@ -325,9 +348,11 @@ synced capability specs are in `openspec/specs/`.
 
 The backend tests need no Ollama and no real provider key: they use in-process fakes and, for the end-to-end tests,
 fake HTTP servers that speak the real wire protocols - Ollama (`backend/tests/fake_ollama_server.py`, replaying a
-recorded stream from `backend/tests/fixtures`) and OpenAI/Anthropic (`backend/tests/fake_providers.py`). An opt-in
-live smoke test against the *real* OpenAI and Anthropic APIs (`backend/tests/test_live_smoke_enterprise.py`) is
-skipped unless you export a real `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` yourself; it never runs in CI. The agent
+recorded stream from `backend/tests/fixtures`) and OpenAI/Anthropic/Azure OpenAI (`backend/tests/fake_providers.py`).
+An opt-in live smoke test against the *real* OpenAI, Anthropic and Azure OpenAI APIs
+(`backend/tests/test_live_smoke_enterprise.py`) is skipped unless you export a real `OPENAI_API_KEY` /
+`ANTHROPIC_API_KEY`, or all four of `AZURE_OPENAI_API_KEY` / `AZURE_OPENAI_ENDPOINT` / `AZURE_OPENAI_API_VERSION` /
+`AZURE_OPENAI_DEPLOYMENT`, yourself; it never runs in CI. The agent
 SDK and reference agents are tested the same way, from `backend/tests/` (`test_agent_sdk.py`,
 `test_reference_agents.py`, `test_agent_e2e.py`), against fake Ollama/provider servers - importing the
 separate `agents/` package directly rather than installing it, since it is meant to run inside a deployed agent's
@@ -345,6 +370,11 @@ own process, not inside this backend.
   after the process already started, has no effect on the running process.
 - **"Authentication failed" when testing a provider or starting a run** - check the *value* of the variable named on
   the provider (typos, an expired key, extra whitespace); the platform never displays the key to compare it directly.
+  If the error quotes OpenAI's own message (mentioning `platform.openai.com`) but you're using an **Azure** resource,
+  the provider was registered with kind `openai` instead of `azure-openai`: that kind always calls the official
+  OpenAI endpoint, regardless of Base URL, so an Azure key sent there is correctly rejected as not one of OpenAI's own.
+- **Azure OpenAI "Test connection" says "no deployment to test"** - register at least one deployment name first;
+  Azure has no provider-wide endpoint to check, so the test runs against a specific deployment.
 - **Fetching a provider's model list fails** - the error is shown (rate limited, unreachable, or an invalid key), and
   you can still add a model by typing its id directly; nothing blocks that fallback.
 - **`npm install` fails with `EACCES` on `~/.npm/_cacache`** - an old npm bug left root-owned files in your npm cache.

@@ -168,7 +168,9 @@ class EvaluationWorker:
         session.commit()
         return tasks, touched_ids, order
 
-    async def _run_tasks(self, session: Session, order: list[str], tasks: list[_Task], thinking: dict, stats: TickStats):
+    async def _run_tasks(
+        self, session: Session, order: list[str], tasks: list[_Task], thinking: dict, stats: TickStats
+    ):
         by_model: dict[str, list[_Task]] = {}
         for t in tasks:
             by_model.setdefault(t.judge_model, []).append(t)
@@ -201,13 +203,18 @@ class EvaluationWorker:
         score, metrics = await run_judge(self.router, judge_model, call, think=think)
         score.detail["judge_metrics"] = metrics
         repo.add_turn_judgement(
-            session, t.evaluation_id, judge_model=judge_model, value=score.value, outcome=score.outcome,
+            session,
+            t.evaluation_id,
+            judge_model=judge_model,
+            value=score.value,
+            outcome=score.outcome,
             detail=score.detail,
         )
         session.commit()
         if self.on_event:
             await self.on_event(
-                turn.agent_id, "evaluation_progress",
+                turn.agent_id,
+                "evaluation_progress",
                 {"turn_id": turn.id, "evaluation_id": ev.id, "judge_model": judge_model},
             )
 
@@ -222,7 +229,11 @@ class EvaluationWorker:
             if repo.list_turn_judgements(session, eid):
                 ev = repo.rebuild_evaluation_aggregate(session, eid)
                 self._pending_events.append(
-                    (ev.turn.agent_id, "evaluation_finished", {"turn_id": ev.turn_id, "status": ev.status, "value": ev.value})
+                    (
+                        ev.turn.agent_id,
+                        "evaluation_finished",
+                        {"turn_id": ev.turn_id, "status": ev.status, "value": ev.value},
+                    )
                 )
             else:
                 repo.set_evaluation_status(session, eid, "pending")

@@ -17,9 +17,13 @@ def _agent(session, **kw):
 def _turn(session, agent, ext, *, status="ok", latency_ms=100.0, value=None, skip_reason=None):
     sess = repo.get_or_create_agent_session(session, agent, "s1")
     turn = repo.get_or_create_turn(session, agent, sess, ext)
-    repo.apply_turn_start(session, turn, TurnStartEvent(v=1, event_id=f"{ext}s", session_id="s1", turn_id=ext, input="hi"))
+    repo.apply_turn_start(
+        session, turn, TurnStartEvent(v=1, event_id=f"{ext}s", session_id="s1", turn_id=ext, input="hi")
+    )
     repo.apply_turn_end(
-        session, turn, TurnEndEvent(v=1, event_id=f"{ext}e", session_id="s1", turn_id=ext, status=status, output="hello")
+        session,
+        turn,
+        TurnEndEvent(v=1, event_id=f"{ext}e", session_id="s1", turn_id=ext, status=status, output="hello"),
     )
     turn.latency_ms = latency_ms
     session.flush()

@@ -17,10 +17,25 @@ def _turn_events(ext="t1", author="author:1"):
     return [
         {"v": 1, "event_id": f"{ext}s", "session_id": "s1", "turn_id": ext, "type": "turn.start", "input": "hi"},
         {
-            "v": 1, "event_id": f"{ext}sp", "session_id": "s1", "turn_id": ext, "type": "span", "span_id": f"{ext}sp1",
-            "kind": "llm", "model": author, "output": "hello",
+            "v": 1,
+            "event_id": f"{ext}sp",
+            "session_id": "s1",
+            "turn_id": ext,
+            "type": "span",
+            "span_id": f"{ext}sp1",
+            "kind": "llm",
+            "model": author,
+            "output": "hello",
         },
-        {"v": 1, "event_id": f"{ext}e", "session_id": "s1", "turn_id": ext, "type": "turn.end", "status": "ok", "output": "hello"},
+        {
+            "v": 1,
+            "event_id": f"{ext}e",
+            "session_id": "s1",
+            "turn_id": ext,
+            "type": "turn.end",
+            "status": "ok",
+            "output": "hello",
+        },
     ]
 
 
@@ -48,7 +63,9 @@ def test_self_evaluator_rejected(settings, file_session_factory):
         r = c.post(
             "/api/agents",
             json={
-                "name": "bot", "kind": "chatbot", "declared_model": "author:1",
+                "name": "bot",
+                "kind": "chatbot",
+                "declared_model": "author:1",
                 "eval_config": {"evaluators": ["author:1"]},
             },
         )
@@ -61,7 +78,9 @@ def test_hosted_evaluator_requires_ack(settings, file_session_factory):
         r = c.post(
             "/api/agents",
             json={
-                "name": "bot", "kind": "chatbot", "declared_model": "author:1",
+                "name": "bot",
+                "kind": "chatbot",
+                "declared_model": "author:1",
                 "eval_config": {"evaluators": ["@openai-main/gpt-4o"]},
             },
         )
@@ -69,8 +88,11 @@ def test_hosted_evaluator_requires_ack(settings, file_session_factory):
         r = c.post(
             "/api/agents",
             json={
-                "name": "bot", "kind": "chatbot", "declared_model": "author:1",
-                "eval_config": {"evaluators": ["@openai-main/gpt-4o"]}, "provider_acks": ["openai-main"],
+                "name": "bot",
+                "kind": "chatbot",
+                "declared_model": "author:1",
+                "eval_config": {"evaluators": ["@openai-main/gpt-4o"]},
+                "provider_acks": ["openai-main"],
             },
         )
         assert r.status_code == 201

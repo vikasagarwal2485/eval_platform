@@ -50,10 +50,16 @@ def collect_everything(client, agent_id, turn_ids) -> dict[str, str]:
     out: dict[str, str] = {}
     pid = client.get("/api/providers").json()[0]["id"]
     urls = [
-        "/api/providers", f"/api/providers/{pid}", "/api/health",
-        "/api/agents", f"/api/agents/{agent_id}", f"/api/agents/{agent_id}/turns",
-        f"/api/agents/{agent_id}/summary", f"/api/agents/{agent_id}/attention",
-        f"/api/agents/{agent_id}/export?format=csv", f"/api/agents/{agent_id}/export?format=json",
+        "/api/providers",
+        f"/api/providers/{pid}",
+        "/api/health",
+        "/api/agents",
+        f"/api/agents/{agent_id}",
+        f"/api/agents/{agent_id}/turns",
+        f"/api/agents/{agent_id}/summary",
+        f"/api/agents/{agent_id}/attention",
+        f"/api/agents/{agent_id}/export?format=csv",
+        f"/api/agents/{agent_id}/export?format=json",
     ]
     for tid in turn_ids:
         urls.append(f"/api/agents/{agent_id}/turns/{tid}")
@@ -78,10 +84,25 @@ def _ingest(client, token, ext) -> None:
     events = [
         {"v": 1, "event_id": f"{ext}s", "session_id": "s1", "turn_id": ext, "type": "turn.start", "input": "hi"},
         {
-            "v": 1, "event_id": f"{ext}sp", "session_id": "s1", "turn_id": ext, "type": "span", "span_id": f"{ext}sp1",
-            "kind": "llm", "model": "author:1", "output": "hello",
+            "v": 1,
+            "event_id": f"{ext}sp",
+            "session_id": "s1",
+            "turn_id": ext,
+            "type": "span",
+            "span_id": f"{ext}sp1",
+            "kind": "llm",
+            "model": "author:1",
+            "output": "hello",
         },
-        {"v": 1, "event_id": f"{ext}e", "session_id": "s1", "turn_id": ext, "type": "turn.end", "status": "ok", "output": "hello"},
+        {
+            "v": 1,
+            "event_id": f"{ext}e",
+            "session_id": "s1",
+            "turn_id": ext,
+            "type": "turn.end",
+            "status": "ok",
+            "output": "hello",
+        },
     ]
     r = client.post("/api/ingest/v1/events", json=events, headers={"Authorization": f"Bearer {token}"})
     assert r.status_code == 200, r.text
@@ -107,7 +128,9 @@ def test_no_key_reaches_agent_api_export_db_or_stored_errors(settings, file_sess
             r = client.post(
                 "/api/agents",
                 json={
-                    "name": "bot", "kind": "chatbot", "declared_model": "author:1",
+                    "name": "bot",
+                    "kind": "chatbot",
+                    "declared_model": "author:1",
                     "eval_config": {"evaluators": ["@oa/gpt-4o"], "quiet_period_s": 0},
                     "provider_acks": ["oa"],
                 },
@@ -116,9 +139,13 @@ def test_no_key_reaches_agent_api_export_db_or_stored_errors(settings, file_sess
             agent = r.json()
 
             # First turn: the evaluator fails and echoes the key back (as a real provider error sometimes does).
-            oa.script.append(Step(kind="status", status=401, body={"error": {"message": f"Incorrect API key: {SENTINEL}"}}))
+            oa.script.append(
+                Step(kind="status", status=401, body={"error": {"message": f"Incorrect API key: {SENTINEL}"}})
+            )
             _ingest(client, agent["token"], "t1")
-            first = _wait_for_evaluation(client, agent["id"], client.get(f"/api/agents/{agent['id']}/turns").json()[0]["id"])
+            first = _wait_for_evaluation(
+                client, agent["id"], client.get(f"/api/agents/{agent['id']}/turns").json()[0]["id"]
+            )
             assert first["status"] == "error"  # the failure really happened - else this test proves nothing
 
             # Second turn: the evaluator succeeds normally.

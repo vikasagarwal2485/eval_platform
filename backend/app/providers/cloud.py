@@ -172,7 +172,9 @@ class CloudBackend:
         finally:
             await opened.response.aclose()
 
-    async def ping(self) -> None:
+    async def ping(self, model: str | None = None, reasoning: bool = False) -> None:
+        """`model`/`reasoning` are unused by the default implementation; azure-openai overrides this to test a
+        specific deployment, for which whether it is a reasoning model changes how it must be pinged."""
         await self.list_models()
 
     async def list_models(self) -> list[str]:
