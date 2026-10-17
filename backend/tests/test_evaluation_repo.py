@@ -10,7 +10,7 @@ def _agent(session, **eval_kwargs):
         session,
         name="bot",
         kind="chatbot",
-        declared_model="qwen3:8b",
+        declared_models={"default": "qwen3:8b"},
         eval_config=EvalConfigIn(**eval_kwargs),
         rubric=None,
     )

@@ -81,7 +81,7 @@ def test_full_agent_evaluation_lifecycle(settings, file_session_factory, monkeyp
             json={
                 "name": "bot",
                 "kind": "chatbot",
-                "declared_model": "author:1",
+                "declared_models": {"default": "author:1"},
                 "eval_config": {"evaluators": ["judge:1", "@oa/gpt-4o"], "quiet_period_s": 0},
                 "provider_acks": ["oa"],
             },
@@ -214,7 +214,7 @@ def test_a_continuously_chatting_agent_still_gets_evaluated(settings, file_sessi
             json={
                 "name": "bot",
                 "kind": "chatbot",
-                "declared_model": "author:1",
+                "declared_models": {"default": "author:1"},
                 "eval_config": {"evaluators": ["judge:1"], "quiet_period_s": 2},
             },
         )

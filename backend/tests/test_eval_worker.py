@@ -41,7 +41,7 @@ def _agent(session, **eval_kwargs):
         session,
         name="bot",
         kind="chatbot",
-        declared_model="author:1",
+        declared_models={"default": "author:1"},
         eval_config=EvalConfigIn(**eval_kwargs),
         rubric=None,
     )

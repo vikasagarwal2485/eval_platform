@@ -1,10 +1,17 @@
 import { useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { useAgent } from '../api/hooks';
+import type { DeclaredModels } from '../api/types';
 import AgentQualityPanel from '../components/agents/AgentQualityPanel';
 import AgentSettingsPanel from '../components/agents/AgentSettingsPanel';
 import AgentTurnsPanel from '../components/agents/AgentTurnsPanel';
 import { ErrorBox, Spinner } from '../components/ui';
+
+/** The model reference out of one declared_models entry, whichever shape it is (mirrors the backend's
+ * `declared_model_ref` - `app/schemas.py`). */
+function declaredModelRef(entry: DeclaredModels[string]): string {
+  return typeof entry === 'string' ? entry : entry.model;
+}
 
 const TABS = ['live', 'conversations', 'quality', 'settings'] as const;
 type Tab = (typeof TABS)[number];
@@ -38,7 +45,17 @@ export default function AgentPage() {
             </span>
           </h1>
           <p className="muted">
-            Declared model: <code>{agent.declared_model}</code>
+            Declared models:{' '}
+            {Object.entries(agent.declared_models)
+              .map(([taskType, entry]) => {
+                const model = declaredModelRef(entry);
+                return taskType === 'default' ? model : `${taskType}: ${model}`;
+              })
+              .map((label, i) => (
+                <code key={i} style={{ marginRight: 8 }}>
+                  {label}
+                </code>
+              ))}
           </p>
         </div>
       </div>

@@ -1,6 +1,6 @@
 import { screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { mockApi, renderApp } from '../test/utils';
+import { jsonError, mockApi, renderApp } from '../test/utils';
 import AgentsPage from './AgentsPage';
 
 afterEach(() => vi.unstubAllGlobals());
@@ -9,7 +9,7 @@ const agent = (over = {}) => ({
   id: 1,
   name: 'demo-chatbot',
   kind: 'chatbot',
-  declared_model: 'qwen3:8b',
+  declared_models: { default: 'qwen3:8b' },
   status: 'active',
   liveness: 'idle',
   token_prefix: 'abcd1234',
@@ -66,12 +66,125 @@ describe('registration', () => {
     });
     await user.click(await screen.findByRole('button', { name: 'Register agent' }));
     await user.type(screen.getByLabelText('Name'), 'new-bot');
-    await user.type(screen.getByLabelText('Declared model'), 'qwen3:8b');
+    await user.type(screen.getByLabelText('Model for declared model 1'), 'qwen3:8b');
     await user.click(screen.getByRole('button', { name: 'Register' }));
     expect(await screen.findByText('RAW-TOKEN-VALUE')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Done' })).toBeInTheDocument();
     // the token never lingers once acknowledged
     await user.click(screen.getByRole('button', { name: 'Done' }));
     expect(screen.queryByText('RAW-TOKEN-VALUE')).not.toBeInTheDocument();
+  });
+
+  it('sends a temperature override as a declared-model object, not a plain string', async () => {
+    const { user, calls } = setup([], {
+      'POST /agents': { ...agent({ name: 'new-bot' }), token: 'RAW-TOKEN-VALUE' },
+    });
+    await user.click(await screen.findByRole('button', { name: 'Register agent' }));
+    await user.type(screen.getByLabelText('Name'), 'new-bot');
+    await user.type(screen.getByLabelText('Model for declared model 1'), 'qwen3:8b');
+    await user.type(screen.getByLabelText('Temperature for declared model 1'), '0.2');
+    await user.click(screen.getByRole('button', { name: 'Register' }));
+    await screen.findByText('RAW-TOKEN-VALUE');
+    const post = calls.find((c) => c.method === 'POST' && c.path === '/agents');
+    expect(post?.body.declared_models).toEqual({
+      default: { model: 'qwen3:8b', params: { temperature: 0.2 } },
+    });
+  });
+
+  it('leaves a declared model as a plain string when no temperature is set', async () => {
+    const { user, calls } = setup([], {
+      'POST /agents': { ...agent({ name: 'new-bot' }), token: 'RAW-TOKEN-VALUE' },
+    });
+    await user.click(await screen.findByRole('button', { name: 'Register agent' }));
+    await user.type(screen.getByLabelText('Name'), 'new-bot');
+    await user.type(screen.getByLabelText('Model for declared model 1'), 'qwen3:8b');
+    await user.click(screen.getByRole('button', { name: 'Register' }));
+    await screen.findByText('RAW-TOKEN-VALUE');
+    const post = calls.find((c) => c.method === 'POST' && c.path === '/agents');
+    expect(post?.body.declared_models).toEqual({ default: 'qwen3:8b' });
+  });
+
+  it('sends a fallback as part of the declared-model object, omitted entirely when blank', async () => {
+    const { user, calls } = setup([], {
+      'POST /agents': { ...agent({ name: 'new-bot' }), token: 'RAW-TOKEN-VALUE' },
+    });
+    await user.click(await screen.findByRole('button', { name: 'Register agent' }));
+    await user.type(screen.getByLabelText('Name'), 'new-bot');
+    await user.type(screen.getByLabelText('Model for declared model 1'), 'qwen3:8b');
+    await user.type(screen.getByLabelText('Fallback model for declared model 1'), 'qwen3:14b');
+    await user.click(screen.getByRole('button', { name: 'Register' }));
+    await screen.findByText('RAW-TOKEN-VALUE');
+    const post = calls.find((c) => c.method === 'POST' && c.path === '/agents');
+    expect(post?.body.declared_models).toEqual({
+      default: { model: 'qwen3:8b', fallback: 'qwen3:14b' },
+    });
+  });
+
+  it('gates a hosted declared-model fallback behind a data-sharing acknowledgment, then registers', async () => {
+    let acked = false;
+    const { user } = setup([], {
+      'POST /agents': () => {
+        if (!acked)
+          return jsonError(422, {
+            code: 'ack_required',
+            message: 'needs ack',
+            provider: 'azure-main',
+          });
+        return { ...agent({ name: 'new-bot' }), token: 'RAW-TOKEN-VALUE' };
+      },
+    });
+    await user.click(await screen.findByRole('button', { name: 'Register agent' }));
+    await user.type(screen.getByLabelText('Name'), 'new-bot');
+    await user.type(screen.getByLabelText('Model for declared model 1'), 'qwen3:8b');
+    await user.type(
+      screen.getByLabelText('Fallback model for declared model 1'),
+      '@azure-main/gpt-4o-mini',
+    );
+    await user.click(screen.getByRole('button', { name: 'Register' }));
+    const ackButton = await screen.findByRole('button', { name: 'Acknowledge and register' });
+    acked = true;
+    await user.click(ackButton);
+    await user.click(screen.getByRole('button', { name: 'Register' }));
+    expect(await screen.findByText('RAW-TOKEN-VALUE')).toBeInTheDocument();
+  });
+
+  it('gates a hosted declared model behind a data-sharing acknowledgment, then registers', async () => {
+    let acked = false;
+    const { user } = setup([], {
+      'POST /agents': () => {
+        if (!acked)
+          return jsonError(422, {
+            code: 'ack_required',
+            message: 'needs ack',
+            provider: 'azure-main',
+          });
+        return { ...agent({ name: 'new-bot' }), token: 'RAW-TOKEN-VALUE' };
+      },
+    });
+    await user.click(await screen.findByRole('button', { name: 'Register agent' }));
+    await user.type(screen.getByLabelText('Name'), 'new-bot');
+    await user.type(screen.getByLabelText('Model for declared model 1'), '@azure-main/gpt-4o-mini');
+    await user.click(screen.getByRole('button', { name: 'Register' }));
+    const ackButton = await screen.findByRole('button', { name: 'Acknowledge and register' });
+    acked = true;
+    await user.click(ackButton);
+    await user.click(screen.getByRole('button', { name: 'Register' }));
+    expect(await screen.findByText('RAW-TOKEN-VALUE')).toBeInTheDocument();
+  });
+
+  it('shows a non-ok gateway_sync result after registering', async () => {
+    const { user } = setup([], {
+      'POST /agents': {
+        ...agent({ name: 'new-bot' }),
+        token: 'RAW-TOKEN-VALUE',
+        gateway_sync: { default: { status: 'error', detail: 'gateway unreachable' } },
+      },
+    });
+    await user.click(await screen.findByRole('button', { name: 'Register agent' }));
+    await user.type(screen.getByLabelText('Name'), 'new-bot');
+    await user.type(screen.getByLabelText('Model for declared model 1'), 'qwen3:8b');
+    await user.click(screen.getByRole('button', { name: 'Register' }));
+    expect(await screen.findByText(/Gateway sync error/)).toBeInTheDocument();
+    expect(screen.getByText(/gateway unreachable/)).toBeInTheDocument();
   });
 });

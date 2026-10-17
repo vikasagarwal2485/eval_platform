@@ -1,0 +1,36 @@
+# LiteLLM Proxy config for the shared agent gateway (design.md: "add-litellm-gateway-infra").
+#
+# Local/dev default: both model groups point at the local Ollama instance (no provider key
+# needed), using two different local models so the two groups are observably distinct. Swap
+# either deployment's `litellm_params` for a real cloud provider by pointing `model` at
+# `<provider>/<model>` and sourcing `api_key` from `os.environ/<VAR>` - never a literal key here.
+#
+# Per design.md: this file is hand-authored until `add-agent-multi-model-registry`'s registry
+# becomes authoritative and a later change generates/validates this file from it.
+
+model_list:
+  - model_name: reasoning-agent__reasoning
+    litellm_params:
+      model: ollama_chat/qwen3:8b
+      api_base: http://localhost:11434
+      # Cloud swap example (commented out - requires ANTHROPIC_API_KEY in the gateway's own env):
+      # model: anthropic/claude-sonnet-5
+      # api_key: "os.environ/ANTHROPIC_API_KEY"
+
+  - model_name: reasoning-agent__generation
+    litellm_params:
+      model: ollama_chat/gemma4:e4b
+      api_base: http://localhost:11434
+      # Cloud swap example (commented out - requires OPENAI_API_KEY in the gateway's own env):
+      # model: openai/gpt-4o
+      # api_key: "os.environ/OPENAI_API_KEY"
+
+litellm_settings:
+  drop_params: true
+  num_retries: 3
+  request_timeout: 60
+  # fallbacks intentionally unconfigured in this phase (design.md: "No fallback between
+  # providers configured in phase 1") - each group has exactly one deployment for now.
+
+general_settings:
+  master_key: "os.environ/LITELLM_MASTER_KEY"

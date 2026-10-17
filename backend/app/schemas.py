@@ -25,12 +25,13 @@ class ModelInfo(BaseModel):
 
 
 # ---------------------------------------------------------------- test cases / suites
-from typing import Literal  # noqa: E402
+from typing import Any, Literal  # noqa: E402
 
 from pydantic import BaseModel as _BM  # noqa: E402
 from pydantic import ConfigDict, Field, field_validator, model_validator
 
 from app.core.text import normalize, parse_number  # noqa: E402
+from app.providers.refs import parse_ref  # noqa: E402
 
 Category = Literal["classification", "reasoning", "generation"]
 CATEGORIES: tuple[str, ...] = ("classification", "reasoning", "generation")
@@ -240,25 +241,109 @@ class EvalConfigIn(_BM):
     retention_days: int | None = Field(default=None, ge=1, le=3650)
 
 
+class DeclaredModelSpec(_BM):
+    """A declared model given as an object instead of a plain string, to carry generation-parameter
+    overrides alongside the model reference (`add-gateway-model-sync`) - e.g.
+    `{"model": "@anthropic-main/claude-sonnet-5", "params": {"temperature": 0.2}}`. `params` is passed through
+    opaquely to the gateway sync step; this schema does not know or validate any individual provider's valid
+    parameter set.
+
+    `fallback` (`add-declared-model-fallback`) is an optional second model reference, synced to its own gateway
+    model group, for the platform to fall back to when the primary is unreachable - validated the same way as
+    `model`, but it does not get its own nested `params`/`fallback` (see design.md's "Decisions": a fallback's
+    own generation params, if ever needed, reuse the primary's `params` rather than needing a separate field)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    model: str = Field(min_length=1, max_length=300)
+    params: dict[str, Any] | None = None
+    fallback: str | None = Field(default=None, min_length=1, max_length=300)
+
+
+def declared_model_ref(entry: str | DeclaredModelSpec | dict) -> str:
+    """The model reference out of one `declared_models` entry, whichever of the two accepted shapes it is -
+    shared by every reader (the self-evaluator check, the gateway sync step, ...) so neither has to know about
+    the other's shape assumptions."""
+    if isinstance(entry, str):
+        return entry
+    if isinstance(entry, DeclaredModelSpec):
+        return entry.model
+    return entry["model"]
+
+
+def declared_model_fallback_ref(entry: str | DeclaredModelSpec | dict) -> str | None:
+    """The fallback model reference out of one `declared_models` entry, if it has one - `None` for a plain-string
+    entry (no fallback possible) or an object entry with no `fallback` set. Mirrors `declared_model_ref` so every
+    reader (validation, provider-ack checks, gateway sync) extracts it the same way."""
+    if isinstance(entry, str):
+        return None
+    if isinstance(entry, DeclaredModelSpec):
+        return entry.fallback
+    return entry.get("fallback")
+
+
+def _validate_declared_models(
+    v: dict[str, str | DeclaredModelSpec],
+) -> dict[str, str | dict[str, Any]]:
+    """Shared by AgentCreate/AgentSettingsUpdate (spec `agent-registry`, "Register an agent" / "At least one
+    declared model is required"): each value must be a real model reference, and the map must not be empty - an
+    agent with no declared model can't be checked against its evaluator list. A plain-string entry is stored
+    exactly as given (unchanged from before this schema accepted the object form); an object entry is stored as
+    a plain dict (`{"model": ..., "params": {...}}`), never a pydantic model instance, so every downstream
+    reader (ORM assignment, JSON serialization) sees only `str | dict`."""
+    if not v:
+        raise ValueError("at least one declared model is required")
+    out: dict[str, str | dict[str, Any]] = {}
+    for key, entry in v.items():
+        try:
+            parse_ref(declared_model_ref(entry))
+        except ValueError as exc:
+            raise ValueError(f"declared_models['{key}']: {exc}") from None
+        fallback_ref = declared_model_fallback_ref(entry)
+        if fallback_ref is not None:
+            try:
+                parse_ref(fallback_ref)
+            except ValueError as exc:
+                raise ValueError(f"declared_models['{key}'].fallback: {exc}") from None
+        out[key] = entry if isinstance(entry, str) else entry.model_dump(exclude_none=True)
+    return out
+
+
 class AgentCreate(_BM):
     model_config = ConfigDict(extra="forbid")
 
     name: str = Field(min_length=1, max_length=200)
     kind: AgentKind
-    declared_model: str = Field(min_length=1, max_length=300)
+    # One or more models the agent declares it uses, keyed by the task each serves (e.g. "reasoning",
+    # "generation"); an agent with one undifferentiated task uses the conventional key "default". A value is
+    # either a plain model-reference string, or a DeclaredModelSpec object carrying generation-parameter
+    # overrides alongside the reference.
+    declared_models: dict[str, str | DeclaredModelSpec]
     eval_config: EvalConfigIn = EvalConfigIn()
     rubric: list[RubricCriterionIn] | None = None
     provider_acks: list[str] = []  # provider names being acknowledged in this same request
+
+    @field_validator("declared_models")
+    @classmethod
+    def _check_declared_models(cls, v: dict[str, str | DeclaredModelSpec]) -> dict[str, str | dict[str, Any]]:
+        return _validate_declared_models(v)
 
 
 class AgentSettingsUpdate(_BM):
     model_config = ConfigDict(extra="forbid")
 
-    declared_model: str | None = Field(default=None, min_length=1, max_length=300)
+    declared_models: dict[str, str | DeclaredModelSpec] | None = None
     eval_config: EvalConfigIn | None = None
     rubric: list[RubricCriterionIn] | None = None
     clear_rubric: bool = False
     provider_acks: list[str] = []
+
+    @field_validator("declared_models")
+    @classmethod
+    def _check_declared_models(
+        cls, v: dict[str, str | DeclaredModelSpec] | None
+    ) -> dict[str, str | dict[str, Any]] | None:
+        return v if v is None else _validate_declared_models(v)
 
 
 class EvaluateTurnRequest(_BM):

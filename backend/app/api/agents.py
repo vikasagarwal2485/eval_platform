@@ -15,6 +15,7 @@ from app.api.deps import get_session
 from app.core.agent_export import export_rows, to_csv
 from app.core.agent_summary import build_agent_summary, list_needs_attention
 from app.core.events import agent_channel
+from app.core.gateway_sync import sync_agent_model_groups
 from app.models import Agent, AgentSpan, AgentTurn, TurnEvaluation, TurnJudgement, utcnow
 from app.schemas import AgentCreate, AgentSettingsUpdate, BulkReevaluateRequest, EvaluateTurnRequest
 
@@ -55,7 +56,7 @@ def _agent_out(agent: Agent) -> dict:
         "id": agent.id,
         "name": agent.name,
         "kind": agent.kind,
-        "declared_model": agent.declared_model,
+        "declared_models": agent.declared_models,
         "status": agent.status,
         "liveness": _liveness(agent),
         "token_prefix": agent.token_prefix,
@@ -156,13 +157,13 @@ def _parse_dt(value: str | None) -> datetime | None:
 
 # ------------------------------------------------------------------ registry (spec agent-registry)
 @router.post("", status_code=201)
-def create_agent(body: AgentCreate, session: Session = Depends(get_session)):
+def create_agent(body: AgentCreate, request: Request, session: Session = Depends(get_session)):
     try:
         agent, token = repo.create_agent(
             session,
             name=body.name,
             kind=body.kind,
-            declared_model=body.declared_model,
+            declared_models=body.declared_models,
             eval_config=body.eval_config,
             rubric=[c.model_dump() for c in body.rubric] if body.rubric else None,
             provider_acks=body.provider_acks,
@@ -175,6 +176,9 @@ def create_agent(body: AgentCreate, session: Session = Depends(get_session)):
         return _err(422, "invalid_settings", str(exc))
     out = _agent_out(agent)
     out["token"] = token  # shown once
+    # Keeps the gateway's per-agent model groups matching the registry (add-gateway-model-sync) - never raises,
+    # never blocks the agent from being created even when the gateway is unreachable or unconfigured.
+    out["gateway_sync"] = sync_agent_model_groups(session, agent, request.app.state.settings)
     return out
 
 
@@ -189,14 +193,22 @@ def get_agent(agent_id: int, session: Session = Depends(get_session)):
 
 
 @router.patch("/{agent_id}")
-def update_agent(agent_id: int, body: AgentSettingsUpdate, session: Session = Depends(get_session)):
+def update_agent(agent_id: int, body: AgentSettingsUpdate, request: Request, session: Session = Depends(get_session)):
+    previous_declared_models = dict(repo.get_agent(session, agent_id).declared_models or {})
     try:
         agent = repo.update_agent_settings(session, agent_id, body)
     except repo.AckRequired as exc:
         return _err(422, "ack_required", str(exc), provider=exc.provider)
     except ValueError as exc:
         return _err(422, "invalid_settings", str(exc))
-    return _agent_out(agent)
+    out = _agent_out(agent)
+    if body.declared_models is not None:
+        # Only re-sync when this update actually touched declared_models - every other settings field (sample
+        # rate, rubric, ...) has nothing for the gateway to know about.
+        out["gateway_sync"] = sync_agent_model_groups(
+            session, agent, request.app.state.settings, previous_declared_models=previous_declared_models
+        )
+    return out
 
 
 @router.post("/{agent_id}/pause")

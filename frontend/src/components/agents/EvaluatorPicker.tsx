@@ -6,20 +6,25 @@ interface Props {
   models: ModelInfo[] | undefined;
   loading: boolean;
   error: unknown;
-  declaredModel: string;
+  /** every model this agent declares, across all its task types - an evaluator matching any one of them is
+   * never selectable (spec `agent-registry`: "A multi-model agent is checked against all of its declared
+   * models, not just one"). This is a client-side UX hint only, by exact name; the backend's `same_model` check
+   * (digest-aware) is authoritative regardless. */
+  declaredModels: string[];
   selected: string[];
   onChange: (names: string[]) => void;
   /** provider names the current settings form has acknowledged in this session, in addition to `provider_acks` */
   acknowledgedProviders: string[];
 }
 
-/** Same local/cloud grouping as the benchmark-run model picker (spec `agent-registry`: an evaluator equal to the
- * agent's declared model is never selectable, and a hosted evaluator needs its provider acknowledged first). */
+/** Same local/cloud grouping as the benchmark-run model picker (spec `agent-registry`: an evaluator equal to any
+ * of the agent's declared models is never selectable, and a hosted evaluator needs its provider acknowledged
+ * first). */
 export default function EvaluatorPicker({
   models,
   loading,
   error,
-  declaredModel,
+  declaredModels,
   selected,
   onChange,
   acknowledgedProviders,
@@ -38,7 +43,7 @@ export default function EvaluatorPicker({
           <legend>{g.title}</legend>
           <div className="model-list">
             {g.models.map((m) => {
-              const isSelf = m.name === declaredModel;
+              const isSelf = declaredModels.includes(m.name);
               const needsAck =
                 m.source === 'cloud' && !!m.provider && !acknowledgedProviders.includes(m.provider);
               const disabled = isSelf || !m.available;
@@ -62,7 +67,9 @@ export default function EvaluatorPicker({
                   </div>
                   <div className="row" style={{ marginTop: 6 }}>
                     {m.source === 'cloud' && <span className="badge info">cloud</span>}
-                    {isSelf && <span className="badge warn">this agent&apos;s own model</span>}
+                    {isSelf && (
+                      <span className="badge warn">one of this agent&apos;s own models</span>
+                    )}
                     {!m.available && !isSelf && <span className="badge warn">unavailable</span>}
                     {needsAck && !isSelf && (
                       <span className="badge warn">needs acknowledgment</span>
@@ -70,7 +77,7 @@ export default function EvaluatorPicker({
                   </div>
                   {isSelf && (
                     <div id={reasonId} className="small muted" style={{ marginTop: 4 }}>
-                      An agent cannot evaluate its own declared model.
+                      An agent cannot evaluate any of its own declared models.
                     </div>
                   )}
                   {!isSelf && !m.available && (

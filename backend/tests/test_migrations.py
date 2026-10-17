@@ -164,9 +164,10 @@ def test_agent_turn_and_session_are_unique_per_agent_and_cascade(tmp_path):
     with eng.begin() as conn:
         conn.execute(
             text(
-                "INSERT INTO agent (id, name, kind, declared_model, status, token_hash, token_prefix, "
+                "INSERT INTO agent (id, name, kind, declared_models, status, token_hash, token_prefix, "
                 "eval_config, provider_acks, created_at) "
-                "VALUES (1, 'bot', 'chatbot', 'qwen3:8b', 'active', 'h', 'p', '{}', '{}', '2026-01-01')"
+                "VALUES (1, 'bot', 'chatbot', '{\"default\": \"qwen3:8b\"}', 'active', 'h', 'p', '{}', '{}', "
+                "'2026-01-01')"
             )
         )
         conn.execute(

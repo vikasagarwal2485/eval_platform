@@ -33,7 +33,15 @@ from app.models import (
     utcnow,
 )
 from app.providers.refs import is_cloud_ref, parse_ref
-from app.schemas import AgentSettingsUpdate, CaseIn, EvalConfigIn, ModelInfo, SuiteIn
+from app.schemas import (
+    AgentSettingsUpdate,
+    CaseIn,
+    EvalConfigIn,
+    ModelInfo,
+    SuiteIn,
+    declared_model_fallback_ref,
+    declared_model_ref,
+)
 
 
 class NotFound(Exception):
@@ -45,13 +53,13 @@ class Conflict(Exception):
 
 
 class AckRequired(ValueError):
-    """Raised when saving evaluator settings would send an agent's live traffic to a provider that has not been
-    acknowledged for this agent yet (spec `agent-registry`: data-sharing acknowledgment)."""
+    """Raised when saving an evaluator or a declared model would send an agent's live traffic to a provider
+    that has not been acknowledged for this agent yet (spec `agent-registry`: data-sharing acknowledgment)."""
 
     def __init__(self, provider: str):
         super().__init__(
-            f"Evaluating with '{provider}' sends this agent's live conversations to it; "
-            "acknowledge data sharing for this agent and provider first."
+            f"Using '{provider}' (as this agent's own model or as an evaluator) sends this agent's live "
+            "conversations to it; acknowledge data sharing for this agent and provider first."
         )
         self.provider = provider
 
@@ -519,10 +527,16 @@ def find_registered(
 
 
 # ------------------------------------------------------------------ agents (design D4, D5, D11)
-def _check_no_self_evaluator(declared_model: str, evaluators: list[str]) -> None:
+def _check_no_self_evaluator(declared_models: dict[str, object], evaluators: list[str]) -> None:
+    """Rejects an evaluator matching *any* of the agent's declared models (spec `agent-registry`, "A multi-model
+    agent is checked against all of its declared models, not just one") - the same pattern
+    `plan_turn_evaluators` already uses for a turn's actual `turn_models`. A declared model's value is either a
+    plain reference string or a `{"model": ..., "params": ...}` object (`add-gateway-model-sync`) -
+    `declared_model_ref` extracts the reference either way."""
     for e in evaluators:
-        if same_model(e, declared_model):
-            raise ValueError(f"'{e}' cannot evaluate this agent: it is the agent's own declared model")
+        for entry in declared_models.values():
+            if same_model(e, declared_model_ref(entry)):
+                raise ValueError(f"'{e}' cannot evaluate this agent: it is one of the agent's own declared models")
 
 
 def _merge_acks(existing: dict, new_provider_names: list[str]) -> dict:
@@ -533,12 +547,27 @@ def _merge_acks(existing: dict, new_provider_names: list[str]) -> dict:
     return out
 
 
-def _check_provider_acks(evaluators: list[str], acks: dict) -> None:
-    for e in evaluators:
-        if is_cloud_ref(e):
-            provider = parse_ref(e).provider
+def _check_provider_acks(refs: list[str], acks: dict) -> None:
+    """Rejects a hosted-model reference (evaluator, declared model, or declared-model fallback - all three send
+    this agent's live conversations to that provider) whose provider hasn't been acknowledged for this agent
+    yet."""
+    for ref in refs:
+        if is_cloud_ref(ref):
+            provider = parse_ref(ref).provider
             if provider not in acks:
                 raise AckRequired(provider)
+
+
+def _declared_model_refs(declared_models: dict[str, object]) -> list[str]:
+    """Every model reference a `declared_models` map can carry - each entry's primary reference plus its
+    fallback, if it has one (`add-declared-model-fallback`) - for the provider-ack check to treat identically."""
+    refs: list[str] = []
+    for entry in declared_models.values():
+        refs.append(declared_model_ref(entry))
+        fallback_ref = declared_model_fallback_ref(entry)
+        if fallback_ref is not None:
+            refs.append(fallback_ref)
+    return refs
 
 
 def create_agent(
@@ -546,7 +575,7 @@ def create_agent(
     *,
     name: str,
     kind: str,
-    declared_model: str,
+    declared_models: dict[str, object],
     eval_config: EvalConfigIn,
     rubric: list[dict] | None,
     provider_acks: list[str] | None = None,
@@ -554,14 +583,15 @@ def create_agent(
     """Returns (agent, raw_token). The raw token is generated here and never stored - only its hash is kept."""
     if session.scalar(select(Agent).where(Agent.name == name)):
         raise Conflict(f"An agent named '{name}' already exists")
-    _check_no_self_evaluator(declared_model, eval_config.evaluators)
+    _check_no_self_evaluator(declared_models, eval_config.evaluators)
     acks = _merge_acks({}, provider_acks or [])
-    _check_provider_acks(eval_config.evaluators, acks)
+    declared_refs = _declared_model_refs(declared_models)
+    _check_provider_acks(eval_config.evaluators + declared_refs, acks)
     raw = generate_token()
     agent = Agent(
         name=name,
         kind=kind,
-        declared_model=declared_model,
+        declared_models=declared_models,
         status="active",
         token_hash=hash_token(raw),
         token_prefix=display_prefix(raw),
@@ -591,13 +621,14 @@ def list_agents(session: Session) -> list[Agent]:
 
 def update_agent_settings(session: Session, agent_id: int, body: AgentSettingsUpdate) -> Agent:
     agent = get_agent(session, agent_id)
-    declared = body.declared_model if body.declared_model is not None else agent.declared_model
+    declared = body.declared_models if body.declared_models is not None else agent.declared_models
     eval_cfg = body.eval_config.model_dump() if body.eval_config is not None else dict(agent.eval_config or {})
     evaluators = eval_cfg.get("evaluators", [])
     _check_no_self_evaluator(declared, evaluators)
     acks = _merge_acks(agent.provider_acks or {}, body.provider_acks)
-    _check_provider_acks(evaluators, acks)
-    agent.declared_model = declared
+    declared_refs = _declared_model_refs(declared)
+    _check_provider_acks(evaluators + declared_refs, acks)
+    agent.declared_models = declared
     agent.eval_config = eval_cfg
     agent.provider_acks = acks
     if body.clear_rubric:

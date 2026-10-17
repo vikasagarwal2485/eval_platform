@@ -9,7 +9,12 @@ from app.traces.schemas import TurnEndEvent, TurnStartEvent
 
 def _agent(session, **kw):
     agent, _ = repo.create_agent(
-        session, name="bot", kind="chatbot", declared_model="qwen3:8b", eval_config=EvalConfigIn(**kw), rubric=None
+        session,
+        name="bot",
+        kind="chatbot",
+        declared_models={"default": "qwen3:8b"},
+        eval_config=EvalConfigIn(**kw),
+        rubric=None,
     )
     return agent
 

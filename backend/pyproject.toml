@@ -18,7 +18,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "pytest-asyncio>=0.23", "ruff>=0.4"]
+# litellm: not an app runtime dependency - only needed because test_reference_agents.py imports
+# agents/reasoning_agent.py directly, and that module now calls the LiteLLM SDK (add-reasoning-agent-task-routing).
+# Pinned to match agents/requirements.txt - see that file's comment on why this stays pinned.
+dev = ["pytest>=8", "pytest-asyncio>=0.23", "ruff>=0.4", "litellm==1.105.1"]
 
 [tool.setuptools.packages.find]
 include = ["app*"]

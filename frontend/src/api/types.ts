@@ -410,11 +410,37 @@ export const DEFAULT_EVAL_CONFIG: EvalConfig = {
   retention_days: null,
 };
 
+/** A declared model given as an object instead of a plain string, to carry generation-parameter overrides
+ * (e.g. temperature) alongside the model reference (`add-gateway-model-sync`). `params` is passed through
+ * opaquely to the gateway sync step - this type does not know any individual provider's valid parameter set.
+ *
+ * `fallback` (`add-declared-model-fallback`) is an optional second model reference the platform falls back to
+ * (via its own synced gateway model group) when the primary becomes unreachable - validated the same way as
+ * `model`, with no separate `params`/`fallback` of its own. */
+export interface DeclaredModelSpec {
+  model: string;
+  params?: Record<string, unknown>;
+  fallback?: string;
+}
+/** One or more models the agent declares it uses, keyed by the task each serves (e.g. "reasoning",
+ * "generation"); an agent with one undifferentiated task uses the conventional key "default"
+ * (add-agent-multi-model-registry - replaced the single `declared_model` string). A value is either a plain
+ * model-reference string, or a `DeclaredModelSpec` object carrying generation-parameter overrides. */
+export type DeclaredModels = Record<string, string | DeclaredModelSpec>;
+
+/** Per-task-type result of syncing a declared model to the shared LLM gateway (`add-gateway-model-sync`) -
+ * present on a create/update response only when that call touched `declared_models`; `"*"` covers the case
+ * where sync could not be attempted at all (no gateway configured). Never blocks the save that produced it. */
+export type GatewaySyncResult = Record<
+  string,
+  { status: 'ok' | 'error' | 'skipped'; detail?: string }
+>;
+
 export interface Agent {
   id: number;
   name: string;
   kind: AgentKind;
-  declared_model: string;
+  declared_models: DeclaredModels;
   status: AgentStatus;
   liveness: AgentLiveness;
   token_prefix: string;
@@ -425,17 +451,19 @@ export interface Agent {
   created_at: string;
   /** present only on create and on token rotation - shown once, never stored client-side beyond that response */
   token?: string;
+  /** present only on a create/update response that touched declared_models */
+  gateway_sync?: GatewaySyncResult;
 }
 export interface AgentCreate {
   name: string;
   kind: AgentKind;
-  declared_model: string;
+  declared_models: DeclaredModels;
   eval_config?: Partial<EvalConfig>;
   rubric?: RubricCriterion[] | null;
   provider_acks?: string[];
 }
 export interface AgentSettingsUpdate {
-  declared_model?: string;
+  declared_models?: DeclaredModels;
   eval_config?: Partial<EvalConfig>;
   rubric?: RubricCriterion[] | null;
   clear_rubric?: boolean;

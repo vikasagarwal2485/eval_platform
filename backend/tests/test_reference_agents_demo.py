@@ -55,7 +55,7 @@ def test_demo_setup_produces_an_evaluated_turn_with_no_self_judging(session_fact
             session,
             name="demo-chatbot",
             kind="chatbot",
-            declared_model="author:1",
+            declared_models={"default": "author:1"},
             eval_config=EvalConfigIn(evaluators=["judge:1"], quiet_period_s=0),
             rubric=None,
         )

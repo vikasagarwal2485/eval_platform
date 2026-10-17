@@ -21,6 +21,12 @@ class Settings:
     provider_backoff_s: float = 1.0
     provider_backoff_cap_s: float = 30.0
     frontend_dist: Path = ROOT_DIR / "frontend" / "dist"
+    # gateway-model-sync (add-gateway-model-sync): None disables sync entirely ("skipped", never an error) - a
+    # valid deployment choice for an installation with no task-routed agents yet. The admin credential itself
+    # (EVAL_GATEWAY_ADMIN_KEY) is read directly from the environment in app.core.gateway_sync, never stored here
+    # or logged, the same discipline KeyProvider already applies to every other credential this platform holds.
+    gateway_url: str | None = None
+    gateway_sync_timeout_s: float = 5.0
 
     @property
     def db_url(self) -> str:
@@ -46,4 +52,6 @@ def load_settings(env: dict | None = None) -> Settings:
         provider_max_retries=int(env.get("EVAL_PROVIDER_MAX_RETRIES", defaults.provider_max_retries)),
         provider_backoff_s=float(env.get("EVAL_PROVIDER_BACKOFF_S", defaults.provider_backoff_s)),
         frontend_dist=Path(env.get("EVAL_FRONTEND_DIST", str(defaults.frontend_dist))),
+        gateway_url=env.get("EVAL_GATEWAY_URL", defaults.gateway_url) or None,
+        gateway_sync_timeout_s=float(env.get("EVAL_GATEWAY_SYNC_TIMEOUT_S", defaults.gateway_sync_timeout_s)),
     )

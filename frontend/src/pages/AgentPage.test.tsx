@@ -17,7 +17,7 @@ const AGENT = {
   id: 1,
   name: 'demo-chatbot',
   kind: 'chatbot',
-  declared_model: 'author:1',
+  declared_models: { default: 'author:1' },
   status: 'active',
   liveness: 'idle',
   token_prefix: 'abcd1234',
@@ -267,7 +267,7 @@ describe('settings tab', () => {
     const group = await screen.findByRole('group', { name: 'Evaluators' });
     const selfCheckbox = within(group).getByLabelText('author:1');
     expect(selfCheckbox).toBeDisabled();
-    expect(within(group).getByText("this agent's own model")).toBeInTheDocument();
+    expect(within(group).getByText("one of this agent's own models")).toBeInTheDocument();
   });
 
   it('gates a hosted evaluator behind a data-sharing acknowledgment, then saves', async () => {
@@ -285,12 +285,77 @@ describe('settings tab', () => {
     await user.click(await screen.findByRole('tab', { name: 'Settings' }));
     const group = await screen.findByRole('group', { name: 'Evaluators' });
     await user.click(within(group).getByLabelText('@oa/gpt-4o'));
-    await user.click(screen.getByRole('button', { name: 'Save settings' }));
+    await user.click(screen.getAllByRole('button', { name: 'Save settings' })[0]);
     const ackButton = await screen.findByRole('button', { name: 'Acknowledge and save' });
     acked = true;
     await user.click(ackButton);
-    expect(await screen.findByRole('button', { name: 'Save settings' })).toBeInTheDocument();
+    expect(await screen.findAllByRole('button', { name: 'Save settings' })).not.toHaveLength(0);
     expect(screen.queryByRole('button', { name: 'Acknowledge and save' })).not.toBeInTheDocument();
+  });
+
+  it('gates a hosted declared model behind a data-sharing acknowledgment, then saves', async () => {
+    let acked = false;
+    const { user } = setup({
+      'PATCH /agents/1': () => {
+        if (!acked)
+          return jsonError(422, {
+            code: 'ack_required',
+            message: 'needs ack',
+            provider: 'azure-main',
+          });
+        return { ...AGENT, declared_models: { default: '@azure-main/gpt-4o-mini' } };
+      },
+    });
+    await user.click(await screen.findByRole('tab', { name: 'Settings' }));
+    const modelField = await screen.findByLabelText('Model for declared model 1');
+    await user.clear(modelField);
+    await user.type(modelField, '@azure-main/gpt-4o-mini');
+    await user.click(screen.getAllByRole('button', { name: 'Save settings' })[0]);
+    const ackButton = await screen.findByRole('button', { name: 'Acknowledge and save' });
+    acked = true;
+    await user.click(ackButton);
+    expect(await screen.findAllByRole('button', { name: 'Save settings' })).not.toHaveLength(0);
+    expect(screen.queryByRole('button', { name: 'Acknowledge and save' })).not.toBeInTheDocument();
+  });
+
+  it('gates a hosted declared-model fallback behind a data-sharing acknowledgment, then saves', async () => {
+    let acked = false;
+    const { user } = setup({
+      'PATCH /agents/1': () => {
+        if (!acked)
+          return jsonError(422, {
+            code: 'ack_required',
+            message: 'needs ack',
+            provider: 'azure-main',
+          });
+        return {
+          ...AGENT,
+          declared_models: { default: { model: 'author:1', fallback: '@azure-main/gpt-4o-mini' } },
+        };
+      },
+    });
+    await user.click(await screen.findByRole('tab', { name: 'Settings' }));
+    const fallbackField = await screen.findByLabelText('Fallback model for declared model 1');
+    await user.type(fallbackField, '@azure-main/gpt-4o-mini');
+    await user.click(screen.getAllByRole('button', { name: 'Save settings' })[0]);
+    const ackButton = await screen.findByRole('button', { name: 'Acknowledge and save' });
+    acked = true;
+    await user.click(ackButton);
+    expect(await screen.findAllByRole('button', { name: 'Save settings' })).not.toHaveLength(0);
+    expect(screen.queryByRole('button', { name: 'Acknowledge and save' })).not.toBeInTheDocument();
+  });
+
+  it('shows a non-ok gateway_sync result after saving a changed declared model', async () => {
+    const { user } = setup({
+      'PATCH /agents/1': {
+        ...AGENT,
+        gateway_sync: { default: { status: 'error', detail: 'gateway unreachable' } },
+      },
+    });
+    await user.click(await screen.findByRole('tab', { name: 'Settings' }));
+    await user.click(screen.getAllByRole('button', { name: 'Save settings' })[0]);
+    expect(await screen.findByText(/Gateway sync error/)).toBeInTheDocument();
+    expect(screen.getByText(/gateway unreachable/)).toBeInTheDocument();
   });
 
   it('shows the new ingest token exactly once after rotation', async () => {

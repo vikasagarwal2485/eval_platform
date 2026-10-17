@@ -421,7 +421,7 @@ describe('live agent evaluation accessibility (6.6)', () => {
     id: 1,
     name: 'demo-chatbot',
     kind: 'chatbot',
-    declared_model: 'qwen3:8b',
+    declared_models: { default: 'qwen3:8b' },
     status: 'active',
     liveness: 'idle',
     token_prefix: 'abcd1234',
@@ -587,7 +587,7 @@ describe('live agent evaluation accessibility (6.6)', () => {
     await userEvent.setup().click(await screen.findByRole('tab', { name: 'Settings' }));
     const own = await screen.findByRole('checkbox', { name: 'qwen3:8b' });
     expect(own).toBeDisabled();
-    expect(own).toHaveAccessibleDescription(/cannot evaluate its own declared model/);
+    expect(own).toHaveAccessibleDescription(/cannot evaluate any of its own declared models/);
   });
 
   it('agent detail: hosted evaluator needing acknowledgment is explained', async () => {

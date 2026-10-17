@@ -3,8 +3,12 @@
 #
 #   make agents-setup      # from the repo root, creates agents/.venv with these installed
 #
-# httpx: the SDK's HTTP client, and the reference agents' own calls to their local Ollama.
+# httpx: the SDK's HTTP client, and chatbot.py's own calls to its local Ollama.
 httpx>=0.27
 # pyyaml: only needed for `reasoning_agent.py --suite <file>.yaml` (a .json suite needs no extra dependency).
 # Its absence is handled gracefully (a clear error naming this package) if you skip it.
 pyyaml>=6.0
+# litellm: reasoning_agent.py's LLM calls, routed through the shared gateway (or directly, for local testing) -
+# see openspec/changes/add-litellm-gateway-infra. Pinned per that change's dependency-risk note: litellm is a
+# large, fast-moving package (100+ provider integrations in one install); bump deliberately, not unpinned.
+litellm==1.105.1

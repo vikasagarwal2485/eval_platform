@@ -130,7 +130,7 @@ def test_no_key_reaches_agent_api_export_db_or_stored_errors(settings, file_sess
                 json={
                     "name": "bot",
                     "kind": "chatbot",
-                    "declared_model": "author:1",
+                    "declared_models": {"default": "author:1"},
                     "eval_config": {"evaluators": ["@oa/gpt-4o"], "quiet_period_s": 0},
                     "provider_acks": ["oa"],
                 },

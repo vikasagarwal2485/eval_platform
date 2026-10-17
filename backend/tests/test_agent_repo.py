@@ -7,11 +7,12 @@ from app.schemas import AgentSettingsUpdate, EvalConfigIn
 
 
 def _create(session, name="bot", evaluators=None, declared="qwen3:8b", acks=None):
+    declared_models = declared if isinstance(declared, dict) else {"default": declared}
     return repo.create_agent(
         session,
         name=name,
         kind="chatbot",
-        declared_model=declared,
+        declared_models=declared_models,
         eval_config=EvalConfigIn(evaluators=evaluators or []),
         rubric=None,
         provider_acks=acks or [],
@@ -58,6 +59,18 @@ def test_self_evaluator_rejected_at_update(session):
 def test_declared_model_can_differ_from_evaluators(session):
     agent, _ = _create(session, evaluators=["gemma3:4b"], declared="qwen3:8b")
     assert agent.eval_config["evaluators"] == ["gemma3:4b"]
+
+
+def test_self_evaluator_rejected_when_it_matches_any_of_several_declared_models(session):
+    """task 3.1/3.3: _check_no_self_evaluator loops over every declared model, not just one."""
+    with pytest.raises(ValueError, match="gemma3:4b"):
+        _create(session, evaluators=["gemma3:4b"], declared={"reasoning": "qwen3:8b", "generation": "gemma3:4b"})
+
+
+def test_evaluator_matching_neither_declared_model_is_accepted(session):
+    """task 3.2: 'An evaluator distinct from every declared model is accepted'."""
+    agent, _ = _create(session, evaluators=["judge:1"], declared={"reasoning": "qwen3:8b", "generation": "gemma3:4b"})
+    assert agent.eval_config["evaluators"] == ["judge:1"]
 
 
 def test_hosted_evaluator_requires_acknowledgment(session):

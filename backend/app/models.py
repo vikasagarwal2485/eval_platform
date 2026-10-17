@@ -222,7 +222,13 @@ class Agent(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(200), unique=True)
     kind: Mapped[str] = mapped_column(String(20))  # chatbot | reasoning
-    declared_model: Mapped[str] = mapped_column(String(300), default="")
+    # One or more models the agent declares it uses, keyed by the task each serves (e.g. "reasoning",
+    # "generation"); an agent with one undifferentiated task uses the conventional key "default"
+    # (add-agent-multi-model-registry - generalizes the single `declared_model` string this replaced, matching
+    # AgentSpan.model's existing per-span granularity). Each value is either a plain model-reference string, or
+    # a `{"model": ..., "params": {...}}` object carrying generation-parameter overrides
+    # (add-gateway-model-sync) - use `app.schemas.declared_model_ref()` to read the reference either way.
+    declared_models: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
     status: Mapped[str] = mapped_column(String(20), default="active")  # active | paused
     token_hash: Mapped[str] = mapped_column(String(100))
     token_prefix: Mapped[str] = mapped_column(String(16))

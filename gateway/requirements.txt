@@ -1,0 +1,3 @@
+# Pinned per design.md's dependency-risk note (companion proposal doc): litellm is a large,
+# fast-moving package. Bump deliberately, not via an unpinned install.
+litellm[proxy]==1.105.1
