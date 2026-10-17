@@ -6,16 +6,20 @@ SDK. With `--suite`, replays a suite file's reasoning cases and sends each case'
 reference, so the platform's deterministic reference-based correctness check runs alongside the evaluator's score.
 
 By default (no `--model`), plan/verify calls route through the shared LLM gateway
-(`openspec/changes/add-litellm-gateway-infra`) to the `reasoning-agent__reasoning` model group and the solve call
-to `reasoning-agent__generation` - each task's call uses whatever model that group is configured for, which can
+(`openspec/changes/add-litellm-gateway-infra`) to this agent's own `<reasoning>` model group and the solve call
+to its `<generation>` group - each task's call uses whatever model that group is configured for, which can
 differ per call within one turn. Passing `--model` overrides all three calls to one literal model string and
 skips the gateway, for simple local testing (matching the agent's pre-task-routing behavior).
 
-`--reasoning-model-group`/`--generation-model-group` override those two defaults (TEMPORARY stopgap - see
-`add-gateway-model-sync`'s design.md "Non-Goals": this agent does not yet discover its own group names from the
-platform at runtime, so if the agent you registered isn't literally named "reasoning-agent", its
-`declared_models`-synced groups are named `<your-agent-slug>__reasoning`/`<your-agent-slug>__generation`, not
-these defaults, and you must pass them explicitly).
+**The agent discovers its own gateway group names at startup** (`add-agent-self-discovery`): it calls the
+platform's `GET /api/ingest/v1/whoami` with its own `--token` and uses the `gateway_model_groups` it computed
+for this agent's actual registered name - so this works correctly no matter what the agent is registered as,
+with no manual bookkeeping. `--reasoning-model-group`/`--generation-model-group` are an **override**, for when
+you want a different group than the one discovery would find (e.g. pointing a test run at another agent's
+groups); passing either one skips discovery for that task entirely and uses exactly what you gave. If discovery
+itself fails (platform unreachable, bad token) and no override was given, the agent falls back to the hardcoded
+`reasoning-agent__reasoning`/`reasoning-agent__generation` defaults and prints a visible warning, rather than
+failing to start.
 
 `--reasoning-fallback-group`/`--generation-fallback-group` (`add-declared-model-fallback`) each name a gateway
 group to fall back to if that call's primary group is unreachable - unset by default (no fallback passed).
@@ -23,12 +27,14 @@ Each is sent as that request's own `fallbacks` field, the only mechanism verifie
 a fallback configured only via the gateway's `/config/update` is NOT reliably applied (see gateway/README.md).
 
 Usage:
+    # the normal case - group names are discovered from this agent's own registration:
     python -m agents.reasoning_agent --platform-url http://localhost:8000 --token <ingest-token> \
+        --gateway-key <this-agent's-virtual-key> \
         --problem "A train travels 60 miles in 40 minutes. What is its speed in mph?"
-    python -m agents.reasoning_agent --platform-url ... --token ... --suite path/to/suite.yaml
+    python -m agents.reasoning_agent --platform-url ... --token ... --gateway-key ... --suite path/to/suite.yaml
     # local testing without the gateway:
     python -m agents.reasoning_agent --platform-url ... --token ... --model ollama_chat/qwen3:8b --problem "..."
-    # an agent registered under a name other than "reasoning-agent", with its groups synced dynamically:
+    # override discovery, e.g. to point this run at a different agent's groups:
     python -m agents.reasoning_agent --platform-url ... --token ... --gateway-key ... \
         --reasoning-model-group my-reasoner__reasoning --generation-model-group my-reasoner__generation \
         --problem "..."
@@ -50,6 +56,7 @@ import uuid
 import warnings
 from pathlib import Path
 
+import httpx
 import litellm
 import openai
 
@@ -75,7 +82,7 @@ logging.getLogger("asyncio").setLevel(logging.CRITICAL)
 warnings.filterwarnings("ignore", message=r"coroutine .* was never awaited", category=RuntimeWarning)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from eval_agent_sdk import AgentClient  # noqa: E402
+from eval_agent_sdk import AgentClient, whoami  # noqa: E402
 
 PLAN_PROMPT = "Break the following problem into a short numbered plan. Do not solve it yet.\n\nProblem: {problem}"
 SOLVE_PROMPT = "Problem: {problem}\n\nPlan:\n{plan}\n\nFollow the plan and work through the problem step by step."
@@ -307,15 +314,17 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "is set.",
     )
     p.add_argument(
-        "--reasoning-model-group", default=REASONING_MODEL_GROUP,
-        help="Gateway model group for plan/verify calls (default: %(default)s - matches an agent registered "
-        "under the name 'reasoning-agent'; override to match your agent's actual registered name - TEMPORARY "
-        "stopgap, see the module docstring). Ignored when --model is set.",
+        "--reasoning-model-group", default=None,
+        help="Gateway model group for plan/verify calls. Omit (the default) to discover this agent's own "
+        f"group from the platform at startup (`add-agent-self-discovery`), falling back to {REASONING_MODEL_GROUP!r} "
+        "if discovery fails. Pass this to override discovery entirely for this task (e.g. to use a different "
+        "agent's group). Ignored when --model is set.",
     )
     p.add_argument(
-        "--generation-model-group", default=GENERATION_MODEL_GROUP,
-        help="Gateway model group for the solve call (default: %(default)s - see --reasoning-model-group). "
-        "Ignored when --model is set.",
+        "--generation-model-group", default=None,
+        help="Gateway model group for the solve call. Omit (the default) to discover this agent's own group, "
+        f"falling back to {GENERATION_MODEL_GROUP!r} if discovery fails (see --reasoning-model-group). Ignored "
+        "when --model is set.",
     )
     p.add_argument(
         "--reasoning-fallback-group", default=None,
@@ -336,21 +345,60 @@ def build_arg_parser() -> argparse.ArgumentParser:
     return p
 
 
+def _resolve_model_groups(
+    platform_url: str,
+    token: str,
+    explicit_reasoning_group: str | None,
+    explicit_generation_group: str | None,
+) -> tuple[str, str]:
+    """The reasoning/generation gateway group names for this run (`add-agent-self-discovery`). An explicit
+    override always wins for its own task and is never second-guessed; when BOTH tasks already have an
+    explicit override, `whoami()` isn't called at all - there's nothing left for discovery to resolve. Otherwise
+    calls `whoami()` once and uses its `gateway_model_groups` for whichever task(s) have no explicit override.
+    If that call itself fails (platform unreachable, bad token), prints a visible warning and falls back to the
+    hardcoded `REASONING_MODEL_GROUP`/`GENERATION_MODEL_GROUP` defaults for any task still unresolved - the
+    agent still starts either way."""
+    if explicit_reasoning_group is not None and explicit_generation_group is not None:
+        return explicit_reasoning_group, explicit_generation_group
+
+    discovered: dict = {}
+    try:
+        discovered = whoami(platform_url, token).get("gateway_model_groups", {})
+    except httpx.HTTPError as exc:
+        print(
+            f"warning: could not discover this agent's gateway groups ({exc}); falling back to "
+            f"{REASONING_MODEL_GROUP!r}/{GENERATION_MODEL_GROUP!r} for whatever wasn't explicitly set",
+            file=sys.stderr,
+        )
+
+    reasoning_group = explicit_reasoning_group or discovered.get("reasoning") or REASONING_MODEL_GROUP
+    generation_group = explicit_generation_group or discovered.get("generation") or GENERATION_MODEL_GROUP
+    return reasoning_group, generation_group
+
+
 def main(argv: list[str] | None = None) -> None:
     args = build_arg_parser().parse_args(argv)
+    if args.model:
+        # No gateway call of any kind happens in this mode (solve_one's `model or ...` always picks `model`
+        # for all three calls) - discovery would be a pointless network round-trip, so it's skipped entirely.
+        reasoning_group, generation_group = REASONING_MODEL_GROUP, GENERATION_MODEL_GROUP
+    else:
+        reasoning_group, generation_group = _resolve_model_groups(
+            args.platform_url, args.token, args.reasoning_model_group, args.generation_model_group,
+        )
     client = AgentClient(args.platform_url, args.token)
     try:
         if args.suite:
             run_suite(
                 client, args.model, args.gateway_url, args.gateway_key, args.suite,
-                reasoning_group=args.reasoning_model_group, generation_group=args.generation_model_group,
+                reasoning_group=reasoning_group, generation_group=generation_group,
                 reasoning_fallback_group=args.reasoning_fallback_group,
                 generation_fallback_group=args.generation_fallback_group,
             )
         else:
             run_once(
                 client, args.model, args.gateway_url, args.gateway_key, args.problem,
-                reasoning_group=args.reasoning_model_group, generation_group=args.generation_model_group,
+                reasoning_group=reasoning_group, generation_group=generation_group,
                 reasoning_fallback_group=args.reasoning_fallback_group,
                 generation_fallback_group=args.generation_fallback_group,
             )

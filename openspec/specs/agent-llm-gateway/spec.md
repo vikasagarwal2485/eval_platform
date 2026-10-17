@@ -43,20 +43,26 @@ to the model groups it may use.
 
 ### Requirement: No silent deployment substitution
 When the gateway cannot reach the provider deployment configured for a model group, it SHALL
-return an error to the caller rather than silently substituting a different deployment, unless a
-fallback deployment has been explicitly configured for that group.
+return an error to the caller rather than silently substituting a different deployment, unless the
+caller's request explicitly names a fallback model group to use for that call.
 
 #### Scenario: An unreachable deployment surfaces as an error
-- **WHEN** the provider deployment configured for a model group is unreachable and no fallback is
-  configured for that group
+- **WHEN** the provider deployment configured for a model group is unreachable and the request
+  does not name a fallback group
 - **THEN** the gateway returns an error to the caller rather than routing the request to an
   unrelated deployment
 
 #### Scenario: A configured fallback is used and is visible to the caller
-- **WHEN** the primary deployment for a model group is unreachable and a fallback deployment is
-  configured for that group
-- **THEN** the gateway routes the request to the fallback deployment and the response identifies
-  which deployment actually produced it
+- **WHEN** the primary deployment for a model group is unreachable and the caller's request names
+  a fallback model group
+- **THEN** the gateway routes the request to the fallback group's deployment and the response
+  identifies which deployment actually produced it
+
+#### Scenario: A fallback is per-request, not gateway-wide
+- **WHEN** a fallback is set only through the gateway's general configuration-update mechanism and
+  not named on the individual request
+- **THEN** the gateway is not guaranteed to apply it, so a caller that needs a fallback MUST name
+  it on each request rather than relying on a gateway-wide default
 
 ### Requirement: Model groups are scoped per agent
 Model group names SHALL be unique per `(agent, task type)` pair, so that a request made under one
@@ -68,3 +74,34 @@ group of the same task type.
   (for example, both have a `reasoning` group)
 - **THEN** each agent's requests are routed only to the deployment configured under that agent's
   own group name, never the other agent's
+
+### Requirement: Model groups can be managed dynamically
+The gateway SHALL support creating, updating and removing a model group through its own
+management interface, taking effect for new requests without restarting the gateway process, in
+addition to any model group defined in its static configuration.
+
+#### Scenario: A dynamically created group routes immediately
+- **WHEN** a model group is created through the gateway's management interface
+- **THEN** a request addressed to that group name succeeds without the gateway process being
+  restarted
+
+#### Scenario: A dynamically removed group stops routing immediately
+- **WHEN** a model group created through the gateway's management interface is removed
+- **THEN** a subsequent request addressed to that group name is rejected as an unconfigured group,
+  without the gateway process being restarted
+
+#### Scenario: Static and dynamic groups coexist
+- **WHEN** the gateway has both statically configured model groups and dynamically managed ones
+- **THEN** requests to either kind of group are routed correctly, and managing one kind does not
+  disturb the other
+
+### Requirement: Dynamically managed credentials are never exposed in the clear
+When a model group is created or updated through the gateway's management interface with a
+provider credential given by environment-variable reference, the gateway SHALL resolve and store
+that credential without exposing its literal value in any management-interface response.
+
+#### Scenario: A credential given by reference is never echoed back
+- **WHEN** a caller creates or updates a model group's credential using an environment-variable
+  reference rather than a literal value
+- **THEN** no response from the gateway's management interface contains that credential's literal
+  value

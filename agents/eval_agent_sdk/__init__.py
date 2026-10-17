@@ -16,7 +16,7 @@ from datetime import UTC, datetime
 
 import httpx
 
-__all__ = ["AgentClient", "Turn"]
+__all__ = ["AgentClient", "Turn", "whoami"]
 
 
 def _now_iso() -> str:
@@ -244,3 +244,18 @@ class AgentClient:
             batch = self._drain_batch()
             if batch:
                 self._send(batch)
+
+
+def whoami(platform_url: str, token: str, *, timeout: float = 10.0) -> dict:
+    """Reads this agent's own registration back from the platform (spec `agent-registry`, "An agent can
+    discover its own registration", `add-agent-self-discovery`): `{"name", "kind", "declared_models",
+    "gateway_model_groups"}` - the last one already computed by the platform, so a caller never needs to
+    reimplement its slugging convention. Standalone, not a method on `AgentClient`: this is a one-time,
+    must-succeed-or-fail-clearly call a caller makes once at startup (see design.md - "Decisions"), unlike
+    `AgentClient`'s fire-and-forget background delivery - a failure here is the caller's to observe and act on
+    (e.g. fall back to a hardcoded default and warn), not something to silently retry in the background. Raises
+    `httpx.HTTPError` on a non-2xx response, a connection failure or a timeout; never swallows an error."""
+    url = platform_url.rstrip("/") + "/api/ingest/v1/whoami"
+    resp = httpx.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=timeout)
+    resp.raise_for_status()
+    return resp.json()

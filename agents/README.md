@@ -18,10 +18,10 @@ dependency. `reasoning_agent.py` also needs `litellm` (its LLM calls go through 
 ### Task-routed calls (`reasoning_agent.py`)
 
 By default, `reasoning_agent.py`'s plan and verify calls route through the shared LLM gateway
-([`gateway/`](../gateway/), `openspec/changes/add-litellm-gateway-infra`) to the `reasoning-agent__reasoning`
-model group, and its solve call to `reasoning-agent__generation` - each group can be configured with a different
-model, so one turn's three calls aren't necessarily all answered by the same model. This needs the gateway
-running (`gateway/README.md`) and a virtual key scoped to those two groups:
+([`gateway/`](../gateway/), `openspec/changes/add-litellm-gateway-infra`) to this agent's own `reasoning` model
+group, and its solve call to its `generation` group - each group can be configured with a different model, so
+one turn's three calls aren't necessarily all answered by the same model. This needs the gateway running
+(`gateway/README.md`) and a virtual key scoped to those two groups:
 
 ```bash
 agents/.venv/bin/python -m agents.reasoning_agent --platform-url http://localhost:8000 --token <TOKEN> \
@@ -29,14 +29,21 @@ agents/.venv/bin/python -m agents.reasoning_agent --platform-url http://localhos
 ```
 `--gateway-url` defaults to `http://localhost:4000` (the gateway's local dev default) and rarely needs setting.
 
-**If you registered the agent under a name other than `"reasoning-agent"`**, its `declared_models`-synced
-gateway groups (`add-gateway-model-sync`) are named `<your-agent-slug>__reasoning`/
-`<your-agent-slug>__generation`, not the hardcoded defaults above - the agent does not yet discover its own
-group names at runtime (a known, temporary gap - see the module's own docstring), so pass them explicitly:
+**The agent discovers its own gateway group names at startup** (`add-agent-self-discovery`): it calls the
+platform's `GET /api/ingest/v1/whoami` with its own `--token`, which returns the exact
+`<your-agent-slug>__reasoning`/`<your-agent-slug>__generation` group names the platform's own
+`declared_models`-synced gateway sync (`add-gateway-model-sync`) already created for this agent - no matter
+what you registered it as, with nothing to pass by hand. If the platform is unreachable or the token is
+rejected when discovery is attempted, the agent falls back to the hardcoded `reasoning-agent__reasoning`/
+`reasoning-agent__generation` defaults and prints a visible warning, rather than failing to start.
+
+**`--reasoning-model-group`/`--generation-model-group` override discovery** for when you want a different group
+than the one discovery would find - e.g. pointing a test run at a different agent's groups. Passing either flag
+skips discovery entirely for that task and uses exactly what you gave, with no platform round-trip:
 
 ```bash
 agents/.venv/bin/python -m agents.reasoning_agent --platform-url http://localhost:8000 --token <TOKEN> \
-  --gateway-key <virtual-key-scoped-to-your-agent's-groups> \
+  --gateway-key <virtual-key-scoped-to-the-target-agent's-groups> \
   --reasoning-model-group my-reasoner__reasoning --generation-model-group my-reasoner__generation \
   --problem "..."
 ```
@@ -49,6 +56,101 @@ same single-model behavior the agent had before task-routing:
 agents/.venv/bin/python -m agents.reasoning_agent --platform-url http://localhost:8000 --token <TOKEN> \
   --model ollama_chat/qwen3:8b --problem "..."
 ```
+
+### Verifying self-discovery end to end
+
+A step-by-step check that discovery actually resolves this agent's own gateway groups - useful after touching
+anything in `gateway_sync.py`, `app/api/ingest.py`'s `whoami` route, or this agent's discovery logic. Needs the
+platform running **with** `EVAL_GATEWAY_URL`/`EVAL_GATEWAY_ADMIN_KEY` set (`gateway/README.md`, "Wiring it into
+the backend") and the gateway running with `STORE_MODEL_IN_DB=True`.
+
+1. **Register an agent under any name** (deliberately not `"reasoning-agent"` - the point is that discovery
+   works regardless of what it's called):
+
+   ```bash
+   curl -s -X POST http://localhost:8000/api/agents \
+     -H "Content-Type: application/json" \
+     -d '{"name":"discovery-test","kind":"reasoning","declared_models":{"reasoning":"qwen3:8b","generation":"gemma4:e4b"}}' \
+     | tee /tmp/agent.json | python3 -m json.tool
+   ```
+   Save the `"token"` field from the response.
+
+2. **Call `whoami` and confirm the computed group names**:
+
+   ```bash
+   TOKEN="<the token from step 1>"
+   curl -s http://localhost:8000/api/ingest/v1/whoami -H "Authorization: Bearer $TOKEN" | python3 -m json.tool
+   ```
+   Expect `"gateway_model_groups": {"reasoning": "discovery-test__reasoning", "generation":
+   "discovery-test__generation"}` - the same `<slug>__<task>` names `gateway_sync.py` already used to create
+   the real groups (confirm with `GET /model/info` against the gateway, same pattern as `gateway/README.md`).
+
+3. **Mint a virtual key scoped *only* to those two groups** - narrow scoping is the actual test: if discovery
+   ever silently fell back to the hardcoded `reasoning-agent__*` defaults, the call below would fail loudly
+   (403) instead of quietly succeeding against the wrong thing:
+
+   ```bash
+   curl -s http://localhost:4000/key/generate \
+     -H "Authorization: Bearer $LITELLM_MASTER_KEY" -H "Content-Type: application/json" \
+     -d '{"models": ["discovery-test__reasoning", "discovery-test__generation"], "key_alias": "discovery-test-key"}'
+   ```
+   If this prints an error object instead of one containing a `"key"` field, `$LITELLM_MASTER_KEY` is unset or
+   wrong in your shell - `echo "$LITELLM_MASTER_KEY"` to check before assuming anything else is broken.
+
+4. **Run the agent with no group flags at all**:
+
+   ```bash
+   GATEWAY_KEY="<the key from step 3>"
+   agents/.venv/bin/python -m agents.reasoning_agent \
+     --platform-url http://localhost:8000 --token "$TOKEN" \
+     --gateway-url http://localhost:4000 --gateway-key "$GATEWAY_KEY" \
+     --problem "what is 6 times 7?"
+   ```
+   A clean final answer with no errors means discovery worked - the key has no access to the old defaults.
+
+5. **Confirm which models actually answered**, via the platform rather than trusting stdout alone:
+
+   ```bash
+   AGENT_ID=$(python3 -c "import json; print(json.load(open('/tmp/agent.json'))['id'])")
+   curl -s "http://localhost:8000/api/agents/$AGENT_ID/turns?limit=1" | python3 -c "
+   import json, sys
+   t = json.load(sys.stdin)[0]
+   print('status:', t['status'], '| models:', t['models'])
+   "
+   ```
+   Expect `status: ok` and `models: ['ollama_chat/qwen3:8b', 'ollama_chat/gemma4:e4b']`.
+
+6. **(Optional) Confirm an explicit override still wins**, with no platform round-trip for that task:
+
+   ```bash
+   agents/.venv/bin/python -m agents.reasoning_agent \
+     --platform-url http://localhost:8000 --token "$TOKEN" \
+     --gateway-url http://localhost:4000 --gateway-key "$GATEWAY_KEY" \
+     --reasoning-model-group discovery-test__reasoning --generation-model-group discovery-test__generation \
+     --problem "what is 1 plus 1?"
+   ```
+
+7. **(Optional) Confirm a failed discovery still lets the agent start**, with a visible warning rather than a
+   crash - point `--platform-url` at a port nothing is listening on:
+
+   ```bash
+   agents/.venv/bin/python -m agents.reasoning_agent \
+     --platform-url http://localhost:9999 --token "$TOKEN" \
+     --gateway-url http://localhost:4000 --gateway-key "$GATEWAY_KEY" \
+     --problem "what is 2 plus 2?" 2>&1 | grep -i warning
+   ```
+   (The run then fails at the actual gateway call too, since the fallback defaults' groups don't exist for
+   this agent - expected. The point of this step is only to see the warning print before that happens.)
+
+8. **Clean up** - delete the test agent, its two gateway groups (`/model/info` -> `/model/delete`, same as
+   `gateway/README.md`), and the virtual key:
+
+   ```bash
+   curl -s -X DELETE "http://localhost:8000/api/agents/$AGENT_ID"
+   curl -s -X POST http://localhost:4000/key/delete \
+     -H "Authorization: Bearer $LITELLM_MASTER_KEY" -H "Content-Type: application/json" \
+     -d "{\"keys\": [\"$GATEWAY_KEY\"]}"
+   ```
 
 ## Setup
 

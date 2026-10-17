@@ -2,6 +2,10 @@
 
 Never calls a model: it validates, stores, optionally queues an evaluation row (sampling only - the actual
 evaluation runs later in the `EvaluationWorker`), and returns. See design D1/D2.
+
+Also GET /api/ingest/v1/whoami (spec `agent-registry`, "An agent can discover its own registration",
+`add-agent-self-discovery`) - lets an agent read back its own registration using the same ingest token, so it
+can derive its own gateway model group names without an operator passing them by hand.
 """
 
 from __future__ import annotations
@@ -13,6 +17,7 @@ from sqlalchemy.orm import Session
 from app import repo
 from app.api.deps import get_session
 from app.core.events import agent_channel
+from app.core.gateway_sync import agent_slug, model_group_name
 from app.traces.schemas import SpanEvent, TurnEndEvent, TurnStartEvent, UnsupportedSchemaVersion, validate_batch
 
 router = APIRouter(prefix="/api/ingest")
@@ -26,6 +31,34 @@ def _bearer_token(authorization: str | None) -> str | None:
     if not authorization or not authorization.lower().startswith("bearer "):
         return None
     return authorization[7:].strip() or None
+
+
+@router.get("/v1/whoami")
+async def whoami(
+    authorization: str | None = Header(default=None),
+    session: Session = Depends(get_session),
+):
+    """Lets a registered agent read back its own name, kind, declared models, and the gateway model group name
+    computed for each declared task type - authenticated by the same ingest token `POST /v1/events` uses.
+    Unlike that endpoint, a paused agent is NOT rejected here (spec `agent-registry`, "A paused agent can still
+    discover itself" - pausing blocks sending live traffic, not asking "what groups do you think you're using?").
+    The response never includes the ingest token, a gateway credential, or any provider secret - only what's
+    needed to derive gateway group names (`add-agent-self-discovery`)."""
+    token = _bearer_token(authorization)
+    agent = repo.verify_agent_token(session, token)
+    if agent is None:
+        return _err(401, "unauthorized", "Unknown or missing ingest token.")
+
+    slug = agent_slug(agent.name)
+    declared_models = agent.declared_models or {}
+    return {
+        "name": agent.name,
+        "kind": agent.kind,
+        "declared_models": declared_models,
+        "gateway_model_groups": {
+            task_type: model_group_name(slug, task_type) for task_type in declared_models
+        },
+    }
 
 
 @router.post("/v1/events")

@@ -10,10 +10,11 @@ import time
 from pathlib import Path
 
 import httpx
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "agents"))
 
-from eval_agent_sdk import AgentClient  # noqa: E402
+from eval_agent_sdk import AgentClient, whoami  # noqa: E402
 
 
 def _client(handler, **kwargs) -> AgentClient:
@@ -95,3 +96,69 @@ def test_sustained_overload_drops_oldest_and_counts_drops():
     assert client._queue.qsize() <= 3
     started.set()
     client.close(timeout_s=2.0)
+
+
+# ------------------------------------------------------------------ add-agent-self-discovery: whoami()
+def test_whoami_returns_the_response_json(monkeypatch):
+    captured = {}
+
+    def fake_get(url, *, headers=None, timeout=None):
+        captured["url"] = url
+        captured["headers"] = headers
+        captured["timeout"] = timeout
+        return httpx.Response(
+            200,
+            json={
+                "name": "my-reasoner",
+                "kind": "reasoning",
+                "declared_models": {"reasoning": "qwen3:8b"},
+                "gateway_model_groups": {"reasoning": "my-reasoner__reasoning"},
+            },
+            request=httpx.Request("GET", url),
+        )
+
+    import eval_agent_sdk
+
+    monkeypatch.setattr(eval_agent_sdk.httpx, "get", fake_get)
+
+    body = whoami("http://platform.local", "tok-123")
+    assert body["gateway_model_groups"] == {"reasoning": "my-reasoner__reasoning"}
+    assert captured["url"] == "http://platform.local/api/ingest/v1/whoami"
+    assert captured["headers"] == {"Authorization": "Bearer tok-123"}
+    assert captured["timeout"] == 10.0
+
+
+def test_whoami_strips_a_trailing_slash_from_the_platform_url(monkeypatch):
+    captured = {}
+
+    def fake_get(url, *, headers=None, timeout=None):
+        captured["url"] = url
+        return httpx.Response(200, json={}, request=httpx.Request("GET", url))
+
+    import eval_agent_sdk
+
+    monkeypatch.setattr(eval_agent_sdk.httpx, "get", fake_get)
+    whoami("http://platform.local/", "tok")
+    assert captured["url"] == "http://platform.local/api/ingest/v1/whoami"
+
+
+def test_whoami_raises_on_a_non_2xx_response(monkeypatch):
+    def fake_get(url, *, headers=None, timeout=None):
+        return httpx.Response(401, json={"detail": "unauthorized"}, request=httpx.Request("GET", url))
+
+    import eval_agent_sdk
+
+    monkeypatch.setattr(eval_agent_sdk.httpx, "get", fake_get)
+    with pytest.raises(httpx.HTTPStatusError):
+        whoami("http://platform.local", "bad-token")
+
+
+def test_whoami_raises_on_a_connection_failure(monkeypatch):
+    def fake_get(url, *, headers=None, timeout=None):
+        raise httpx.ConnectError("connection refused", request=httpx.Request("GET", url))
+
+    import eval_agent_sdk
+
+    monkeypatch.setattr(eval_agent_sdk.httpx, "get", fake_get)
+    with pytest.raises(httpx.HTTPError):
+        whoami("http://platform.local", "tok")

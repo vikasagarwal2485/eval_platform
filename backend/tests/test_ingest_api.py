@@ -120,6 +120,84 @@ def test_paused_agent_rejects_ingest(settings, file_session_factory):
         assert r.json()["detail"]["code"] == "agent_paused"
 
 
+# ------------------------------------------------------------------ add-agent-self-discovery: GET /v1/whoami
+def test_whoami_returns_name_kind_declared_models_and_computed_gateway_groups(settings, file_session_factory):
+    with file_session_factory() as session:
+        agent, token = repo.create_agent(
+            session,
+            name="My Reasoner!",
+            kind="reasoning",
+            declared_models={"reasoning": "qwen3:8b", "generation": "gemma4:e4b"},
+            eval_config=EvalConfigIn(),
+            rubric=None,
+        )
+        session.commit()
+    with new_client(settings, file_session_factory, FakeOllama()) as c:
+        r = c.get("/api/ingest/v1/whoami", headers={"Authorization": f"Bearer {token}"})
+        assert r.status_code == 200
+        body = r.json()
+        assert body["name"] == "My Reasoner!"
+        assert body["kind"] == "reasoning"
+        assert body["declared_models"] == {"reasoning": "qwen3:8b", "generation": "gemma4:e4b"}
+        # "My Reasoner!" -> "my-reasoner" (agent_slug in gateway_sync.py) - same computation the real sync uses
+        assert body["gateway_model_groups"] == {
+            "reasoning": "my-reasoner__reasoning",
+            "generation": "my-reasoner__generation",
+        }
+
+
+def test_whoami_matches_the_group_names_a_real_sync_would_use(settings, file_session_factory):
+    """The exact same functions (`agent_slug`/`model_group_name`) back both the sync step and this endpoint -
+    this test pins that by calling them directly and comparing, so the two can never silently drift apart."""
+    from app.core.gateway_sync import agent_slug, model_group_name
+
+    with file_session_factory() as session:
+        agent, token = repo.create_agent(
+            session,
+            name="demo-reasoner",
+            kind="reasoning",
+            declared_models={"reasoning": "qwen3:8b"},
+            eval_config=EvalConfigIn(),
+            rubric=None,
+        )
+        session.commit()
+    with new_client(settings, file_session_factory, FakeOllama()) as c:
+        body = c.get("/api/ingest/v1/whoami", headers={"Authorization": f"Bearer {token}"}).json()
+        expected = model_group_name(agent_slug(agent.name), "reasoning")
+        assert body["gateway_model_groups"]["reasoning"] == expected
+
+
+def test_whoami_unauthorized_without_valid_token(settings, file_session_factory):
+    _make_agent(file_session_factory)
+    with new_client(settings, file_session_factory, FakeOllama()) as c:
+        r = c.get("/api/ingest/v1/whoami", headers={"Authorization": "Bearer nope"})
+        assert r.status_code == 401
+        r = c.get("/api/ingest/v1/whoami")
+        assert r.status_code == 401
+
+
+def test_whoami_succeeds_even_when_the_agent_is_paused(settings, file_session_factory):
+    agent_id, token = _make_agent(file_session_factory)
+    with file_session_factory() as session:
+        repo.set_agent_status(session, agent_id, "paused")
+        session.commit()
+    with new_client(settings, file_session_factory, FakeOllama()) as c:
+        r = c.get("/api/ingest/v1/whoami", headers={"Authorization": f"Bearer {token}"})
+        assert r.status_code == 200
+        assert r.json()["name"] == "bot"
+
+
+def test_whoami_never_returns_a_secret(settings, file_session_factory):
+    _agent_id, token = _make_agent(file_session_factory)
+    with new_client(settings, file_session_factory, FakeOllama()) as c:
+        body = c.get("/api/ingest/v1/whoami", headers={"Authorization": f"Bearer {token}"}).json()
+        assert set(body) == {"name", "kind", "declared_models", "gateway_model_groups"}
+        serialized = str(body)
+        assert token not in serialized
+        for forbidden in ("token", "token_hash", "token_prefix", "api_key", "gateway"):
+            assert forbidden not in body
+
+
 def test_unsampled_turn_is_not_queued_for_evaluation(settings, file_session_factory):
     agent_id, token = _make_agent(file_session_factory, evaluators=["gemma3:4b"], sample_rate=0.0)
     with new_client(settings, file_session_factory, FakeOllama()) as c:

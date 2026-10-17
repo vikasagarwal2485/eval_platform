@@ -515,3 +515,81 @@ def test_cli_fallback_group_flags_default_to_none():
     args = parser.parse_args(["--platform-url", "http://localhost:8000", "--token", "tok", "--problem", "2+3?"])
     assert args.reasoning_fallback_group is None
     assert args.generation_fallback_group is None
+
+
+# ------------------------------------------------------------------ add-agent-self-discovery
+def test_discovery_is_used_when_no_explicit_group_is_given(monkeypatch):
+    def fake_whoami(platform_url, token):
+        assert platform_url == "http://platform.local"
+        assert token == "tok"
+        return {"gateway_model_groups": {"reasoning": "my-reasoner__reasoning", "generation": "my-reasoner__generation"}}
+
+    monkeypatch.setattr(reasoning_agent, "whoami", fake_whoami)
+    reasoning_group, generation_group = reasoning_agent._resolve_model_groups(
+        "http://platform.local", "tok", None, None
+    )
+    assert reasoning_group == "my-reasoner__reasoning"
+    assert generation_group == "my-reasoner__generation"
+
+
+def test_explicit_override_wins_for_its_own_task_without_consulting_discovery(monkeypatch):
+    def fake_whoami(platform_url, token):
+        return {"gateway_model_groups": {"reasoning": "discovered__reasoning", "generation": "discovered__generation"}}
+
+    monkeypatch.setattr(reasoning_agent, "whoami", fake_whoami)
+    reasoning_group, generation_group = reasoning_agent._resolve_model_groups(
+        "http://platform.local", "tok", "explicit__reasoning", None
+    )
+    assert reasoning_group == "explicit__reasoning"  # the override, not the (different) discovered value
+    assert generation_group == "discovered__generation"  # still discovered - no override given for this task
+
+
+def test_whoami_is_not_called_when_both_groups_are_explicit(monkeypatch):
+    def fake_whoami(platform_url, token):
+        raise AssertionError("whoami() must not be called when both groups are already explicit")
+
+    monkeypatch.setattr(reasoning_agent, "whoami", fake_whoami)
+    reasoning_group, generation_group = reasoning_agent._resolve_model_groups(
+        "http://platform.local", "tok", "explicit__reasoning", "explicit__generation"
+    )
+    assert (reasoning_group, generation_group) == ("explicit__reasoning", "explicit__generation")
+
+
+def test_failed_discovery_falls_back_to_hardcoded_defaults_with_a_visible_warning(monkeypatch, capsys):
+    def fake_whoami(platform_url, token):
+        raise httpx.ConnectError("connection refused", request=httpx.Request("GET", platform_url))
+
+    monkeypatch.setattr(reasoning_agent, "whoami", fake_whoami)
+    reasoning_group, generation_group = reasoning_agent._resolve_model_groups(
+        "http://platform.local", "tok", None, None
+    )
+    assert reasoning_group == reasoning_agent.REASONING_MODEL_GROUP
+    assert generation_group == reasoning_agent.GENERATION_MODEL_GROUP
+    assert "warning" in capsys.readouterr().err.lower()
+
+
+def test_main_skips_discovery_entirely_when_model_is_explicit(monkeypatch):
+    def fake_whoami(platform_url, token):
+        raise AssertionError("whoami() must not be called when --model is set")
+
+    monkeypatch.setattr(reasoning_agent, "whoami", fake_whoami)
+
+    calls: list[dict] = []
+
+    def fake_completion(**kwargs):
+        calls.append(kwargs)
+        return _FakeLiteLLMResponse("...")
+
+    monkeypatch.setattr(reasoning_agent.litellm, "completion", fake_completion)
+    monkeypatch.setattr(
+        reasoning_agent, "AgentClient",
+        lambda *a, **k: AgentClient(
+            "http://platform.local", "tok", transport=httpx.MockTransport(_platform_handler([])),
+            flush_interval_s=0.02,
+        ),
+    )
+    reasoning_agent.main([
+        "--platform-url", "http://platform.local", "--token", "tok",
+        "--model", "ollama_chat/qwen3:8b", "--problem", "2+3?",
+    ])
+    assert calls  # the call still happened - just never through discovery
