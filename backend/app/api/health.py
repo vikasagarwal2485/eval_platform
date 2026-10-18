@@ -29,19 +29,38 @@ def _providers_status(request: Request) -> list[dict]:
         ]
 
 
+def _disabled_or(ok: bool, reason: str | None, m) -> tuple[bool, str | None]:
+    """A model disabled on the Models page is unavailable for that reason alone, regardless of whether its
+    provider is otherwise fine - takes priority so the real blocker is always the one shown."""
+    if not m.enabled:
+        return False, "disabled on the Models page - enable it there to use it"
+    return ok, reason
+
+
+def _capabilities(m) -> list[str]:
+    caps = ["completion"]
+    if m.reasoning:
+        caps.append("thinking")
+    if m.classification:
+        caps.append("classification")
+    return caps
+
+
 def cloud_models(request: Request) -> list[ModelInfo]:
-    """Enabled enterprise models from the registry, each marked available or not - a key that's present but
-    actually failing (per the provider's last "Test connection" result - `add-provider-availability-gating`) is
-    caught here too, not just an empty env var. Excludes models registered under an `ollama`-kind provider
-    (`add-ollama-provider-kind`) - those are local, not cloud; see `_registered_ollama_models`."""
+    """Every registered enterprise model, each marked available or not - a key that's present but actually
+    failing (per the provider's last "Test connection" result - `add-provider-availability-gating`), or the
+    model itself disabled on the Models page, is caught here too, not just an empty env var. A disabled model
+    is still listed (never silently dropped - `add-model-classification-tag`), just shown unavailable with the
+    reason, the same way a failed-key model already was. Excludes models registered under an `ollama`-kind
+    provider (`add-ollama-provider-kind`) - those are local, not cloud; see `_registered_ollama_models`."""
     keys = request.app.state.router.keys
     out: list[ModelInfo] = []
     with request.app.state.session_factory() as s:
-        for m in repo.list_registered_models(s, enabled_only=True):
+        for m in repo.list_registered_models(s):
             p = m.provider
             if p.kind == "ollama":
                 continue
-            ok, reason = provider_availability(p, keys)
+            ok, reason = _disabled_or(*provider_availability(p, keys), m)
             out.append(
                 ModelInfo(
                     name=format_ref(p.name, m.model_id),
@@ -51,7 +70,8 @@ def cloud_models(request: Request) -> list[ModelInfo]:
                     provider_kind=p.kind,
                     display_name=m.display_name or m.model_id,
                     reasoning=m.reasoning,
-                    capabilities=["completion"] + (["thinking"] if m.reasoning else []),
+                    classification=m.classification,
+                    capabilities=_capabilities(m),
                     thinking=m.reasoning,
                     available=ok,
                     unavailable_reason=reason,
@@ -72,7 +92,7 @@ def _registered_ollama_models(request: Request, discovered: dict[str, ModelInfo]
     keys = request.app.state.router.keys
     out: list[ModelInfo] = []
     with request.app.state.session_factory() as s:
-        for m in repo.list_registered_models(s, enabled_only=True):
+        for m in repo.list_registered_models(s):
             p = m.provider
             if p.kind != "ollama":
                 continue
@@ -82,6 +102,7 @@ def _registered_ollama_models(request: Request, discovered: dict[str, ModelInfo]
                 ok, reason = False, f"model '{m.model_id}' is not currently pulled in Ollama"
             elif ok and discovered is None:
                 ok, reason = False, "Ollama unreachable"
+            ok, reason = _disabled_or(ok, reason, m)
             out.append(
                 ModelInfo(
                     name=format_ref(p.name, m.model_id),
@@ -90,12 +111,13 @@ def _registered_ollama_models(request: Request, discovered: dict[str, ModelInfo]
                     parameter_size=live.parameter_size if live else None,
                     quantization=live.quantization if live else None,
                     family=live.family if live else None,
-                    capabilities=live.capabilities if live else ["completion"] + (["thinking"] if m.reasoning else []),
+                    capabilities=live.capabilities if live else _capabilities(m),
                     source="local",
                     provider=p.name,
                     provider_kind=p.kind,
                     display_name=m.display_name or m.model_id,
                     reasoning=m.reasoning,
+                    classification=m.classification,
                     thinking=live.thinking if live else m.reasoning,
                     available=ok,
                     unavailable_reason=reason,

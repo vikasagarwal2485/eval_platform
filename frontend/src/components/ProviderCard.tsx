@@ -56,6 +56,7 @@ function ModelsTable({ provider }: { provider: Provider }) {
               <th>{isAzure ? 'Deployment' : 'Model'}</th>
               <th>Reasoning model</th>
               <th>Reasoning effort</th>
+              <th>Classification model</th>
               <th>Enabled</th>
               <th>
                 <span className="sr-only">Actions</span>
@@ -96,6 +97,20 @@ function ModelsTable({ provider }: { provider: Provider }) {
                   ) : (
                     <span className="muted small">n/a</span>
                   )}
+                </td>
+                <td>
+                  <input
+                    type="checkbox"
+                    aria-label={`Classification model: ${mo.ref}`}
+                    checked={mo.classification}
+                    onChange={(e) =>
+                      m.updateModel.mutate({
+                        providerId: provider.id,
+                        modelId: mo.id,
+                        classification: e.target.checked,
+                      })
+                    }
+                  />
                 </td>
                 <td>
                   <input
@@ -145,6 +160,7 @@ function AddModels({ provider }: { provider: Provider }) {
   const [modelId, setModelId] = useState('');
   const [reasoning, setReasoning] = useState(false);
   const [reasoningEffort, setReasoningEffort] = useState('');
+  const [classification, setClassification] = useState(false);
   const [available, setAvailable] = useState<AvailableModel[] | null>(null);
   const [picked, setPicked] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
@@ -158,12 +174,14 @@ function AddModels({ provider }: { provider: Provider }) {
         model_id: modelId.trim(),
         reasoning,
         reasoning_effort: reasoning && reasoningEffort.trim() ? reasoningEffort.trim() : null,
+        classification,
       },
       {
         onSuccess: () => {
           setModelId('');
           setReasoning(false);
           setReasoningEffort('');
+          setClassification(false);
         },
       },
     );
@@ -223,6 +241,14 @@ function AddModels({ provider }: { provider: Provider }) {
             />
           </div>
         )}
+        <label className="check" style={{ marginBottom: 6 }}>
+          <input
+            type="checkbox"
+            checked={classification}
+            onChange={(e) => setClassification(e.target.checked)}
+          />
+          <span>Classification model</span>
+        </label>
         <button type="submit" disabled={!modelId.trim() || m.addModel.isPending}>
           Add model
         </button>

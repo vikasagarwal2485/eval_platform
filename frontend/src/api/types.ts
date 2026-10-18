@@ -16,6 +16,8 @@ export interface ModelInfo {
   provider_kind: ProviderKind | null;
   display_name: string | null;
   reasoning: boolean;
+  /** tagged fit for the classification task on the Models page (mirrors `reasoning`) */
+  classification: boolean;
   available: boolean;
   unavailable_reason: string | null;
 }
@@ -345,6 +347,8 @@ export interface ProviderModel {
   reasoning: boolean;
   /** only meaningful when reasoning is true; e.g. "low" | "medium" | "high" */
   reasoning_effort: string | null;
+  /** tagged fit for the classification task (mirrors `reasoning`) */
+  classification: boolean;
 }
 export interface Provider {
   id: number;

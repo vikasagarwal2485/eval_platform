@@ -92,8 +92,9 @@ def test_chatbot_one_exchange_produces_one_turn_one_span(monkeypatch):
     assert end["output"] == "Hello there!"
 
 
-def test_reasoning_agent_one_problem_produces_three_spans_under_one_turn(monkeypatch):
-    answers = iter(["1. Do X", "Working: ...", "Final answer: 42"])
+def test_reasoning_agent_one_problem_produces_four_spans_under_one_turn(monkeypatch):
+    """`add-classification-task-routing`: classify is now the first of four calls (was three)."""
+    answers = iter(["arithmetic, easy", "1. Do X", "Working: ...", "Final answer: 42"])
 
     def fake_completion(**kwargs):
         return _FakeLiteLLMResponse(next(answers))
@@ -116,16 +117,19 @@ def test_reasoning_agent_one_problem_produces_three_spans_under_one_turn(monkeyp
     turn_id = {e["turn_id"] for e in received}
     assert len(turn_id) == 1  # every event belongs to the same turn
     spans = [e for e in received if e["type"] == "span"]
-    assert len(spans) == 3
+    assert len(spans) == 4
     start = next(e for e in received if e["type"] == "turn.start")
     assert start["reference"] == "5"
 
 
-def test_reasoning_agent_default_mode_routes_plan_verify_and_solve_to_different_task_model_groups(monkeypatch):
-    """`model=None` (the CLI default) - plan/verify address `REASONING_MODEL_GROUP`, solve addresses
-    `GENERATION_MODEL_GROUP`, each prefixed `openai/` and sent through the gateway's `api_base` (the SDK needs
-    that prefix to treat an arbitrary `api_base` as an OpenAI-compatible endpoint - verified directly against a
-    running gateway while implementing add-litellm-gateway-infra; a bare group name fails there)."""
+def test_reasoning_agent_default_mode_routes_classify_plan_verify_and_solve_to_different_task_model_groups(
+    monkeypatch,
+):
+    """`model=None` (the CLI default) - classify addresses `CLASSIFICATION_MODEL_GROUP`, plan/verify address
+    `REASONING_MODEL_GROUP`, solve addresses `GENERATION_MODEL_GROUP`, each prefixed `openai/` and sent through
+    the gateway's `api_base` (the SDK needs that prefix to treat an arbitrary `api_base` as an OpenAI-compatible
+    endpoint - verified directly against a running gateway while implementing add-litellm-gateway-infra; a bare
+    group name fails there)."""
     calls: list[dict] = []
 
     def fake_completion(**kwargs):
@@ -145,6 +149,7 @@ def test_reasoning_agent_default_mode_routes_plan_verify_and_solve_to_different_
     client.close(timeout_s=2.0)
 
     assert [c["model"] for c in calls] == [
+        f"openai/{reasoning_agent.CLASSIFICATION_MODEL_GROUP}",
         f"openai/{reasoning_agent.REASONING_MODEL_GROUP}",
         f"openai/{reasoning_agent.GENERATION_MODEL_GROUP}",
         f"openai/{reasoning_agent.REASONING_MODEL_GROUP}",
@@ -153,10 +158,10 @@ def test_reasoning_agent_default_mode_routes_plan_verify_and_solve_to_different_
     assert all(c["api_key"] == "vkey-123" for c in calls)
 
 
-def test_reasoning_and_generation_model_groups_are_overridable(monkeypatch):
-    """TEMPORARY stopgap (see the module docstring and add-gateway-model-sync's design.md Non-Goals):
-    --reasoning-model-group/--generation-model-group let an operator point at an agent registered under any
-    name, not just the hardcoded "reasoning-agent" default."""
+def test_reasoning_generation_and_classification_model_groups_are_overridable(monkeypatch):
+    """--reasoning-model-group/--generation-model-group/--classification-model-group (all three, consistently -
+    `add-classification-task-routing`) let an operator point at an agent registered under any name, overriding
+    self-discovery for that task entirely."""
     calls: list[dict] = []
 
     def fake_completion(**kwargs):
@@ -173,10 +178,12 @@ def test_reasoning_and_generation_model_groups_are_overridable(monkeypatch):
     reasoning_agent.solve_one(
         client, "s1", None, "http://gateway.local", "vkey-123", "2+3?",
         reasoning_group="my-reasoner__reasoning", generation_group="my-reasoner__generation",
+        classification_group="my-reasoner__classification",
     )
     client.close(timeout_s=2.0)
 
     assert [c["model"] for c in calls] == [
+        "openai/my-reasoner__classification",
         "openai/my-reasoner__reasoning",
         "openai/my-reasoner__generation",
         "openai/my-reasoner__reasoning",
@@ -200,15 +207,17 @@ def test_cli_overrides_thread_through_run_once(monkeypatch):
     reasoning_agent.run_once(
         client, None, "http://gateway.local", "vkey-123", "2+3?",
         reasoning_group="demo__reasoning", generation_group="demo__generation",
+        classification_group="demo__classification",
     )
     client.close(timeout_s=2.0)
 
-    assert calls[0]["model"] == "openai/demo__reasoning"
-    assert calls[1]["model"] == "openai/demo__generation"
+    assert calls[0]["model"] == "openai/demo__classification"
+    assert calls[1]["model"] == "openai/demo__reasoning"
+    assert calls[2]["model"] == "openai/demo__generation"
 
 
-def test_reasoning_agent_explicit_model_skips_the_gateway_for_all_three_calls(monkeypatch):
-    """`--model` overrides all three calls to one literal model string with no gateway involved - local testing
+def test_reasoning_agent_explicit_model_skips_the_gateway_for_all_four_calls(monkeypatch):
+    """`--model` overrides all four calls to one literal model string with no gateway involved - local testing
     without the gateway running at all."""
     calls: list[dict] = []
 
@@ -228,7 +237,7 @@ def test_reasoning_agent_explicit_model_skips_the_gateway_for_all_three_calls(mo
     reasoning_agent.solve_one(client, "s1", "ollama_chat/qwen3:8b", "http://gateway.local", "vkey-123", "2+3?")
     client.close(timeout_s=2.0)
 
-    assert [c["model"] for c in calls] == ["ollama_chat/qwen3:8b"] * 3
+    assert [c["model"] for c in calls] == ["ollama_chat/qwen3:8b"] * 4
     assert all("api_base" not in c for c in calls)
     assert all("api_key" not in c for c in calls)
 
@@ -254,10 +263,11 @@ def test_reasoning_agent_span_records_the_concrete_model_not_the_group_alias(mon
     client.close(timeout_s=2.0)
 
     spans = [e for e in received if e["type"] == "span"]
-    assert len(spans) == 3
+    assert len(spans) == 4
     assert all(s["model"] == "ollama_chat/qwen3:8b" for s in spans)
     assert reasoning_agent.REASONING_MODEL_GROUP not in {s["model"] for s in spans}
     assert reasoning_agent.GENERATION_MODEL_GROUP not in {s["model"] for s in spans}
+    assert reasoning_agent.CLASSIFICATION_MODEL_GROUP not in {s["model"] for s in spans}
 
 
 def test_call_llm_return_shape_matches_the_pre_litellm_implementation(monkeypatch):
@@ -447,7 +457,9 @@ def test_call_llm_ignores_fallback_group_outside_the_gateway(monkeypatch):
     assert "fallbacks" not in calls[0]
 
 
-def test_solve_one_passes_reasoning_and_generation_fallback_groups_to_the_matching_calls(monkeypatch):
+def test_solve_one_passes_reasoning_generation_and_classification_fallback_groups_to_the_matching_calls(
+    monkeypatch,
+):
     calls: list[dict] = []
 
     def fake_completion(**kwargs):
@@ -465,13 +477,16 @@ def test_solve_one_passes_reasoning_and_generation_fallback_groups_to_the_matchi
         client, "s1", None, "http://gateway.local", "vkey-123", "2+3?",
         reasoning_fallback_group="my-reasoner__reasoning__fallback",
         generation_fallback_group="my-reasoner__generation__fallback",
+        classification_fallback_group="my-reasoner__classification__fallback",
     )
     client.close(timeout_s=2.0)
 
-    # plan, solve, verify - plan/verify get the reasoning fallback, solve gets the generation fallback
-    assert calls[0]["fallbacks"] == ["openai/my-reasoner__reasoning__fallback"]
-    assert calls[1]["fallbacks"] == ["openai/my-reasoner__generation__fallback"]
-    assert calls[2]["fallbacks"] == ["openai/my-reasoner__reasoning__fallback"]
+    # classify, plan, solve, verify - classify gets its own fallback, plan/verify get the reasoning fallback,
+    # solve gets the generation fallback
+    assert calls[0]["fallbacks"] == ["openai/my-reasoner__classification__fallback"]
+    assert calls[1]["fallbacks"] == ["openai/my-reasoner__reasoning__fallback"]
+    assert calls[2]["fallbacks"] == ["openai/my-reasoner__generation__fallback"]
+    assert calls[3]["fallbacks"] == ["openai/my-reasoner__reasoning__fallback"]
 
 
 def test_explicit_model_ignores_fallback_groups_too(monkeypatch):
@@ -517,42 +532,124 @@ def test_cli_fallback_group_flags_default_to_none():
     assert args.generation_fallback_group is None
 
 
+# ------------------------------------------------------------------ add-classification-task-routing
+def test_cli_exposes_classification_group_and_fallback_flags():
+    parser = reasoning_agent.build_arg_parser()
+    args = parser.parse_args([
+        "--platform-url", "http://localhost:8000", "--token", "tok", "--problem", "2+3?",
+        "--classification-model-group", "demo__classification",
+        "--classification-fallback-group", "demo__classification__fallback",
+    ])
+    assert args.classification_model_group == "demo__classification"
+    assert args.classification_fallback_group == "demo__classification__fallback"
+
+
+def test_cli_classification_flags_default_to_none():
+    parser = reasoning_agent.build_arg_parser()
+    args = parser.parse_args(["--platform-url", "http://localhost:8000", "--token", "tok", "--problem", "2+3?"])
+    assert args.classification_model_group is None
+    assert args.classification_fallback_group is None
+
+
+def test_classification_result_never_changes_plan_solve_verify_prompts(monkeypatch):
+    """design.md Non-Goals: the classification call's output is recorded, not acted upon - plan/solve/verify's
+    prompts must come out identical regardless of what classify() returns. Each call gets a distinct,
+    identifiable response so a real leak (vs. a later call's own legitimate output, e.g. plan's own text
+    flowing into solve's prompt) can be told apart."""
+    responses = iter(["UNEXPECTED_CLASSIFICATION_MARKER_XYZ", "the plan", "the solution", "the verified answer"])
+    prompts_seen: list[str] = []
+
+    def fake_completion(**kwargs):
+        prompts_seen.append(kwargs["messages"][-1]["content"])
+        return _FakeLiteLLMResponse(next(responses))
+
+    monkeypatch.setattr(reasoning_agent.litellm, "completion", fake_completion)
+
+    received: list = []
+    client = AgentClient(
+        "http://platform.local", "tok", transport=httpx.MockTransport(_platform_handler(received)),
+        flush_interval_s=0.02,
+    )
+    reasoning_agent.solve_one(client, "s1", None, "http://gateway.local", None, "2+3?")
+    client.close(timeout_s=2.0)
+
+    assert len(prompts_seen) == 4
+    classify_prompt, plan_prompt, solve_prompt, verify_prompt = prompts_seen
+    assert "UNEXPECTED_CLASSIFICATION_MARKER_XYZ" not in plan_prompt
+    assert "UNEXPECTED_CLASSIFICATION_MARKER_XYZ" not in solve_prompt
+    assert "UNEXPECTED_CLASSIFICATION_MARKER_XYZ" not in verify_prompt
+    # plan's prompt is exactly what it was before classification existed - built only from `problem`
+    assert plan_prompt == reasoning_agent.PLAN_PROMPT.format(problem="2+3?")
+
+
 # ------------------------------------------------------------------ add-agent-self-discovery
 def test_discovery_is_used_when_no_explicit_group_is_given(monkeypatch):
     def fake_whoami(platform_url, token):
         assert platform_url == "http://platform.local"
         assert token == "tok"
-        return {"gateway_model_groups": {"reasoning": "my-reasoner__reasoning", "generation": "my-reasoner__generation"}}
+        return {
+            "gateway_model_groups": {
+                "reasoning": "my-reasoner__reasoning",
+                "generation": "my-reasoner__generation",
+                "classification": "my-reasoner__classification",
+            }
+        }
 
     monkeypatch.setattr(reasoning_agent, "whoami", fake_whoami)
-    reasoning_group, generation_group = reasoning_agent._resolve_model_groups(
+    reasoning_group, generation_group, classification_group = reasoning_agent._resolve_model_groups(
         "http://platform.local", "tok", None, None
     )
     assert reasoning_group == "my-reasoner__reasoning"
     assert generation_group == "my-reasoner__generation"
+    assert classification_group == "my-reasoner__classification"
 
 
 def test_explicit_override_wins_for_its_own_task_without_consulting_discovery(monkeypatch):
     def fake_whoami(platform_url, token):
-        return {"gateway_model_groups": {"reasoning": "discovered__reasoning", "generation": "discovered__generation"}}
+        return {
+            "gateway_model_groups": {
+                "reasoning": "discovered__reasoning",
+                "generation": "discovered__generation",
+                "classification": "discovered__classification",
+            }
+        }
 
     monkeypatch.setattr(reasoning_agent, "whoami", fake_whoami)
-    reasoning_group, generation_group = reasoning_agent._resolve_model_groups(
+    reasoning_group, generation_group, classification_group = reasoning_agent._resolve_model_groups(
         "http://platform.local", "tok", "explicit__reasoning", None
     )
     assert reasoning_group == "explicit__reasoning"  # the override, not the (different) discovered value
     assert generation_group == "discovered__generation"  # still discovered - no override given for this task
+    assert classification_group == "discovered__classification"  # likewise discovered
 
 
-def test_whoami_is_not_called_when_both_groups_are_explicit(monkeypatch):
+def test_whoami_is_not_called_when_all_three_groups_are_explicit(monkeypatch):
     def fake_whoami(platform_url, token):
-        raise AssertionError("whoami() must not be called when both groups are already explicit")
+        raise AssertionError("whoami() must not be called when all three groups are already explicit")
 
     monkeypatch.setattr(reasoning_agent, "whoami", fake_whoami)
-    reasoning_group, generation_group = reasoning_agent._resolve_model_groups(
-        "http://platform.local", "tok", "explicit__reasoning", "explicit__generation"
+    reasoning_group, generation_group, classification_group = reasoning_agent._resolve_model_groups(
+        "http://platform.local", "tok", "explicit__reasoning", "explicit__generation", "explicit__classification"
     )
-    assert (reasoning_group, generation_group) == ("explicit__reasoning", "explicit__generation")
+    assert (reasoning_group, generation_group, classification_group) == (
+        "explicit__reasoning", "explicit__generation", "explicit__classification",
+    )
+
+
+def test_whoami_is_still_called_when_only_two_of_three_groups_are_explicit(monkeypatch):
+    """Discovery is skipped only once EVERY task has an explicit override - not as soon as some do."""
+    calls = {"n": 0}
+
+    def fake_whoami(platform_url, token):
+        calls["n"] += 1
+        return {"gateway_model_groups": {"classification": "discovered__classification"}}
+
+    monkeypatch.setattr(reasoning_agent, "whoami", fake_whoami)
+    _, _, classification_group = reasoning_agent._resolve_model_groups(
+        "http://platform.local", "tok", "explicit__reasoning", "explicit__generation", None
+    )
+    assert calls["n"] == 1
+    assert classification_group == "discovered__classification"
 
 
 def test_failed_discovery_falls_back_to_hardcoded_defaults_with_a_visible_warning(monkeypatch, capsys):
@@ -560,11 +657,12 @@ def test_failed_discovery_falls_back_to_hardcoded_defaults_with_a_visible_warnin
         raise httpx.ConnectError("connection refused", request=httpx.Request("GET", platform_url))
 
     monkeypatch.setattr(reasoning_agent, "whoami", fake_whoami)
-    reasoning_group, generation_group = reasoning_agent._resolve_model_groups(
+    reasoning_group, generation_group, classification_group = reasoning_agent._resolve_model_groups(
         "http://platform.local", "tok", None, None
     )
     assert reasoning_group == reasoning_agent.REASONING_MODEL_GROUP
     assert generation_group == reasoning_agent.GENERATION_MODEL_GROUP
+    assert classification_group == reasoning_agent.CLASSIFICATION_MODEL_GROUP
     assert "warning" in capsys.readouterr().err.lower()
 
 

@@ -20,18 +20,30 @@ const startButton = () => screen.getByRole('button', { name: /start evaluation/i
 const model = (name: string) => screen.findByRole('checkbox', { name });
 
 describe('9.2 model selection', () => {
-  it('lists installed models with details and a thinking flag', async () => {
+  it('lists installed models with details and a reasoning flag', async () => {
     setup();
     await model('qwen3:8b');
     const card = screen
       .getByRole('checkbox', { name: 'qwen3:8b' })
       .closest('.model-card') as HTMLElement;
     expect(within(card).getByText(/8\.2B · Q4_K_M · qwen3/)).toBeInTheDocument();
-    expect(within(card).getByText('thinking')).toBeInTheDocument();
+    expect(within(card).getByText('reasoning')).toBeInTheDocument();
     const plain = screen
       .getByRole('checkbox', { name: 'llama3:8b' })
       .closest('.model-card') as HTMLElement;
-    expect(within(plain).queryByText('thinking')).toBeNull();
+    expect(within(plain).queryByText('reasoning')).toBeNull();
+    expect(within(plain).getByText('generation')).toBeInTheDocument();
+  });
+
+  it('shows a classification flag for a model tagged for it, and never alongside generation', async () => {
+    setup({
+      'GET /models': [...MODELS, { ...MODELS[1], name: 'small-classifier', classification: true }],
+    });
+    const card = (await screen.findByRole('checkbox', { name: 'small-classifier' })).closest(
+      '.model-card',
+    ) as HTMLElement;
+    expect(within(card).getByText('classification')).toBeInTheDocument();
+    expect(within(card).queryByText('generation')).toBeNull();
   });
 
   it('shows the selected count and enables starting once models and cases are chosen', async () => {
@@ -520,7 +532,7 @@ describe('6.3 enterprise models in the picker', () => {
       .getByRole('checkbox', { name: 'qwen3:8b' })
       .closest('.model-card') as HTMLElement;
     expect(within(local).queryByText('cloud')).toBeNull();
-    expect(within(local).getByText('thinking')).toBeInTheDocument();
+    expect(within(local).getByText('reasoning')).toBeInTheDocument();
   });
 
   it('shows a model without a key as disabled and names the missing variable', async () => {

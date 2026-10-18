@@ -39,8 +39,16 @@ def test_mixed_list_marks_source_provider_and_availability(settings, registry, m
     monkeypatch.delenv("AN_KEY", raising=False)
     with client(settings, registry, ollama("qwen3:8b", "gemma:test")) as c:
         models = c.get("/api/models").json()
-    # fully alphabetical now (add-provider-availability-gating) - not "locals first, then cloud" as before
-    assert [m["name"] for m in models] == ["@an/claude", "@oa/gpt-4o", "@oa/o3", "gemma:test", "qwen3:8b"]
+    # fully alphabetical now (add-provider-availability-gating) - not "locals first, then cloud" as before.
+    # "@oa/off" (disabled) is listed too (`add-model-classification-tag`), not dropped.
+    assert [m["name"] for m in models] == [
+        "@an/claude",
+        "@oa/gpt-4o",
+        "@oa/o3",
+        "@oa/off",
+        "gemma:test",
+        "qwen3:8b",
+    ]
     by = {m["name"]: m for m in models}
     # neither is registered under any provider (add-ollama-model-registration-required), so both are listed
     # but disabled - registering one under an `ollama`-kind provider is covered in test_ollama_provider_kind.py
@@ -62,6 +70,27 @@ def test_mixed_list_marks_source_provider_and_availability(settings, registry, m
     assert by["@oa/o3"]["display_name"] == "o3"
 
 
+def test_classification_flag_is_reported_for_both_cloud_and_local_registered_models(
+    settings, file_session_factory, monkeypatch
+):
+    """Mirrors `reasoning` (`add-model-classification-tag`) - independent of it, carried through for both
+    enterprise and `ollama`-kind registered models."""
+    with file_session_factory() as s:
+        oa = repo.create_provider(
+            s, kind="openai", name="oa", key_env="OA_KEY", base_url=None, ack_at=datetime.now(UTC)
+        )
+        om = repo.create_provider(s, kind="ollama", name="om", key_env=None, base_url=None, ack_at=None)
+        repo.add_registered_model(s, oa.id, "small", classification=True)
+        repo.add_registered_model(s, om.id, "qwen3:8b", classification=True)
+        s.commit()
+    monkeypatch.setenv("OA_KEY", "k")
+    with client(settings, file_session_factory, ollama("qwen3:8b")) as c:
+        by = {m["name"]: m for m in c.get("/api/models").json()}
+    assert by["@oa/small"]["classification"] is True
+    assert "classification" in by["@oa/small"]["capabilities"]
+    assert by["@om/qwen3:8b"]["classification"] is True
+
+
 def test_a_cloud_model_without_a_key_is_listed_unavailable_with_the_reason(settings, registry, monkeypatch):
     monkeypatch.delenv("OA_KEY", raising=False)
     monkeypatch.setenv("AN_KEY", "k")
@@ -74,11 +103,15 @@ def test_a_cloud_model_without_a_key_is_listed_unavailable_with_the_reason(setti
     assert by["@an/claude"]["available"] is True and by["qwen3:8b"]["available"] is False
 
 
-def test_disabled_models_are_not_offered(settings, registry, monkeypatch):
+def test_disabled_models_are_listed_but_unavailable(settings, registry, monkeypatch):
+    """A disabled model is never silently dropped (`add-model-classification-tag`) - it's shown the same way a
+    failed-key model already was: listed, marked unavailable, with the reason."""
     monkeypatch.setenv("OA_KEY", "k")
     with client(settings, registry, ollama("qwen3:8b")) as c:
-        names = [m["name"] for m in c.get("/api/models").json()]
-    assert "@oa/off" not in names and "@oa/gpt-4o" in names
+        by = {m["name"]: m for m in c.get("/api/models").json()}
+    assert by["@oa/gpt-4o"]["available"] is True
+    assert by["@oa/off"]["available"] is False
+    assert by["@oa/off"]["unavailable_reason"] == "disabled on the Models page - enable it there to use it"
 
 
 def test_enterprise_models_are_still_listed_when_ollama_is_down(settings, registry, monkeypatch):
@@ -88,9 +121,10 @@ def test_enterprise_models_are_still_listed_when_ollama_is_down(settings, regist
         r = c.get("/api/models")
         health = c.get("/api/health").json()
     assert r.status_code == 200
-    assert [m["name"] for m in r.json()] == ["@an/claude", "@oa/gpt-4o", "@oa/o3"] and all(
-        m["available"] for m in r.json()
-    )
+    by = {m["name"]: m for m in r.json()}
+    assert set(by) == {"@an/claude", "@oa/gpt-4o", "@oa/o3", "@oa/off"}
+    assert all(by[n]["available"] for n in ("@an/claude", "@oa/gpt-4o", "@oa/o3"))
+    assert by["@oa/off"]["available"] is False  # disabled, not Ollama-down - still listed either way
     assert health["status"] == "ollama_unreachable" and health["ollama"]["reachable"] is False
 
 
@@ -100,13 +134,22 @@ def test_ollama_down_with_nothing_registered_keeps_the_503(settings, file_sessio
     assert r.status_code == 503 and r.json()["detail"]["code"] == "ollama_unreachable"
 
 
-def test_ollama_down_with_only_disabled_models_registered_is_still_a_503(settings, file_session_factory):
+def test_ollama_down_with_only_a_disabled_model_registered_lists_it_unavailable_not_503(
+    settings, file_session_factory
+):
+    """A disabled model is still "registered" - it's listed (unavailable, with its own reason), the same way
+    `test_ollama_only_setup_with_nothing_registered_lists_the_model_but_disabled` shows a bare local model
+    instead of a 503 (`add-model-classification-tag`)."""
     with file_session_factory() as s:
         p = repo.create_provider(s, kind="openai", name="oa", key_env="K", base_url=None, ack_at=None)
         repo.add_registered_model(s, p.id, "m", enabled=False)
         s.commit()
     with client(settings, file_session_factory, ollama(down=True)) as c:
-        assert c.get("/api/models").status_code == 503
+        r = c.get("/api/models")
+    assert r.status_code == 200
+    (m,) = r.json()
+    assert m["name"] == "@oa/m" and m["available"] is False
+    assert m["unavailable_reason"] == "disabled on the Models page - enable it there to use it"
 
 
 def test_ollama_only_setup_with_nothing_registered_lists_the_model_but_disabled(settings, file_session_factory):

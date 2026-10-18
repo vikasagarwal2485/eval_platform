@@ -144,6 +144,7 @@ class ModelIn(BaseModel):
     display_name: str = ""
     reasoning: bool = False
     reasoning_effort: str | None = None  # only meaningful when reasoning is True
+    classification: bool = False
     enabled: bool = True
 
     @field_validator("model_id")
@@ -164,6 +165,7 @@ class ModelUpdate(BaseModel):
 
     enabled: bool | None = None
     reasoning: bool | None = None
+    classification: bool | None = None
     display_name: str | None = None
     reasoning_effort: str | None = None  # empty string clears it
 
@@ -183,6 +185,7 @@ def _model_out(p: Provider, m: RegisteredModel) -> dict:
         "enabled": m.enabled,
         "reasoning": m.reasoning,
         "reasoning_effort": m.reasoning_effort,
+        "classification": m.classification,
     }
 
 
@@ -285,6 +288,7 @@ def add_model(provider_id: int, body: ModelIn, session: Session = Depends(get_se
         enabled=body.enabled,
         reasoning=body.reasoning,
         reasoning_effort=body.reasoning_effort,
+        classification=body.classification,
     )
     return _model_out(p, m)
 
@@ -305,6 +309,7 @@ def update_model(provider_id: int, model_pk: int, body: ModelUpdate, session: Se
         m.id,
         enabled=body.enabled,
         reasoning=body.reasoning,
+        classification=body.classification,
         display_name=body.display_name,
         reasoning_effort=body.reasoning_effort,
         clear_reasoning_effort="reasoning_effort" in fields and body.reasoning_effort is None,

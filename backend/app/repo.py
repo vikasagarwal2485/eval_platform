@@ -463,6 +463,7 @@ def add_registered_model(
     enabled: bool = True,
     reasoning: bool = False,
     reasoning_effort: str | None = None,
+    classification: bool = False,
 ) -> RegisteredModel:
     p = get_provider(session, provider_id)
     if session.scalar(
@@ -476,6 +477,7 @@ def add_registered_model(
         enabled=enabled,
         reasoning=reasoning,
         reasoning_effort=reasoning_effort,
+        classification=classification,
     )
     session.add(m)
     session.flush()
@@ -495,6 +497,7 @@ def update_registered_model(
     *,
     enabled: bool | None = None,
     reasoning: bool | None = None,
+    classification: bool | None = None,
     display_name: str | None = None,
     reasoning_effort: str | None = None,
     clear_reasoning_effort: bool = False,
@@ -504,6 +507,8 @@ def update_registered_model(
         m.enabled = enabled
     if reasoning is not None:
         m.reasoning = reasoning
+    if classification is not None:
+        m.classification = classification
     if display_name is not None:
         m.display_name = display_name
     if clear_reasoning_effort:

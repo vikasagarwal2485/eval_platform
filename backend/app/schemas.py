@@ -20,6 +20,7 @@ class ModelInfo(BaseModel):
     provider_kind: str | None = None  # openai | anthropic
     display_name: str | None = None
     reasoning: bool = False
+    classification: bool = False
     available: bool = True
     unavailable_reason: str | None = None
 

@@ -74,6 +74,9 @@ class RegisteredModel(Base):
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     reasoning: Mapped[bool] = mapped_column(Boolean, default=False)
     reasoning_effort: Mapped[str | None] = mapped_column(String(20), nullable=True)  # only meaningful if reasoning
+    # Tags this model as fit for the classification task (mirrors `reasoning`; `add-model-classification-tag`).
+    # Independent of `reasoning` - a model may be tagged for both, either, or neither (plain generation).
+    classification: Mapped[bool] = mapped_column(Boolean, default=False)
 
     provider: Mapped[Provider] = relationship(back_populates="models")
 

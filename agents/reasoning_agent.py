@@ -1,30 +1,39 @@
 """Reference multi-step reasoning agent (task 7.1, spec `reference-agents`).
 
-Answers one problem per turn through three LLM calls - plan, solve, verify/format the final answer - so one turn
-has multiple spans and can involve more than one model. Streams every call into the eval platform via the agent
-SDK. With `--suite`, replays a suite file's reasoning cases and sends each case's expected answer as the turn's
-reference, so the platform's deterministic reference-based correctness check runs alongside the evaluator's score.
+Answers one problem per turn through four LLM calls - classify, plan, solve, verify/format the final answer -
+so one turn has multiple spans and can involve more than one model. Streams every call into the eval platform
+via the agent SDK. With `--suite`, replays a suite file's reasoning cases and sends each case's expected answer
+as the turn's reference, so the platform's deterministic reference-based correctness check runs alongside the
+evaluator's score.
 
-By default (no `--model`), plan/verify calls route through the shared LLM gateway
-(`openspec/changes/add-litellm-gateway-infra`) to this agent's own `<reasoning>` model group and the solve call
-to its `<generation>` group - each task's call uses whatever model that group is configured for, which can
-differ per call within one turn. Passing `--model` overrides all three calls to one literal model string and
-skips the gateway, for simple local testing (matching the agent's pre-task-routing behavior).
+By default (no `--model`), classify/plan/verify calls route through the shared LLM gateway
+(`openspec/changes/add-litellm-gateway-infra`) to this agent's own `<reasoning>` model group (classify
+specifically to its own `<classification>` group - `add-classification-task-routing`) and the solve call to its
+`<generation>` group - each task's call uses whatever model that group is configured for, which can differ per
+call within one turn. The classification call's result is recorded as its own span but not otherwise used - it
+does not change plan/solve/verify's prompts; it exists to prove the task-routing/discovery/fallback conventions
+generalize past two task types, and it reuses the same `call_llm()` helper every other call already uses - there
+is no separate, direct calling path to a "classification LLM". Passing `--model` overrides all four calls to
+one literal model string and skips the gateway, for simple local testing (matching the agent's
+pre-task-routing behavior).
 
 **The agent discovers its own gateway group names at startup** (`add-agent-self-discovery`): it calls the
 platform's `GET /api/ingest/v1/whoami` with its own `--token` and uses the `gateway_model_groups` it computed
 for this agent's actual registered name - so this works correctly no matter what the agent is registered as,
-with no manual bookkeeping. `--reasoning-model-group`/`--generation-model-group` are an **override**, for when
-you want a different group than the one discovery would find (e.g. pointing a test run at another agent's
-groups); passing either one skips discovery for that task entirely and uses exactly what you gave. If discovery
-itself fails (platform unreachable, bad token) and no override was given, the agent falls back to the hardcoded
-`reasoning-agent__reasoning`/`reasoning-agent__generation` defaults and prints a visible warning, rather than
-failing to start.
+with no manual bookkeeping, including for the classification group (`whoami` is generic over whatever task types
+the agent declares - no backend change was needed to support a third one). `--reasoning-model-group`/
+`--generation-model-group`/`--classification-model-group` are an **override**, for when you want a different
+group than the one discovery would find (e.g. pointing a test run at another agent's groups); passing one skips
+discovery for that task entirely and uses exactly what you gave. If discovery itself fails (platform
+unreachable, bad token) and no override was given, the agent falls back to the hardcoded
+`reasoning-agent__reasoning`/`reasoning-agent__generation`/`reasoning-agent__classification` defaults and
+prints a visible warning, rather than failing to start.
 
-`--reasoning-fallback-group`/`--generation-fallback-group` (`add-declared-model-fallback`) each name a gateway
-group to fall back to if that call's primary group is unreachable - unset by default (no fallback passed).
-Each is sent as that request's own `fallbacks` field, the only mechanism verified to work against the gateway;
-a fallback configured only via the gateway's `/config/update` is NOT reliably applied (see gateway/README.md).
+`--reasoning-fallback-group`/`--generation-fallback-group`/`--classification-fallback-group`
+(`add-declared-model-fallback`) each name a gateway group to fall back to if that call's primary group is
+unreachable - unset by default (no fallback passed). Each is sent as that request's own `fallbacks` field, the
+only mechanism verified to work against the gateway; a fallback configured only via the gateway's
+`/config/update` is NOT reliably applied (see gateway/README.md).
 
 Usage:
     # the normal case - group names are discovered from this agent's own registration:
@@ -84,6 +93,10 @@ warnings.filterwarnings("ignore", message=r"coroutine .* was never awaited", cat
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from eval_agent_sdk import AgentClient, whoami  # noqa: E402
 
+CLASSIFY_PROMPT = (
+    "In a few words, classify the following problem by domain and difficulty (for example: "
+    '"arithmetic, easy" or "logic puzzle, hard"). Do not solve it.\n\nProblem: {problem}'
+)
 PLAN_PROMPT = "Break the following problem into a short numbered plan. Do not solve it yet.\n\nProblem: {problem}"
 SOLVE_PROMPT = "Problem: {problem}\n\nPlan:\n{plan}\n\nFollow the plan and work through the problem step by step."
 VERIFY_PROMPT = (
@@ -95,6 +108,9 @@ VERIFY_PROMPT = (
 # Hardcoded the same way `--ollama-url`'s old default was: a known-good value for the common case, overridable.
 REASONING_MODEL_GROUP = "reasoning-agent__reasoning"
 GENERATION_MODEL_GROUP = "reasoning-agent__generation"
+# `add-classification-task-routing`: a third task-scoped group, proving the convention (and
+# self-discovery/fallback layered on top of it) generalizes past two task types.
+CLASSIFICATION_MODEL_GROUP = "reasoning-agent__classification"
 
 
 def _concrete_model(resp, requested_model: str) -> str:
@@ -176,26 +192,40 @@ def solve_one(
     reference: str | None = None,
     reasoning_group: str = REASONING_MODEL_GROUP,
     generation_group: str = GENERATION_MODEL_GROUP,
+    classification_group: str = CLASSIFICATION_MODEL_GROUP,
     reasoning_fallback_group: str | None = None,
     generation_fallback_group: str | None = None,
+    classification_fallback_group: str | None = None,
 ) -> str:
-    """Plan -> solve -> verify, each its own LLM span under one turn. `model=None` (the default) routes plan and
-    verify to `reasoning_group` and solve to `generation_group` through the gateway (these default to
-    `REASONING_MODEL_GROUP`/`GENERATION_MODEL_GROUP` - override them to match an agent registered under a name
-    other than "reasoning-agent", see the module docstring); an explicit `model` overrides all three calls to
-    that one literal string and skips the gateway (and ignores both fallback groups - there is no gateway
-    involved to fall back through).
+    """Classify -> plan -> solve -> verify, each its own LLM span under one turn (`add-classification-task-
+    routing` adds the classify step ahead of plan - a `call_llm()` call like the other three, nothing new about
+    how it reaches the gateway). `model=None` (the default) routes classify/plan/verify to `reasoning_group`
+    (classify specifically uses its own `classification_group`) and solve to `generation_group` through the
+    gateway (these default to `REASONING_MODEL_GROUP`/`GENERATION_MODEL_GROUP`/`CLASSIFICATION_MODEL_GROUP` -
+    override them to match an agent registered under a name other than "reasoning-agent", see the module
+    docstring); an explicit `model` overrides all four calls to that one literal string and skips the gateway
+    (and ignores every fallback group - there is no gateway involved to fall back through).
 
-    `reasoning_fallback_group`/`generation_fallback_group` (`add-declared-model-fallback`) are each passed on
-    the matching calls' underlying request as the gateway group to retry against if the primary group is
-    unreachable - `None` (the default) passes no fallback, exactly as before this parameter existed."""
+    `reasoning_fallback_group`/`generation_fallback_group`/`classification_fallback_group`
+    (`add-declared-model-fallback`) are each passed on the matching calls' underlying request as the gateway
+    group to retry against if the primary group is unreachable - `None` (the default) passes no fallback,
+    exactly as before this parameter existed. The classification result is recorded but not otherwise used -
+    see design.md's Non-Goals: changing plan/solve/verify's prompts based on it is a separate, future change."""
     reasoning_model = model or reasoning_group
     generation_model = model or generation_group
+    classification_model = model or classification_group
     effective_gateway_url = None if model else gateway_url
     reasoning_fallback = None if model else reasoning_fallback_group
     generation_fallback = None if model else generation_fallback_group
+    classification_fallback = None if model else classification_fallback_group
 
     with client.turn(session_id, input=problem, reference=reference) as t:
+        _classification, classify_usage = call_llm(
+            effective_gateway_url, gateway_key, classification_model, CLASSIFY_PROMPT.format(problem=problem),
+            fallback_group=classification_fallback,
+        )
+        _span(t, classification_model, _classification, classify_usage)
+
         plan, plan_usage = call_llm(
             effective_gateway_url, gateway_key, reasoning_model, PLAN_PROMPT.format(problem=problem),
             fallback_group=reasoning_fallback,
@@ -244,15 +274,19 @@ def run_once(
     *,
     reasoning_group: str = REASONING_MODEL_GROUP,
     generation_group: str = GENERATION_MODEL_GROUP,
+    classification_group: str = CLASSIFICATION_MODEL_GROUP,
     reasoning_fallback_group: str | None = None,
     generation_fallback_group: str | None = None,
+    classification_fallback_group: str | None = None,
 ) -> None:
     session_id = uuid.uuid4().hex
     try:
         final = solve_one(
             client, session_id, model, gateway_url, gateway_key, problem,
             reasoning_group=reasoning_group, generation_group=generation_group,
+            classification_group=classification_group,
             reasoning_fallback_group=reasoning_fallback_group, generation_fallback_group=generation_fallback_group,
+            classification_fallback_group=classification_fallback_group,
         )
     except openai.OpenAIError as exc:
         # Covers every exception litellm raises (connection, auth, rate-limit, bad-request, ...) - all of
@@ -272,8 +306,10 @@ def run_suite(
     *,
     reasoning_group: str = REASONING_MODEL_GROUP,
     generation_group: str = GENERATION_MODEL_GROUP,
+    classification_group: str = CLASSIFICATION_MODEL_GROUP,
     reasoning_fallback_group: str | None = None,
     generation_fallback_group: str | None = None,
+    classification_fallback_group: str | None = None,
 ) -> None:
     cases = _load_reasoning_cases(suite_path)
     if not cases:
@@ -286,7 +322,9 @@ def run_suite(
             final = solve_one(
                 client, session_id, model, gateway_url, gateway_key, case["prompt"],
                 reference=case.get("expected"), reasoning_group=reasoning_group, generation_group=generation_group,
+                classification_group=classification_group,
                 reasoning_fallback_group=reasoning_fallback_group, generation_fallback_group=generation_fallback_group,
+                classification_fallback_group=classification_fallback_group,
             )
         except openai.OpenAIError as exc:
             # The turn is still recorded (as an error, via Turn.__exit__) - only replaying the rest of the suite
@@ -300,8 +338,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Reference multi-step reasoning agent for the eval platform")
     p.add_argument(
         "--model", default=None,
-        help="Override all three calls (plan/solve/verify) to this one literal model string and skip the "
-        "gateway (local testing). Omit to use the gateway's task-scoped model groups (the normal mode).",
+        help="Override all four calls (classify/plan/solve/verify) to this one literal model string and skip "
+        "the gateway (local testing). Omit to use the gateway's task-scoped model groups (the normal mode).",
     )
     p.add_argument(
         "--gateway-url", default="http://localhost:4000",
@@ -327,6 +365,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "when --model is set.",
     )
     p.add_argument(
+        "--classification-model-group", default=None,
+        help="Gateway model group for the classify call (add-classification-task-routing). Omit (the default) "
+        "to discover this agent's own group, falling back to "
+        f"{CLASSIFICATION_MODEL_GROUP!r} if discovery fails (see --reasoning-model-group). Ignored when --model "
+        "is set.",
+    )
+    p.add_argument(
         "--reasoning-fallback-group", default=None,
         help="Gateway model group to fall back to (add-declared-model-fallback) if the plan/verify calls' "
         "primary group is unreachable - passed as that request's own 'fallbacks' field, the only mechanism "
@@ -335,6 +380,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--generation-fallback-group", default=None,
         help="Gateway model group to fall back to if the solve call's primary group is unreachable (see "
+        "--reasoning-fallback-group). Unset by default. Ignored when --model is set.",
+    )
+    p.add_argument(
+        "--classification-fallback-group", default=None,
+        help="Gateway model group to fall back to if the classify call's primary group is unreachable (see "
         "--reasoning-fallback-group). Unset by default. Ignored when --model is set.",
     )
     p.add_argument("--platform-url", required=True)
@@ -350,16 +400,23 @@ def _resolve_model_groups(
     token: str,
     explicit_reasoning_group: str | None,
     explicit_generation_group: str | None,
-) -> tuple[str, str]:
-    """The reasoning/generation gateway group names for this run (`add-agent-self-discovery`). An explicit
-    override always wins for its own task and is never second-guessed; when BOTH tasks already have an
-    explicit override, `whoami()` isn't called at all - there's nothing left for discovery to resolve. Otherwise
-    calls `whoami()` once and uses its `gateway_model_groups` for whichever task(s) have no explicit override.
-    If that call itself fails (platform unreachable, bad token), prints a visible warning and falls back to the
-    hardcoded `REASONING_MODEL_GROUP`/`GENERATION_MODEL_GROUP` defaults for any task still unresolved - the
-    agent still starts either way."""
-    if explicit_reasoning_group is not None and explicit_generation_group is not None:
-        return explicit_reasoning_group, explicit_generation_group
+    explicit_classification_group: str | None = None,
+) -> tuple[str, str, str]:
+    """The reasoning/generation/classification gateway group names for this run (`add-agent-self-discovery`,
+    extended to a third task by `add-classification-task-routing` following this function's existing pattern
+    exactly - no new resolution logic). An explicit override always wins for its own task and is never
+    second-guessed; when ALL THREE tasks already have an explicit override, `whoami()` isn't called at all -
+    there's nothing left for discovery to resolve. Otherwise calls `whoami()` once and uses its
+    `gateway_model_groups` for whichever task(s) have no explicit override. If that call itself fails (platform
+    unreachable, bad token), prints a visible warning and falls back to the hardcoded
+    `REASONING_MODEL_GROUP`/`GENERATION_MODEL_GROUP`/`CLASSIFICATION_MODEL_GROUP` defaults for any task still
+    unresolved - the agent still starts either way."""
+    if (
+        explicit_reasoning_group is not None
+        and explicit_generation_group is not None
+        and explicit_classification_group is not None
+    ):
+        return explicit_reasoning_group, explicit_generation_group, explicit_classification_group
 
     discovered: dict = {}
     try:
@@ -367,24 +424,31 @@ def _resolve_model_groups(
     except httpx.HTTPError as exc:
         print(
             f"warning: could not discover this agent's gateway groups ({exc}); falling back to "
-            f"{REASONING_MODEL_GROUP!r}/{GENERATION_MODEL_GROUP!r} for whatever wasn't explicitly set",
+            f"{REASONING_MODEL_GROUP!r}/{GENERATION_MODEL_GROUP!r}/{CLASSIFICATION_MODEL_GROUP!r} for whatever "
+            "wasn't explicitly set",
             file=sys.stderr,
         )
 
     reasoning_group = explicit_reasoning_group or discovered.get("reasoning") or REASONING_MODEL_GROUP
     generation_group = explicit_generation_group or discovered.get("generation") or GENERATION_MODEL_GROUP
-    return reasoning_group, generation_group
+    classification_group = (
+        explicit_classification_group or discovered.get("classification") or CLASSIFICATION_MODEL_GROUP
+    )
+    return reasoning_group, generation_group, classification_group
 
 
 def main(argv: list[str] | None = None) -> None:
     args = build_arg_parser().parse_args(argv)
     if args.model:
         # No gateway call of any kind happens in this mode (solve_one's `model or ...` always picks `model`
-        # for all three calls) - discovery would be a pointless network round-trip, so it's skipped entirely.
-        reasoning_group, generation_group = REASONING_MODEL_GROUP, GENERATION_MODEL_GROUP
+        # for all four calls) - discovery would be a pointless network round-trip, so it's skipped entirely.
+        reasoning_group, generation_group, classification_group = (
+            REASONING_MODEL_GROUP, GENERATION_MODEL_GROUP, CLASSIFICATION_MODEL_GROUP,
+        )
     else:
-        reasoning_group, generation_group = _resolve_model_groups(
+        reasoning_group, generation_group, classification_group = _resolve_model_groups(
             args.platform_url, args.token, args.reasoning_model_group, args.generation_model_group,
+            args.classification_model_group,
         )
     client = AgentClient(args.platform_url, args.token)
     try:
@@ -392,15 +456,19 @@ def main(argv: list[str] | None = None) -> None:
             run_suite(
                 client, args.model, args.gateway_url, args.gateway_key, args.suite,
                 reasoning_group=reasoning_group, generation_group=generation_group,
+                classification_group=classification_group,
                 reasoning_fallback_group=args.reasoning_fallback_group,
                 generation_fallback_group=args.generation_fallback_group,
+                classification_fallback_group=args.classification_fallback_group,
             )
         else:
             run_once(
                 client, args.model, args.gateway_url, args.gateway_key, args.problem,
                 reasoning_group=reasoning_group, generation_group=generation_group,
+                classification_group=classification_group,
                 reasoning_fallback_group=args.reasoning_fallback_group,
                 generation_fallback_group=args.generation_fallback_group,
+                classification_fallback_group=args.classification_fallback_group,
             )
     finally:
         client.close()

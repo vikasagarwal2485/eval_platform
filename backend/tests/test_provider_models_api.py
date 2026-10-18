@@ -114,6 +114,17 @@ def test_enable_disable_reasoning_and_display_name(client):
     assert client.patch(f"/api/providers/{pid}/models/{mid}", json={"model_id": "renamed"}).status_code == 422
 
 
+def test_classification_flag_can_be_set_and_updated(client):
+    """Mirrors `reasoning` - independent of it (`add-model-classification-tag`)."""
+    pid = provider(client)["id"]
+    m = client.post(
+        f"/api/providers/{pid}/models", json={"model_id": "small-fast", "classification": True}
+    ).json()
+    assert m["classification"] is True and m["reasoning"] is False
+    r = client.patch(f"/api/providers/{pid}/models/{m['id']}", json={"classification": False})
+    assert r.status_code == 200 and r.json()["classification"] is False
+
+
 def test_remove_a_model_and_ownership_is_enforced(client):
     a, b = provider(client)["id"], provider(client, "anthropic", "an", "AN_KEY")["id"]
     m1 = client.post(f"/api/providers/{a}/models", json={"model_id": "m1"}).json()["id"]

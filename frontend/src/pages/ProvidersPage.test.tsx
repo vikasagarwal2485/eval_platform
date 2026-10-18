@@ -12,6 +12,7 @@ const model = (over = {}) => ({
   display_name: 'gpt-4o',
   enabled: true,
   reasoning: false,
+  classification: false,
   ...over,
 });
 const provider = (over = {}) => ({
@@ -286,6 +287,7 @@ describe('managing models', () => {
       model_id: 'o3',
       reasoning: true,
       reasoning_effort: null,
+      classification: false,
     });
     expect(within(c).getByLabelText('Model id')).toHaveValue('');
   });
@@ -302,6 +304,22 @@ describe('managing models', () => {
       model_id: 'o3-mini',
       reasoning: true,
       reasoning_effort: 'low',
+      classification: false,
+    });
+  });
+
+  it('adds a model flagged for classification', async () => {
+    const { user, calls } = setup([provider()], { 'POST /providers/1/models': model({ id: 11 }) });
+    const c = await card();
+    await user.type(within(c).getByLabelText('Model id'), 'small-fast');
+    await user.click(within(c).getByRole('checkbox', { name: 'Classification model' }));
+    await user.click(within(c).getByRole('button', { name: 'Add model' }));
+    await waitFor(() => expect(posted(calls, '/providers/1/models')).toHaveLength(1));
+    expect(posted(calls, '/providers/1/models')[0]).toEqual({
+      model_id: 'small-fast',
+      reasoning: false,
+      reasoning_effort: null,
+      classification: true,
     });
   });
 
@@ -326,6 +344,14 @@ describe('managing models', () => {
       { enabled: false },
       { reasoning: true },
     ]);
+  });
+
+  it('flags a registered model for classification', async () => {
+    const { user, calls } = setup([provider()], { 'PATCH /providers/1/models/10': model() });
+    const c = await card();
+    await user.click(within(c).getByRole('checkbox', { name: 'Classification model: @oa/gpt-4o' }));
+    await waitFor(() => expect(posted(calls, '/providers/1/models/10', 'PATCH')).toHaveLength(1));
+    expect(posted(calls, '/providers/1/models/10', 'PATCH')).toEqual([{ classification: true }]);
   });
 
   it('removes a model only after confirmation', async () => {

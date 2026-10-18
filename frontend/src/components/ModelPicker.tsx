@@ -151,12 +151,14 @@ export default function ModelPicker({
                       <div className="row" style={{ marginTop: 6 }}>
                         {cloud && <span className="badge info">cloud</span>}
                         {m.provider_kind && <span className="badge">{KIND_LABEL[m.provider_kind]}</span>}
-                        {(m.thinking || m.reasoning) && (
-                          <span className="badge info">{cloud ? 'reasoning' : 'thinking'}</span>
+                        {(m.thinking || m.reasoning) && <span className="badge info">reasoning</span>}
+                        {m.classification && <span className="badge info">classification</span>}
+                        {!m.thinking && !m.reasoning && !m.classification && (
+                          <span className="badge info">generation</span>
                         )}
                         {!cloud &&
                           m.capabilities
-                            .filter((c) => c !== 'thinking' && c !== 'completion')
+                            .filter((c) => c !== 'thinking' && c !== 'completion' && c !== 'classification')
                             .map((c) => (
                               <span key={c} className="badge">
                                 {c}

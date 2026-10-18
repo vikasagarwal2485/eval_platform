@@ -292,6 +292,7 @@ export function useProviderMutations() {
         display_name?: string;
         reasoning?: boolean;
         reasoning_effort?: string | null;
+        classification?: boolean;
         enabled?: boolean;
       }) => api.post<ProviderModel>(`/providers/${providerId}/models`, b),
       onSuccess: refresh,
@@ -307,6 +308,7 @@ export function useProviderMutations() {
         enabled?: boolean;
         reasoning?: boolean;
         reasoning_effort?: string | null;
+        classification?: boolean;
         display_name?: string;
       }) => api.patch<ProviderModel>(`/providers/${providerId}/models/${modelId}`, b),
       onSuccess: refresh,
