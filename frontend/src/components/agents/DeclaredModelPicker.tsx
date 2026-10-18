@@ -30,7 +30,12 @@ export default function DeclaredModelPicker({
 }: Props) {
   const list = models ?? [];
   const known = list.some((m) => m.name === value);
-  const [customMode, setCustomMode] = useState(!known && !!value);
+  // `null` = no explicit user choice yet - fall back to "custom" only when the value genuinely isn't in the
+  // list. Deriving this on every render (rather than freezing it once via a plain useState initializer) matters
+  // because `models` often still hasn't loaded on first mount: freezing it then would wrongly lock in custom
+  // mode forever, even after the list arrives and turns out to contain `value` after all.
+  const [forceCustom, setForceCustom] = useState<boolean | null>(null);
+  const customMode = forceCustom ?? (!known && !!value);
 
   const selected = list.find((m) => m.name === value);
   const needsAck =
@@ -49,7 +54,7 @@ export default function DeclaredModelPicker({
           onChange={(e) => onChange(e.target.value)}
         />
         {list.length > 0 && (
-          <button type="button" className="link" onClick={() => setCustomMode(false)}>
+          <button type="button" className="link" onClick={() => setForceCustom(false)}>
             Pick from list
           </button>
         )}
@@ -66,7 +71,7 @@ export default function DeclaredModelPicker({
         disabled={loading}
         onChange={(e) => {
           if (e.target.value === CUSTOM) {
-            setCustomMode(true);
+            setForceCustom(true);
             return;
           }
           onChange(e.target.value);
@@ -78,8 +83,9 @@ export default function DeclaredModelPicker({
         {groups.map((g) => (
           <optgroup key={g.key} label={g.title}>
             {g.models.map((m) => (
-              <option key={m.name} value={m.name}>
+              <option key={m.name} value={m.name} disabled={!m.available}>
                 {m.source === 'cloud' ? (m.display_name ?? m.name) : m.name}
+                {!m.available ? ' (unavailable)' : ''}
               </option>
             ))}
           </optgroup>

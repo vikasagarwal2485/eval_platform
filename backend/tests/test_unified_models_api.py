@@ -39,9 +39,13 @@ def test_mixed_list_marks_source_provider_and_availability(settings, registry, m
     monkeypatch.delenv("AN_KEY", raising=False)
     with client(settings, registry, ollama("qwen3:8b", "gemma:test")) as c:
         models = c.get("/api/models").json()
-    assert [m["name"] for m in models] == ["gemma:test", "qwen3:8b", "@an/claude", "@oa/gpt-4o", "@oa/o3"]
+    # fully alphabetical now (add-provider-availability-gating) - not "locals first, then cloud" as before
+    assert [m["name"] for m in models] == ["@an/claude", "@oa/gpt-4o", "@oa/o3", "gemma:test", "qwen3:8b"]
     by = {m["name"]: m for m in models}
-    assert (by["qwen3:8b"]["source"], by["qwen3:8b"]["provider"], by["qwen3:8b"]["available"]) == ("local", None, True)
+    # neither is registered under any provider (add-ollama-model-registration-required), so both are listed
+    # but disabled - registering one under an `ollama`-kind provider is covered in test_ollama_provider_kind.py
+    assert (by["qwen3:8b"]["source"], by["qwen3:8b"]["provider"], by["qwen3:8b"]["available"]) == ("local", None, False)
+    assert by["qwen3:8b"]["unavailable_reason"] and "not registered" in by["qwen3:8b"]["unavailable_reason"]
     gpt = by["@oa/gpt-4o"]
     assert (gpt["source"], gpt["provider"], gpt["provider_kind"], gpt["display_name"]) == (
         "cloud",
@@ -65,7 +69,9 @@ def test_a_cloud_model_without_a_key_is_listed_unavailable_with_the_reason(setti
         by = {m["name"]: m for m in c.get("/api/models").json()}
     assert by["@oa/gpt-4o"]["available"] is False
     assert by["@oa/gpt-4o"]["unavailable_reason"] == "API key not set: environment variable OA_KEY is empty"
-    assert by["@an/claude"]["available"] is True and by["qwen3:8b"]["available"] is True
+    # claude's key IS set and it's a registered cloud model, so it's available; the bare local name is not
+    # registered under any provider, so it's listed but disabled regardless of its own key-free nature
+    assert by["@an/claude"]["available"] is True and by["qwen3:8b"]["available"] is False
 
 
 def test_disabled_models_are_not_offered(settings, registry, monkeypatch):
@@ -103,18 +109,17 @@ def test_ollama_down_with_only_disabled_models_registered_is_still_a_503(setting
         assert c.get("/api/models").status_code == 503
 
 
-def test_ollama_only_setups_see_the_same_shape_as_before(settings, file_session_factory):
+def test_ollama_only_setup_with_nothing_registered_lists_the_model_but_disabled(settings, file_session_factory):
+    """`add-ollama-model-registration-required`: a bare local model is still listed (not hidden) even with zero
+    providers registered at all, but it's unselectable until it's registered under an `ollama`-kind provider -
+    this is a deliberate change from the platform's original "no registration needed for local models" default,
+    confirmed with the user given the scope."""
     with client(settings, file_session_factory, ollama("qwen3:8b")) as c:
         (m,) = c.get("/api/models").json()
     assert m["name"] == "qwen3:8b" and m["digest"] == "digest-qwen3:8b" and m["thinking"] is True
-    assert (
-        m["source"],
-        m["provider"],
-        m["provider_kind"],
-        m["available"],
-        m["unavailable_reason"],
-        m["reasoning"],
-    ) == ("local", None, None, True, None, False)
+    assert (m["source"], m["provider"], m["provider_kind"], m["reasoning"]) == ("local", None, None, False)
+    assert m["available"] is False
+    assert "not registered" in m["unavailable_reason"]
 
 
 def test_refresh_still_rereads_ollama_and_the_registry(settings, registry, monkeypatch):

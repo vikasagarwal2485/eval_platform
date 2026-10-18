@@ -11,6 +11,7 @@ import type {
 import DeclaredModelPicker from './DeclaredModelPicker';
 import EvaluatorPicker from './EvaluatorPicker';
 import { Banner, ErrorBox } from '../ui';
+import { DECLARED_MODELS_HINT, TASK_TYPE_OPTIONS } from '../../lib/declaredModelTasks';
 
 /** One declared-model row for editing: a task-type key paired with the model it uses, plus an optional
  * temperature override synced to that task type's gateway model group (`add-gateway-model-sync`) and an
@@ -76,17 +77,31 @@ function DeclaredModelsEditor({
   return (
     <div className="field">
       <span id="declared-models-label">Declared models</span>
+      <p className="small muted" style={{ marginTop: 0 }}>
+        {DECLARED_MODELS_HINT}
+      </p>
       <div className="stack" aria-labelledby="declared-models-label">
         {rows.map((row, i) => (
           <div className="stack" key={i} style={{ gap: 4 }}>
             <div className="row">
-              <input
+              <select
                 aria-label={`Task type for declared model ${i + 1}`}
-                placeholder="task type (e.g. reasoning, or default)"
                 value={row.key}
                 onChange={(e) => update(i, { key: e.target.value })}
                 style={{ maxWidth: 220 }}
-              />
+              >
+                <option value="" disabled>
+                  Select a task…
+                </option>
+                {TASK_TYPE_OPTIONS.map((t) => (
+                  <option key={t.value} value={t.value}>
+                    {t.label}
+                  </option>
+                ))}
+                {row.key && !TASK_TYPE_OPTIONS.some((t) => t.value === row.key) && (
+                  <option value={row.key}>{row.key} (custom)</option>
+                )}
+              </select>
               <DeclaredModelPicker
                 ariaLabel={`Model for declared model ${i + 1}`}
                 models={models}

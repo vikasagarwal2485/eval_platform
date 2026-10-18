@@ -23,22 +23,25 @@ interface Group {
   models: ModelInfo[];
 }
 
-/** Local models first, then one group per enterprise provider. */
+/** One group per registered provider (enterprise or `ollama` - `add-ollama-provider-kind`), sorted by provider
+ * name, then a trailing group for anything not registered under any provider at all - installed in Ollama but
+ * never added on the Models page (`add-ollama-model-registration-required`). Everywhere models are picked only
+ * offers registered models; the unregistered group exists so a model someone knows is pulled doesn't just
+ * disappear - it's shown disabled, with `unavailable_reason` explaining why. */
 export function groupModels(models: ModelInfo[]): Group[] {
-  const local = models.filter((m) => m.source === 'local');
-  const groups: Group[] = local.length
-    ? [{ key: 'local', title: 'Local (Ollama)', models: local }]
-    : [];
-  const providers = [
-    ...new Set(models.filter((m) => m.source === 'cloud').map((m) => m.provider ?? '?')),
-  ].sort();
+  const groups: Group[] = [];
+  const providers = [...new Set(models.filter((m) => m.provider).map((m) => m.provider as string))].sort();
   for (const p of providers) {
-    const ms = models.filter((m) => m.source === 'cloud' && (m.provider ?? '?') === p);
+    const ms = models.filter((m) => m.provider === p);
     groups.push({
       key: `p:${p}`,
       title: `${p} (${KIND_LABEL[ms[0].provider_kind ?? ''] ?? 'provider'})`,
       models: ms,
     });
+  }
+  const unregistered = models.filter((m) => !m.provider);
+  if (unregistered.length) {
+    groups.push({ key: 'unregistered', title: 'Not registered', models: unregistered });
   }
   return groups;
 }
@@ -96,7 +99,7 @@ export default function ModelPicker({
         <Empty title="No models available">
           <p>
             Pull a local model with <code>ollama pull &lt;model&gt;</code> and press Refresh, or
-            register an enterprise provider on the <Link to="/providers">Providers</Link> page.
+            register a provider on the <Link to="/providers">Models</Link> page.
           </p>
         </Empty>
       )}
@@ -147,9 +150,7 @@ export default function ModelPicker({
                       )}
                       <div className="row" style={{ marginTop: 6 }}>
                         {cloud && <span className="badge info">cloud</span>}
-                        {cloud && m.provider_kind && (
-                          <span className="badge">{KIND_LABEL[m.provider_kind]}</span>
-                        )}
+                        {m.provider_kind && <span className="badge">{KIND_LABEL[m.provider_kind]}</span>}
                         {(m.thinking || m.reasoning) && (
                           <span className="badge info">{cloud ? 'reasoning' : 'thinking'}</span>
                         )}

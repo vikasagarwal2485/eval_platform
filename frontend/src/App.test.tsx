@@ -21,11 +21,11 @@ describe('routing', () => {
   afterEach(() => vi.unstubAllGlobals());
 
   it.each([
-    ['/', 'Run setup'],
+    ['/', 'Run Evaluation setup'],
     ['/runs/1/live', 'Live run'],
     ['/runs/1', 'Results'],
     ['/suites', 'Suites'],
-    ['/providers', 'Providers'],
+    ['/providers', 'Models'],
     ['/agents', 'Agents'],
     ['/history', 'History'],
     ['/nope', 'Page not found'],
@@ -34,9 +34,9 @@ describe('routing', () => {
     expect(screen.getByRole('heading', { level: 1, name: heading })).toBeInTheDocument();
   });
 
-  it('has a Providers link in the main navigation', () => {
+  it('has a Models link in the main navigation', () => {
     renderAt('/');
-    expect(screen.getByRole('link', { name: 'Providers' })).toHaveAttribute('href', '/providers');
+    expect(screen.getByRole('link', { name: 'Models' })).toHaveAttribute('href', '/providers');
   });
 
   it('has an Agents link in the main navigation', () => {

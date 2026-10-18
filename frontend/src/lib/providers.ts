@@ -8,11 +8,14 @@ export const KIND_LABEL: Record<string, string> = {
   openai: 'OpenAI',
   anthropic: 'Anthropic',
   'azure-openai': 'Azure OpenAI',
+  ollama: 'Ollama',
 };
+/** `env: ''` for `ollama` - it has no key, so there is no default variable name to suggest. */
 export const KIND_DEFAULTS: Record<string, { name: string; env: string }> = {
   openai: { name: 'openai', env: 'OPENAI_API_KEY' },
   anthropic: { name: 'anthropic', env: 'ANTHROPIC_API_KEY' },
   'azure-openai': { name: 'azure-openai', env: 'AZURE_OPENAI_API_KEY' },
+  ollama: { name: 'ollama-main', env: '' },
 };
 
 export function validateName(name: string): string | null {

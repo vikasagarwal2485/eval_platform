@@ -384,7 +384,7 @@ def create_provider(
     *,
     kind: str,
     name: str,
-    key_env: str,
+    key_env: str | None,
     base_url: str | None,
     ack_at: datetime | None,
     api_version: str | None = None,
@@ -420,6 +420,18 @@ def update_provider(
         p.api_version = None
     elif api_version is not None:
         p.api_version = api_version
+    session.flush()
+    return p
+
+
+def record_provider_test_result(session: Session, provider_id: int, *, status: str, message: str | None) -> Provider:
+    """Persists the outcome of a `POST /providers/{id}/test` call (`add-provider-availability-gating`) - this is
+    what `provider_availability` later reads back to decide whether this provider's models should be offered or
+    selectable, without re-pinging it on every page load."""
+    p = get_provider(session, provider_id)
+    p.last_test_status = status
+    p.last_test_message = message
+    p.last_test_at = utcnow()
     session.flush()
     return p
 
@@ -514,6 +526,15 @@ def list_registered_models(session: Session, *, enabled_only: bool = False) -> l
     return list(session.scalars(q.order_by(Provider.name, RegisteredModel.id)))
 
 
+def registered_ollama_model_ids(session: Session) -> set[str]:
+    """Every model id registered under any `ollama`-kind provider (`add-ollama-provider-kind`), enabled or not -
+    used to suppress a bare, unregistered-looking duplicate of a model that already has a registered identity
+    elsewhere in the unified `/api/models` list."""
+    q = select(RegisteredModel.model_id).join(Provider, Provider.id == RegisteredModel.provider_id)
+    q = q.where(Provider.kind == "ollama")
+    return set(session.scalars(q))
+
+
 def find_registered(
     session: Session, provider_name: str, model_id: str
 ) -> tuple[Provider | None, RegisteredModel | None]:
@@ -547,15 +568,20 @@ def _merge_acks(existing: dict, new_provider_names: list[str]) -> dict:
     return out
 
 
-def _check_provider_acks(refs: list[str], acks: dict) -> None:
+def _check_provider_acks(session: Session, refs: list[str], acks: dict) -> None:
     """Rejects a hosted-model reference (evaluator, declared model, or declared-model fallback - all three send
     this agent's live conversations to that provider) whose provider hasn't been acknowledged for this agent
-    yet."""
+    yet. A reference naming a registered `ollama` provider (`add-ollama-provider-kind`) is exempt - it's
+    syntactically `@provider/model` like any enterprise reference, but nothing leaves the machine, so requiring
+    the same "this is sent to a hosted provider" acknowledgment for it would be misleading."""
     for ref in refs:
         if is_cloud_ref(ref):
-            provider = parse_ref(ref).provider
-            if provider not in acks:
-                raise AckRequired(provider)
+            provider_name = parse_ref(ref).provider
+            provider = get_provider_by_name(session, provider_name)
+            if provider is not None and provider.kind == "ollama":
+                continue
+            if provider_name not in acks:
+                raise AckRequired(provider_name)
 
 
 def _declared_model_refs(declared_models: dict[str, object]) -> list[str]:
@@ -586,7 +612,7 @@ def create_agent(
     _check_no_self_evaluator(declared_models, eval_config.evaluators)
     acks = _merge_acks({}, provider_acks or [])
     declared_refs = _declared_model_refs(declared_models)
-    _check_provider_acks(eval_config.evaluators + declared_refs, acks)
+    _check_provider_acks(session, eval_config.evaluators + declared_refs, acks)
     raw = generate_token()
     agent = Agent(
         name=name,
@@ -627,7 +653,7 @@ def update_agent_settings(session: Session, agent_id: int, body: AgentSettingsUp
     _check_no_self_evaluator(declared, evaluators)
     acks = _merge_acks(agent.provider_acks or {}, body.provider_acks)
     declared_refs = _declared_model_refs(declared)
-    _check_provider_acks(evaluators + declared_refs, acks)
+    _check_provider_acks(session, evaluators + declared_refs, acks)
     agent.declared_models = declared
     agent.eval_config = eval_cfg
     agent.provider_acks = acks

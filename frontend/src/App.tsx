@@ -20,10 +20,10 @@ export default function App() {
         <span className="brand">LLM Eval Platform</span>
         <nav className="nav" aria-label="Main">
           <NavLink to="/" end>
-            Run setup
+            Run Evaluation setup
           </NavLink>
           <NavLink to="/suites">Suites</NavLink>
-          <NavLink to="/providers">Providers</NavLink>
+          <NavLink to="/providers">Models</NavLink>
           <NavLink to="/agents">Agents</NavLink>
           <NavLink to="/history">History</NavLink>
         </nav>

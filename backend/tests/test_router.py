@@ -88,8 +88,10 @@ def test_capability_flags():
     assert not (an.warmup or an.unload or an.footprint or an.context_size) and an.seed is False
     az = caps_for_kind("azure-openai")
     assert not (az.warmup or az.unload or az.footprint or az.context_size) and az.seed is True
+    ol = caps_for_kind("ollama")
+    assert ol == LOCAL_CAPS  # a registered `ollama` provider's models are exactly as local as a bare name
     assert not any([caps_for_kind("mystery").warmup, caps_for_kind("mystery").unload, caps_for_kind("mystery").seed])
-    assert set(CLOUD_CAPS) == {"openai", "anthropic", "azure-openai"}
+    assert set(CLOUD_CAPS) == {"openai", "anthropic", "azure-openai", "ollama"}
 
 
 # ---------------------------------------------------------------- routing

@@ -136,6 +136,7 @@ const MODEL_ID_PLACEHOLDER: Record<string, string> = {
   openai: 'gpt-4o',
   anthropic: 'claude-sonnet-4-20250514',
   'azure-openai': 'my-o3-mini-deployment',
+  ollama: 'qwen3:8b',
 };
 
 function AddModels({ provider }: { provider: Provider }) {
@@ -297,13 +298,14 @@ function AddModels({ provider }: { provider: Provider }) {
 function EditProvider({ provider, onDone }: { provider: Provider; onDone: () => void }) {
   const { update } = useProviderMutations();
   const isAzure = provider.kind === 'azure-openai';
-  const [env, setEnv] = useState(provider.key_env);
+  const isOllama = provider.kind === 'ollama';
+  const [env, setEnv] = useState(provider.key_env ?? '');
   const [url, setUrl] = useState(provider.base_url ?? '');
   const [apiVersion, setApiVersion] = useState(provider.api_version ?? '');
   const [err, setErr] = useState<string | null>(null);
   const save = (e: React.FormEvent) => {
     e.preventDefault();
-    let problem = validateEnvName(env) ?? validateBaseUrl(url);
+    let problem = isOllama ? validateBaseUrl(url) : validateEnvName(env) ?? validateBaseUrl(url);
     if (!problem && isAzure && !url.trim()) problem = 'Azure OpenAI requires a base URL.';
     if (!problem && isAzure && !apiVersion.trim()) problem = validateApiVersion(apiVersion);
     setErr(problem);
@@ -311,8 +313,8 @@ function EditProvider({ provider, onDone }: { provider: Provider; onDone: () => 
     update.mutate(
       {
         id: provider.id,
-        key_env: env.trim(),
         base_url: url.trim(),
+        ...(isOllama ? {} : { key_env: env.trim() }),
         ...(isAzure ? { api_version: apiVersion.trim() } : {}),
       },
       { onSuccess: onDone },
@@ -321,18 +323,20 @@ function EditProvider({ provider, onDone }: { provider: Provider; onDone: () => 
   return (
     <form onSubmit={save} className="stack" aria-label={`Edit ${provider.name}`} noValidate>
       <div className="row">
-        <div className="field" style={{ margin: 0 }}>
-          <label htmlFor={`ee-${provider.id}`}>API key environment variable</label>
-          <input
-            id={`ee-${provider.id}`}
-            type="text"
-            value={env}
-            autoComplete="off"
-            onChange={(e) => setEnv(e.target.value)}
-          />
-        </div>
+        {!isOllama && (
+          <div className="field" style={{ margin: 0 }}>
+            <label htmlFor={`ee-${provider.id}`}>API key environment variable</label>
+            <input
+              id={`ee-${provider.id}`}
+              type="text"
+              value={env}
+              autoComplete="off"
+              onChange={(e) => setEnv(e.target.value)}
+            />
+          </div>
+        )}
         <div className="field" style={{ margin: 0, flex: 1 }}>
-          <label htmlFor={`eu-${provider.id}`}>Base URL</label>
+          <label htmlFor={`eu-${provider.id}`}>{isOllama ? 'Ollama server URL' : 'Base URL'}</label>
           <input
             id={`eu-${provider.id}`}
             type="text"
@@ -376,17 +380,16 @@ export default function ProviderCard({ provider }: { provider: Provider }) {
   const [result, setResult] = useState<ConnectionTest | null>(null);
   const [editing, setEditing] = useState(false);
   const status = result ? STATUS_LABEL[result.status] : null;
+  const isOllama = provider.kind === 'ollama';
 
   return (
     <section className="card" aria-label={`Provider ${provider.name}`}>
       <div className="card-head">
         <h2>{provider.name}</h2>
         <span className="badge info">{KIND_LABEL[provider.kind]}</span>
-        {provider.key_available ? (
-          <span className="badge good">key ready</span>
-        ) : (
-          <span className="badge warn">key not set</span>
-        )}
+        {isOllama && <span className="badge info">no key needed</span>}
+        {!provider.key_available && <span className="badge warn">unavailable</span>}
+        {!isOllama && provider.key_available && <span className="badge good">key ready</span>}
         <span className="spacer" />
         <button
           onClick={() => m.test.mutate(provider.id, { onSuccess: setResult })}
@@ -413,26 +416,37 @@ export default function ProviderCard({ provider }: { provider: Provider }) {
         </button>
       </div>
       <p className="small muted" style={{ marginTop: 0 }}>
-        Key variable <code>{provider.key_env}</code>
-        {provider.base_url && (
+        {isOllama ? (
+          <>Server URL <code>{provider.base_url || 'http://localhost:11434 (default)'}</code></>
+        ) : (
           <>
-            {' '}
-            · base URL <code>{provider.base_url}</code>
+            Key variable <code>{provider.key_env}</code>
+            {provider.base_url && (
+              <>
+                {' '}
+                · base URL <code>{provider.base_url}</code>
+              </>
+            )}
+            {provider.api_version && (
+              <>
+                {' '}
+                · API version <code>{provider.api_version}</code>
+              </>
+            )}{' '}
+            · data sharing acknowledged {fmtDate(provider.data_sharing_acknowledged_at)}
           </>
         )}
-        {provider.api_version && (
+        {provider.last_test_at && (
           <>
             {' '}
-            · API version <code>{provider.api_version}</code>
+            · last tested {fmtDate(provider.last_test_at)} ({provider.last_test_status})
           </>
-        )}{' '}
-        · data sharing acknowledged {fmtDate(provider.data_sharing_acknowledged_at)}
+        )}
       </p>
       {!provider.key_available && (
         <Banner kind="warn">
-          The environment variable <code>{provider.key_env}</code> is not set, so this
-          provider&rsquo;s models cannot be used. Export it in the environment you start the
-          application from, then restart the application.
+          {provider.unavailable_reason} - this provider&rsquo;s models cannot be used anywhere
+          until this is fixed and &ldquo;Test connection&rdquo; succeeds.
         </Banner>
       )}
       {!!m.remove.error && (

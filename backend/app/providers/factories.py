@@ -8,6 +8,7 @@ from app.config import Settings
 from app.providers.anthropic import AnthropicBackend
 from app.providers.azure_openai import AzureOpenAIBackend
 from app.providers.backend import BackendFactory, ProviderConfig
+from app.providers.ollama_backend import OllamaBackend
 from app.providers.openai import OpenAIBackend
 
 
@@ -22,4 +23,5 @@ def make_factories(settings: Settings, transport: httpx.AsyncBaseTransport | Non
         "openai": build(OpenAIBackend),
         "anthropic": build(AnthropicBackend),
         "azure-openai": build(AzureOpenAIBackend),
+        "ollama": build(OllamaBackend),
     }

@@ -21,6 +21,10 @@ const provider = (over = {}) => ({
   key_env: 'OA_KEY',
   base_url: null,
   key_available: true,
+  unavailable_reason: null,
+  last_test_status: null,
+  last_test_message: null,
+  last_test_at: null,
   data_sharing_acknowledged_at: '2026-01-01T00:00:00Z',
   created_at: '2026-01-01T00:00:00Z',
   models: [model()],
@@ -42,10 +46,10 @@ const card = async () => screen.findByRole('region', { name: 'Provider oa' });
 describe('empty, loading and error states', () => {
   it('explains what a provider is and how to set the key when none exist', async () => {
     setup([]);
-    expect(await screen.findByText('No providers registered yet')).toBeInTheDocument();
+    expect(await screen.findByText('No models registered yet')).toBeInTheDocument();
     expect(screen.getByText(/name of the environment variable/)).toBeInTheDocument();
     expect(screen.getByText(/export OPENAI_API_KEY/)).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'Add a provider' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Add a model' })).toBeInTheDocument();
   });
 
   it('shows loading and load errors', async () => {
@@ -71,6 +75,7 @@ describe('provider list', () => {
         name: 'an',
         key_env: 'AN_KEY',
         key_available: false,
+        unavailable_reason: 'API key not set: environment variable AN_KEY is empty',
         models: [],
       }),
     ]);
@@ -80,11 +85,9 @@ describe('provider list', () => {
     expect(within(oa).getByText('OA_KEY')).toBeInTheDocument();
     expect(within(oa).getByText(/data sharing acknowledged/)).toBeInTheDocument();
     const an = screen.getByRole('region', { name: 'Provider an' });
-    expect(within(an).getByText('key not set')).toBeInTheDocument();
+    expect(within(an).getByText('unavailable')).toBeInTheDocument();
     expect(
-      within(an).getByText(
-        /Export it in the environment you start the application from, then restart/,
-      ),
+      within(an).getByText(/API key not set: environment variable AN_KEY is empty/),
     ).toBeInTheDocument();
     expect(within(an).getByText('No models registered yet.')).toBeInTheDocument();
   });
@@ -103,8 +106,8 @@ describe('provider list', () => {
 describe('registering a provider', () => {
   it('has no field that accepts an API key value', async () => {
     setup([]);
-    await screen.findByRole('heading', { name: 'Add a provider' });
-    const form = screen.getByRole('form', { name: /add a provider/i });
+    await screen.findByRole('heading', { name: 'Add a model' });
+    const form = screen.getByRole('form', { name: /add a model/i });
     const labels = within(form)
       .getAllByRole('textbox')
       .map((i) => (i as HTMLInputElement).labels?.[0]?.textContent);
@@ -123,7 +126,7 @@ describe('registering a provider', () => {
     await user.click(
       await screen.findByRole('checkbox', { name: /I understand that prompts and model outputs/ }),
     );
-    await user.click(screen.getByRole('button', { name: 'Register provider' }));
+    await user.click(screen.getByRole('button', { name: 'Register' }));
     await waitFor(() => expect(posted(calls, '/providers')).toHaveLength(1));
     expect(posted(calls, '/providers')[0]).toEqual({
       kind: 'openai',
@@ -137,7 +140,7 @@ describe('registering a provider', () => {
 
   it('follows the kind with suggested name and variable until the user edits them', async () => {
     const { user } = setup([]);
-    await screen.findByRole('heading', { name: 'Add a provider' });
+    await screen.findByRole('heading', { name: 'Add a model' });
     await user.selectOptions(screen.getByLabelText('Provider'), 'anthropic');
     expect(screen.getByLabelText(/^Name/)).toHaveValue('anthropic');
     expect(screen.getByLabelText('API key environment variable')).toHaveValue('ANTHROPIC_API_KEY');
@@ -150,7 +153,7 @@ describe('registering a provider', () => {
 
   it('requires a base URL and API version for Azure OpenAI, shown only for that kind', async () => {
     const { user, calls } = setup([]);
-    await screen.findByRole('heading', { name: 'Add a provider' });
+    await screen.findByRole('heading', { name: 'Add a model' });
     expect(screen.queryByLabelText('API version')).toBeNull(); // not shown for openai
     await user.selectOptions(screen.getByLabelText('Provider'), 'azure-openai');
     expect(screen.getByLabelText(/^Name/)).toHaveValue('azure-openai');
@@ -159,7 +162,7 @@ describe('registering a provider', () => {
     );
     expect(screen.getByLabelText('API version')).toBeInTheDocument();
     await user.click(screen.getByRole('checkbox', { name: /I understand/ }));
-    await user.click(screen.getByRole('button', { name: 'Register provider' }));
+    await user.click(screen.getByRole('button', { name: 'Register' }));
     expect(await screen.findByText(/Enter your Azure resource endpoint/)).toBeInTheDocument();
     expect(screen.getByText(/Enter the API version/)).toBeInTheDocument();
     expect(posted(calls, '/providers')).toHaveLength(0);
@@ -171,7 +174,7 @@ describe('registering a provider', () => {
     await user.type(screen.getByLabelText(/^Base URL/), 'https://my-resource.openai.azure.com');
     await user.type(screen.getByLabelText('API version'), '2024-12-01-preview');
     await user.click(screen.getByRole('checkbox', { name: /I understand/ }));
-    await user.click(screen.getByRole('button', { name: 'Register provider' }));
+    await user.click(screen.getByRole('button', { name: 'Register' }));
     await waitFor(() => expect(posted(calls, '/providers')).toHaveLength(1));
     expect(posted(calls, '/providers')[0]).toEqual({
       kind: 'azure-openai',
@@ -185,12 +188,12 @@ describe('registering a provider', () => {
 
   it('refuses a key pasted into the variable field and explains', async () => {
     const { user, calls } = setup([]);
-    await screen.findByRole('heading', { name: 'Add a provider' });
+    await screen.findByRole('heading', { name: 'Add a model' });
     const env = screen.getByLabelText('API key environment variable');
     await user.clear(env);
     await user.type(env, 'sk-proj-abc123def456');
     await user.click(screen.getByRole('checkbox', { name: /I understand/ }));
-    await user.click(screen.getByRole('button', { name: 'Register provider' }));
+    await user.click(screen.getByRole('button', { name: 'Register' }));
     expect(await screen.findByText(/That looks like an API key/)).toBeInTheDocument();
     expect(env).toHaveAttribute('aria-invalid', 'true');
     expect(posted(calls, '/providers')).toHaveLength(0);
@@ -202,19 +205,19 @@ describe('registering a provider', () => {
     ['base URL', /^Base URL/, 'ftp://x', /http:\/\/ or https:\/\//],
   ])('validates the %s before sending anything', async (_what, label, value, message) => {
     const { user, calls } = setup([]);
-    await screen.findByRole('heading', { name: 'Add a provider' });
+    await screen.findByRole('heading', { name: 'Add a model' });
     const input = screen.getByLabelText(label);
     await user.clear(input);
     await user.type(input, value);
     await user.click(screen.getByRole('checkbox', { name: /I understand/ }));
-    await user.click(screen.getByRole('button', { name: 'Register provider' }));
+    await user.click(screen.getByRole('button', { name: 'Register' }));
     expect(await screen.findByText(message)).toBeInTheDocument();
     expect(posted(calls, '/providers')).toHaveLength(0);
   });
 
   it('requires the data-sharing acknowledgment', async () => {
     const { user, calls } = setup([]);
-    await user.click(await screen.findByRole('button', { name: 'Register provider' }));
+    await user.click(await screen.findByRole('button', { name: 'Register' }));
     expect(await screen.findByRole('alert')).toHaveTextContent(
       /Acknowledge that evaluation content is sent to OpenAI/,
     );
@@ -226,7 +229,7 @@ describe('registering a provider', () => {
       'POST /providers': () => jsonError(409, "A provider named 'openai' already exists"),
     });
     await user.click(await screen.findByRole('checkbox', { name: /I understand/ }));
-    await user.click(screen.getByRole('button', { name: 'Register provider' }));
+    await user.click(screen.getByRole('button', { name: 'Register' }));
     expect(await screen.findByText(/already exists/)).toBeInTheDocument();
   });
 });
@@ -495,5 +498,98 @@ describe('Azure OpenAI provider card (4.3)', () => {
     await user.click(within(c).getByRole('button', { name: 'Add model' }));
     await waitFor(() => expect(posted(calls, '/providers/1/models')).toHaveLength(1));
     expect(posted(calls, '/providers/1/models')[0]).toMatchObject({ model_id: 'o3-mini' });
+  });
+});
+
+describe('Ollama provider card (add-ollama-provider-kind)', () => {
+  const ollama = (over = {}) =>
+    provider({
+      kind: 'ollama',
+      name: 'ollama-main',
+      key_env: null,
+      base_url: null,
+      data_sharing_acknowledged_at: null,
+      models: [],
+      ...over,
+    });
+  const ollamaCard = async () => screen.findByRole('region', { name: 'Provider ollama-main' });
+
+  it('the kind dropdown offers Ollama', async () => {
+    const { user } = setup([]);
+    await screen.findByRole('heading', { name: 'Add a model' });
+    await user.selectOptions(screen.getByLabelText('Provider'), 'ollama');
+    expect(screen.getByLabelText(/^Name/)).toHaveValue('ollama-main');
+  });
+
+  it('registering Ollama shows no key field and no data-sharing acknowledgment', async () => {
+    const { user } = setup([]);
+    await user.selectOptions(await screen.findByLabelText('Provider'), 'ollama');
+    expect(screen.queryByLabelText('API key environment variable')).toBeNull();
+    expect(screen.queryByRole('checkbox', { name: /I understand/ })).toBeNull();
+    expect(screen.getByLabelText(/Ollama server URL/)).toBeInTheDocument();
+  });
+
+  it('registers an Ollama provider with no key and no acknowledgment required', async () => {
+    const { user, calls } = setup([], { 'POST /providers': ollama() });
+    await user.selectOptions(await screen.findByLabelText('Provider'), 'ollama');
+    await user.click(screen.getByRole('button', { name: 'Register' }));
+    await waitFor(() => expect(posted(calls, '/providers')).toHaveLength(1));
+    expect(posted(calls, '/providers')[0]).toEqual({
+      kind: 'ollama',
+      name: 'ollama-main',
+      key_env: null,
+      base_url: null,
+      api_version: null,
+      acknowledge_data_sharing: false,
+    });
+  });
+
+  it('shows "no key needed" instead of a key-ready/not-set badge', async () => {
+    setup([ollama()]);
+    const c = await ollamaCard();
+    expect(within(c).getByText('no key needed')).toBeInTheDocument();
+    expect(within(c).queryByText('key ready')).toBeNull();
+    expect(within(c).queryByText('key not set')).toBeNull();
+  });
+
+  it('fetches and registers Ollama models one by one, like any other provider', async () => {
+    const { user, calls } = setup([ollama()], {
+      'GET /providers/1/available-models': { models: [{ id: 'qwen3:8b', already_added: false }] },
+      'POST /providers/1/models': model({
+        id: 20,
+        model_id: 'qwen3:8b',
+        ref: '@ollama-main/qwen3:8b',
+      }),
+    });
+    const c = await ollamaCard();
+    await user.click(within(c).getByRole('button', { name: /Fetch models from Ollama/ }));
+    const group = await within(c).findByRole('group', { name: /Models offered by Ollama/ });
+    await user.click(within(group).getByRole('checkbox', { name: 'qwen3:8b' }));
+    await user.click(within(group).getByRole('button', { name: /Add selected \(1\)/ }));
+    await waitFor(() => expect(posted(calls, '/providers/1/models')).toHaveLength(1));
+    expect(posted(calls, '/providers/1/models')[0]).toMatchObject({ model_id: 'qwen3:8b' });
+  });
+
+  it('test connection reports unreachable, not key-related', async () => {
+    const { user } = setup([ollama()], {
+      'POST /providers/1/test': {
+        status: 'unreachable',
+        message: 'Cannot reach Ollama at http://localhost:11434',
+        base_url: 'http://localhost:11434',
+      },
+    });
+    const c = await ollamaCard();
+    await user.click(within(c).getByRole('button', { name: 'Test connection' }));
+    const out = await within(c).findByRole('status');
+    expect(within(out).getByText('unreachable')).toBeInTheDocument();
+    expect(out).toHaveTextContent('Cannot reach Ollama');
+  });
+
+  it('editing hides the key field and relabels the URL field', async () => {
+    const { user } = setup([ollama()]);
+    const c = await ollamaCard();
+    await user.click(within(c).getByRole('button', { name: 'Edit' }));
+    expect(within(c).queryByLabelText('API key environment variable')).toBeNull();
+    expect(within(c).getByLabelText('Ollama server URL')).toBeInTheDocument();
   });
 });

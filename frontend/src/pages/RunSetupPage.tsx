@@ -107,7 +107,7 @@ export default function RunSetupPage() {
     <>
       <div className="page-head">
         <div className="grow">
-          <h1>Run setup</h1>
+          <h1>Run Evaluation setup</h1>
           <p className="muted">
             Pick models, choose what to send them, and compare accuracy, reasoning quality and
             speed.

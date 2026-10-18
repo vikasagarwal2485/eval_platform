@@ -5,6 +5,7 @@ import { useAgents, useCreateAgent, useModels } from '../api/hooks';
 import type { Agent, AgentKind, DeclaredModels, GatewaySyncResult, ModelInfo } from '../api/types';
 import DeclaredModelPicker from '../components/agents/DeclaredModelPicker';
 import { Banner, Empty, ErrorBox, Spinner } from '../components/ui';
+import { DECLARED_MODELS_HINT, TASK_TYPE_OPTIONS } from '../lib/declaredModelTasks';
 
 function LivenessBadge({ agent }: { agent: Agent }) {
   const kind = agent.liveness === 'live' ? 'good' : agent.liveness === 'offline' ? 'warn' : '';
@@ -88,17 +89,31 @@ function DeclaredModelsFields({
   return (
     <div className="field">
       <span id="declared-models-label">Declared models</span>
+      <p className="small muted" style={{ marginTop: 0 }}>
+        {DECLARED_MODELS_HINT}
+      </p>
       <div className="stack" aria-labelledby="declared-models-label">
         {rows.map((row, i) => (
           <div className="stack" key={i} style={{ gap: 4 }}>
             <div className="row">
-              <input
+              <select
                 aria-label={`Task type for declared model ${i + 1}`}
-                placeholder="task type (e.g. reasoning, or default)"
                 value={row.key}
                 onChange={(e) => update(i, { key: e.target.value })}
                 style={{ maxWidth: 220 }}
-              />
+              >
+                <option value="" disabled>
+                  Select a task…
+                </option>
+                {TASK_TYPE_OPTIONS.map((t) => (
+                  <option key={t.value} value={t.value}>
+                    {t.label}
+                  </option>
+                ))}
+                {row.key && !TASK_TYPE_OPTIONS.some((t) => t.value === row.key) && (
+                  <option value={row.key}>{row.key} (custom)</option>
+                )}
+              </select>
               <DeclaredModelPicker
                 ariaLabel={`Model for declared model ${i + 1}`}
                 models={models}

@@ -13,6 +13,7 @@ from typing import Any, Protocol
 from sqlalchemy.orm import Session, sessionmaker
 
 from app import repo
+from app.models import Provider
 from app.ollama.client import OllamaClient
 from app.providers.errors import ProviderError
 from app.providers.refs import parse_ref
@@ -36,6 +37,9 @@ CLOUD_CAPS: dict[str, BackendCaps] = {
     "openai": BackendCaps(warmup=False, unload=False, footprint=False, seed=True, context_size=False),
     "anthropic": BackendCaps(warmup=False, unload=False, footprint=False, seed=False, context_size=False),
     "azure-openai": BackendCaps(warmup=False, unload=False, footprint=False, seed=True, context_size=False),
+    # a registered `ollama` provider's models are exactly as local as an unregistered bare-name one
+    # (`add-ollama-provider-kind`) - same capabilities, not the all-False fallback an unknown kind gets.
+    "ollama": LOCAL_CAPS,
 }
 
 
@@ -44,6 +48,25 @@ def caps_for_kind(provider_kind: str | None) -> BackendCaps:
     if provider_kind is None:
         return LOCAL_CAPS
     return CLOUD_CAPS.get(provider_kind, BackendCaps(False, False, False, False, False))
+
+
+def provider_availability(p: Provider, keys: KeyProvider) -> tuple[bool, str | None]:
+    """(available, reason) for a registered provider - the single check reused everywhere a provider's models
+    are listed, gated for selection, or preflighted before a run (`add-provider-availability-gating`).
+
+    Two independent things can make a provider unusable, and only the second needs a cached result to catch:
+    - its key env var isn't set right now (skipped for `ollama`, which has no key) - a cheap, always-live check;
+    - its last "Test connection" call (`POST /providers/{id}/test`), if one was ever run, didn't succeed - a key
+      that's present but wrong, or an Ollama server that's actually unreachable, looks identical to a working
+      one under the first check alone. A provider that has never been tested is treated as available - this is
+      a deliberate trade-off (see design.md): re-pinging every provider on every page load would add real
+      latency and cost for something "Test connection" already exists to do explicitly; staleness is resolved by
+      testing again, not by testing silently in the background."""
+    if p.kind != "ollama" and not keys.available(p.key_env):
+        return False, f"API key not set: environment variable {p.key_env} is empty"
+    if p.last_test_status and p.last_test_status != "working":
+        return False, f"Last connection test failed: {p.last_test_message or p.last_test_status}"
+    return True, None
 
 
 class ModelBackend(Protocol):
@@ -71,7 +94,7 @@ class ModelBackend(Protocol):
 class ProviderConfig:
     kind: str
     name: str
-    key_env: str
+    key_env: str | None  # None for `ollama` - it has no key at all
     base_url: str | None
     api_version: str | None = None  # required by azure-openai; unused by other kinds
 
@@ -214,8 +237,10 @@ class ModelRouter:
 
     # ------------------------------------------------------------------ preflight
     def preflight(self, refs: list[str]) -> list[Unavailable]:
-        """Every enterprise reference that cannot be called right now, with the reason. Ollama names are not checked
-        here (installation is checked against the installed-model list)."""
+        """Every enterprise reference that cannot be called right now, with the reason - including a registered
+        `ollama`-kind provider (`add-ollama-provider-kind`) whose key... has none, but whose last connection test
+        may still have failed (see `provider_availability`). Whether a specific model is still actually pulled
+        is a separate, lighter-weight story (checked against the installed-model list), not this one."""
         problems: list[Unavailable] = []
         with self.sf() as s:
             for raw in dict.fromkeys(refs):
@@ -229,12 +254,14 @@ class ModelRouter:
                 provider, model = repo.find_registered(s, ref.provider, ref.model)
                 if provider is None:
                     problems.append(Unavailable(raw, f"provider '{ref.provider}' is not registered"))
-                elif model is None:
+                    continue
+                if model is None:
                     problems.append(Unavailable(raw, f"model '{ref.model}' is not registered under '{ref.provider}'"))
-                elif not model.enabled:
+                    continue
+                if not model.enabled:
                     problems.append(Unavailable(raw, "model is disabled"))
-                elif not self.keys.available(provider.key_env):
-                    problems.append(
-                        Unavailable(raw, f"API key not set: environment variable {provider.key_env} is empty")
-                    )
+                    continue
+                ok, reason = provider_availability(provider, self.keys)
+                if not ok:
+                    problems.append(Unavailable(raw, reason or "unavailable"))
         return problems

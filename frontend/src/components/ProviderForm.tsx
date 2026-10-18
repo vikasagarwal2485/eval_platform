@@ -23,6 +23,7 @@ export default function ProviderForm({ onDone }: { onDone?: () => void }) {
   const [touched, setTouched] = useState({ name: false, env: false });
   const [errors, setErrors] = useState<Record<string, string>>({});
   const isAzure = kind === 'azure-openai';
+  const isOllama = kind === 'ollama';
 
   const changeKind = (k: ProviderKind) => {
     setKind(k);
@@ -34,9 +35,11 @@ export default function ProviderForm({ onDone }: { onDone?: () => void }) {
     e.preventDefault();
     const found: Record<string, string> = {};
     const n = validateName(name);
-    const v = validateEnvName(env);
     if (n) found.name = n;
-    if (v) found.env = v;
+    if (!isOllama) {
+      const v = validateEnvName(env);
+      if (v) found.env = v;
+    }
     if (isAzure) {
       // required for azure-openai: there is no shared default resource endpoint or API version
       const u =
@@ -48,17 +51,18 @@ export default function ProviderForm({ onDone }: { onDone?: () => void }) {
       const u = validateBaseUrl(baseUrl);
       if (u) found.baseUrl = u;
     }
-    if (!ack) found.ack = `Acknowledge that evaluation content is sent to ${KIND_LABEL[kind]}.`;
+    // ollama sends nothing anywhere, so there is nothing to acknowledge
+    if (!isOllama && !ack) found.ack = `Acknowledge that evaluation content is sent to ${KIND_LABEL[kind]}.`;
     setErrors(found);
     if (Object.keys(found).length) return;
     create.mutate(
       {
         kind,
         name,
-        key_env: env.trim(),
+        key_env: isOllama ? null : env.trim(),
         base_url: baseUrl.trim() || null,
         api_version: isAzure ? apiVersion.trim() : null,
-        acknowledge_data_sharing: true,
+        acknowledge_data_sharing: !isOllama,
       },
       {
         onSuccess: () => {
@@ -74,10 +78,12 @@ export default function ProviderForm({ onDone }: { onDone?: () => void }) {
 
   return (
     <form className="card" onSubmit={submit} aria-labelledby="add-provider-h" noValidate>
-      <h2 id="add-provider-h">Add a provider</h2>
+      <h2 id="add-provider-h">Add a model</h2>
       <p className="small muted">
-        Enter the <strong>name</strong> of the environment variable that holds the key. The
-        application reads it when it makes a call and never stores, shows or exports it.
+        {isOllama
+          ? "Register your local Ollama server, then fetch and add its models one by one - same as any other provider, but with no key involved."
+          : <>Enter the <strong>name</strong> of the environment variable that holds the key. The
+            application reads it when it makes a call and never stores, shows or exports it.</>}
       </p>
       <div className="row" style={{ alignItems: 'flex-start' }}>
         <div className="field">
@@ -90,6 +96,7 @@ export default function ProviderForm({ onDone }: { onDone?: () => void }) {
             <option value="openai">OpenAI</option>
             <option value="anthropic">Anthropic</option>
             <option value="azure-openai">Azure OpenAI</option>
+            <option value="ollama">Ollama</option>
           </select>
         </div>
         <div className="field">
@@ -113,36 +120,40 @@ export default function ProviderForm({ onDone }: { onDone?: () => void }) {
             </div>
           )}
         </div>
-        <div className="field">
-          <label htmlFor="pv-env">API key environment variable</label>
-          <input
-            id="pv-env"
-            type="text"
-            value={env}
-            autoComplete="off"
-            spellCheck={false}
-            aria-invalid={!!errors.env}
-            aria-describedby={errors.env ? 'pv-env-err' : undefined}
-            onChange={(e) => {
-              setEnv(e.target.value);
-              setTouched((t) => ({ ...t, env: true }));
-            }}
-          />
-          {errors.env && (
-            <div id="pv-env-err" className="field-error">
-              {errors.env}
-            </div>
-          )}
-        </div>
+        {!isOllama && (
+          <div className="field">
+            <label htmlFor="pv-env">API key environment variable</label>
+            <input
+              id="pv-env"
+              type="text"
+              value={env}
+              autoComplete="off"
+              spellCheck={false}
+              aria-invalid={!!errors.env}
+              aria-describedby={errors.env ? 'pv-env-err' : undefined}
+              onChange={(e) => {
+                setEnv(e.target.value);
+                setTouched((t) => ({ ...t, env: true }));
+              }}
+            />
+            {errors.env && (
+              <div id="pv-env-err" className="field-error">
+                {errors.env}
+              </div>
+            )}
+          </div>
+        )}
       </div>
       <div className="row" style={{ alignItems: 'flex-start' }}>
         <div className="field" style={{ flex: 1 }}>
           <label htmlFor="pv-url">
-            Base URL{' '}
+            {isOllama ? 'Ollama server URL' : 'Base URL'}{' '}
             <span className="hint">
               {isAzure
                 ? '(required: your Azure resource endpoint)'
-                : '(optional: gateways and OpenAI-compatible endpoints)'}
+                : isOllama
+                  ? '(optional: defaults to http://localhost:11434)'
+                  : '(optional: gateways and OpenAI-compatible endpoints)'}
             </span>
           </label>
           <input
@@ -150,7 +161,13 @@ export default function ProviderForm({ onDone }: { onDone?: () => void }) {
             type="text"
             style={{ width: '100%' }}
             value={baseUrl}
-            placeholder={isAzure ? 'https://my-resource.openai.azure.com' : 'https://…'}
+            placeholder={
+              isAzure
+                ? 'https://my-resource.openai.azure.com'
+                : isOllama
+                  ? 'http://localhost:11434'
+                  : 'https://…'
+            }
             aria-invalid={!!errors.baseUrl}
             onChange={(e) => setBaseUrl(e.target.value)}
           />
@@ -171,35 +188,39 @@ export default function ProviderForm({ onDone }: { onDone?: () => void }) {
           </div>
         )}
       </div>
-      <label className="check">
-        <input
-          type="checkbox"
-          checked={ack}
-          onChange={(e) => setAck(e.target.checked)}
-          aria-describedby="pv-ack-help"
-        />
-        <span>
-          I understand that prompts and model outputs used in evaluations (including other
-          models&rsquo; answers when this provider is used as a judge) will be sent to{' '}
-          {KIND_LABEL[kind]}.
-        </span>
-      </label>
-      <div id="pv-ack-help" className="small muted" style={{ marginLeft: 24 }}>
-        Required. It is recorded with the provider.
-      </div>
-      {errors.ack && (
-        <div className="field-error" role="alert">
-          {errors.ack}
-        </div>
+      {!isOllama && (
+        <>
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={ack}
+              onChange={(e) => setAck(e.target.checked)}
+              aria-describedby="pv-ack-help"
+            />
+            <span>
+              I understand that prompts and model outputs used in evaluations (including other
+              models&rsquo; answers when this provider is used as a judge) will be sent to{' '}
+              {KIND_LABEL[kind]}.
+            </span>
+          </label>
+          <div id="pv-ack-help" className="small muted" style={{ marginLeft: 24 }}>
+            Required. It is recorded with the provider.
+          </div>
+          {errors.ack && (
+            <div className="field-error" role="alert">
+              {errors.ack}
+            </div>
+          )}
+        </>
       )}
       {create.error && (
         <div style={{ marginTop: 12 }}>
-          <ErrorBox error={create.error} title="Could not register the provider." />
+          <ErrorBox error={create.error} title="Could not register the model provider." />
         </div>
       )}
       <p style={{ marginBottom: 0 }}>
         <button className="primary" type="submit" disabled={create.isPending}>
-          {create.isPending ? 'Registering…' : 'Register provider'}
+          {create.isPending ? 'Registering…' : 'Register'}
         </button>
       </p>
     </form>

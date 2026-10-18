@@ -85,7 +85,7 @@ describe('9.2 model selection', () => {
     setup({ 'GET /models': [] });
     expect(await screen.findByText('No models available')).toBeInTheDocument();
     expect(screen.getByText(/ollama pull/)).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Providers' })).toHaveAttribute('href', '/providers');
+    expect(screen.getByRole('link', { name: 'Models' })).toHaveAttribute('href', '/providers');
   });
 
   it('refresh re-reads models and drops selections that disappeared', async () => {
@@ -486,7 +486,7 @@ describe('6.3 enterprise models in the picker', () => {
     ollama: { ...HEALTH_OK.ollama, reachable: false, error: 'refused' },
   };
 
-  it('groups models by source: Local (Ollama) and one group per provider', async () => {
+  it('groups models by registered provider, with an unregistered group last', async () => {
     setup({ 'GET /models': MIXED });
     await model('@oa/gpt-4o');
     const picker = screen.getByRole('group', { name: 'Available models' });
@@ -494,14 +494,14 @@ describe('6.3 enterprise models in the picker', () => {
       .getAllByRole('group')
       .filter((g) => g.tagName === 'FIELDSET');
     expect(groups.map((g) => g.querySelector('legend')?.textContent)).toEqual([
-      'Local (Ollama)',
       'an (Anthropic)',
       'oa (OpenAI)',
+      'Not registered',
     ]);
-    const oa = within(groups[2]);
+    const oa = within(groups[1]);
     expect(oa.getByRole('checkbox', { name: '@oa/gpt-4o' })).toBeInTheDocument();
     expect(oa.getByRole('checkbox', { name: '@oa/o3' })).toBeInTheDocument();
-    expect(within(groups[0]).getByRole('checkbox', { name: 'qwen3:8b' })).toBeInTheDocument();
+    expect(within(groups[2]).getByRole('checkbox', { name: 'qwen3:8b' })).toBeInTheDocument();
   });
 
   it('marks enterprise models with a cloud badge, provider kind and reasoning flag', async () => {
@@ -591,7 +591,7 @@ describe('6.3 enterprise models in the picker', () => {
     setup({ 'GET /models': [] });
     expect(await screen.findByText('No models available')).toBeInTheDocument();
     expect(screen.getByText(/ollama pull/)).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Providers' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Models' })).toBeInTheDocument();
   });
 });
 

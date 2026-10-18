@@ -9,10 +9,11 @@ export default function ProvidersPage() {
     <>
       <div className="page-head">
         <div className="grow">
-          <h1>Providers</h1>
+          <h1>Models</h1>
           <p className="muted">
-            Register enterprise model providers (OpenAI, Anthropic) so their models can be evaluated
-            next to your local Ollama models, or used as judges.
+            Register model providers - enterprise ones (OpenAI, Anthropic, Azure OpenAI) or your
+            local Ollama server - and the models available under each, so they can be evaluated
+            side by side or used as judges.
           </p>
         </div>
       </div>
@@ -26,11 +27,11 @@ export default function ProvidersPage() {
         </h2>
 
         {providers && providers.length === 0 && (
-          <Empty title="No providers registered yet">
+          <Empty title="No models registered yet">
             <p>
-              A provider is a hosted model service. You register it by the{' '}
-              <strong>name of the environment variable</strong> that holds its API key; the key
-              itself is never entered here and is never stored.
+              An enterprise provider is registered by the <strong>name of the environment
+              variable</strong> that holds its API key; the key itself is never entered here and
+              is never stored. Ollama needs no key at all - just the server address.
             </p>
             <p className="small">
               Set the variable before starting the application, for example{' '}

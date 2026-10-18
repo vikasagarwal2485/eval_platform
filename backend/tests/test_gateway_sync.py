@@ -137,6 +137,28 @@ def test_azure_openai_ref_uses_the_azure_litellm_prefix_and_api_version(session)
     }
 
 
+def test_registered_ollama_ref_uses_ollama_chat_prefix_and_no_key(session):
+    """`add-ollama-provider-kind`: a model registered under an `ollama`-kind provider syncs to the gateway the
+    same way a bare local name does (`ollama_chat/<model>`) - no `api_key` at all, since there is none."""
+    repo.create_provider(
+        session,
+        kind="ollama",
+        name="ollama-main",
+        key_env=None,
+        base_url="http://my-ollama-server:11434",
+        ack_at=None,
+    )
+    params = to_litellm_params(session, "@ollama-main/qwen3:8b", None, _settings())
+    assert params == {"model": "ollama_chat/qwen3:8b", "api_base": "http://my-ollama-server:11434"}
+    assert "api_key" not in params
+
+
+def test_registered_ollama_ref_without_a_base_url_falls_back_to_the_configured_default(session):
+    repo.create_provider(session, kind="ollama", name="ollama-main", key_env=None, base_url=None, ack_at=None)
+    params = to_litellm_params(session, "@ollama-main/qwen3:8b", None, _settings())
+    assert params == {"model": "ollama_chat/qwen3:8b", "api_base": "http://ollama.local"}
+
+
 def test_params_are_merged_into_the_translated_litellm_params(session):
     params = to_litellm_params(session, "qwen3:8b", {"temperature": 0.2}, _settings())
     assert params["temperature"] == 0.2

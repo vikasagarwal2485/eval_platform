@@ -20,12 +20,12 @@ export interface ModelInfo {
   unavailable_reason: string | null;
 }
 export type ModelSource = 'local' | 'cloud';
-export type ProviderKind = 'openai' | 'anthropic' | 'azure-openai';
+export type ProviderKind = 'openai' | 'anthropic' | 'azure-openai' | 'ollama';
 
 export interface Health {
   status: string;
   ollama: { reachable: boolean; base_url: string; version: string | null; error: string | null };
-  providers: { name: string; kind: ProviderKind; key_env: string; key_available: boolean }[];
+  providers: { name: string; kind: ProviderKind; key_env: string | null; key_available: boolean }[];
   config: { ollama_base_url: string; db_path: string; request_timeout_s: number };
 }
 
@@ -350,12 +350,22 @@ export interface Provider {
   id: number;
   kind: ProviderKind;
   name: string;
-  key_env: string;
+  /** null for `ollama` - it has no key at all; `base_url` is that server's own address instead */
+  key_env: string | null;
   base_url: string | null;
   /** required for azure-openai; unused by other kinds */
   api_version: string | null;
-  /** whether the environment variable currently holds a key; the key itself is never exposed */
+  /** whether this provider is actually usable right now (`add-provider-availability-gating`): the key is
+   * present (always true for `ollama`, which has none) AND its last connection test, if one was ever run,
+   * didn't fail. The key itself is never exposed. */
   key_available: boolean;
+  /** why `key_available` is false; null when it's true */
+  unavailable_reason: string | null;
+  /** the outcome of the most recent "Test connection" call; null until one is ever run */
+  last_test_status: ConnectionStatus | null;
+  last_test_message: string | null;
+  last_test_at: string | null;
+  /** never set for `ollama` - nothing is sent anywhere, so there is nothing to acknowledge */
   data_sharing_acknowledged_at: string | null;
   created_at: string;
   models: ProviderModel[];
@@ -363,7 +373,7 @@ export interface Provider {
 export interface ProviderCreate {
   kind: ProviderKind;
   name: string;
-  key_env: string;
+  key_env?: string | null; // required for every kind except `ollama`
   base_url?: string | null;
   api_version?: string | null;
   acknowledge_data_sharing: boolean;

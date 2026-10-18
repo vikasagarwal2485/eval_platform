@@ -33,20 +33,30 @@ class ModelSnapshot(Base):
 
 
 class Provider(Base):
-    """A registered enterprise provider. Holds the *name* of the env var with the key, never the key (design D4)."""
+    """A registered provider - an enterprise one (design D4; holds the *name* of the env var with the key, never
+    the key) or a local `ollama` one (`add-ollama-provider-kind`), which has no key at all - `key_env` is
+    nullable for exactly that kind and unused by it; `base_url` doubles as that Ollama server's address."""
 
     __tablename__ = "provider"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    kind: Mapped[str] = mapped_column(String(20))  # openai | anthropic | azure-openai
+    kind: Mapped[str] = mapped_column(String(20))  # openai | anthropic | azure-openai | ollama
     name: Mapped[str] = mapped_column(String(40), unique=True)
-    key_env: Mapped[str] = mapped_column(String(64))
+    key_env: Mapped[str | None] = mapped_column(String(64), nullable=True)
     base_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     api_version: Mapped[str | None] = mapped_column(String(50), nullable=True)  # required for azure-openai
     ack_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )  # data-sharing acknowledgment
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    # The outcome of the most recent "Test connection" call (`add-provider-availability-gating`) - `None` until
+    # one is ever run. A present-but-wrong key, or an Ollama server that's actually unreachable, cannot be told
+    # apart from a working one by presence checks alone; this is what lets the platform refuse to offer a
+    # provider's models anywhere they'd actually fail, without live-pinging it on every page load.
+    last_test_status: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    last_test_message: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    last_test_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     models: Mapped[list[RegisteredModel]] = relationship(
         back_populates="provider", cascade="all, delete-orphan", order_by="RegisteredModel.id"

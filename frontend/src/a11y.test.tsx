@@ -364,7 +364,7 @@ describe('enterprise providers accessibility (6.6)', () => {
 
   it('providers page: empty state', async () => {
     appWith('/providers', { ...routes, 'GET /providers': [] });
-    expect(await screen.findByText('No providers registered yet')).toBeInTheDocument();
+    expect(await screen.findByText('No models registered yet')).toBeInTheDocument();
     expect(await audit()).toEqual([]);
   });
 

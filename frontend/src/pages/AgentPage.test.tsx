@@ -270,6 +270,59 @@ describe('settings tab', () => {
     expect(within(group).getByText("one of this agent's own models")).toBeInTheDocument();
   });
 
+  it('offers a closed dropdown of task types and preserves an existing non-standard key as "(custom)"', async () => {
+    const { user } = setup({
+      'GET /agents/1': { ...AGENT, declared_models: { legacy_task: 'author:1' } },
+    });
+    await user.click(await screen.findByRole('tab', { name: 'Settings' }));
+    const taskSelect = (await screen.findByLabelText(
+      'Task type for declared model 1',
+    )) as HTMLSelectElement;
+    expect(taskSelect.value).toBe('legacy_task'); // not silently reset to one of the 4 standard options
+    expect(Array.from(taskSelect.options).map((o) => o.value)).toEqual([
+      '',
+      'reasoning',
+      'generation',
+      'classification',
+      'default',
+      'legacy_task',
+    ]);
+    await user.selectOptions(taskSelect, 'reasoning'); // switching away still works normally
+    expect(taskSelect.value).toBe('reasoning');
+  });
+
+  it('disables a model whose provider is unavailable, in both the evaluator and declared-model pickers', async () => {
+    const unavailable = {
+      name: '@oa/gpt-4o',
+      digest: '',
+      size_bytes: null,
+      parameter_size: null,
+      quantization: null,
+      family: null,
+      capabilities: [],
+      thinking: false,
+      source: 'cloud',
+      provider: 'oa',
+      provider_kind: 'openai',
+      display_name: 'GPT-4o',
+      reasoning: false,
+      available: false,
+      unavailable_reason: 'Last connection test failed: Incorrect API key provided.',
+    };
+    const { user } = setup({ 'GET /models': [...MODELS.slice(0, 2), unavailable] });
+    await user.click(await screen.findByRole('tab', { name: 'Settings' }));
+    const group = await screen.findByRole('group', { name: 'Evaluators' });
+    expect(within(group).getByLabelText('@oa/gpt-4o')).toBeDisabled();
+    expect(
+      within(group).getByText(/Last connection test failed: Incorrect API key provided/),
+    ).toBeInTheDocument();
+    const select = (await screen.findByLabelText(
+      'Model for declared model 1',
+    )) as HTMLSelectElement;
+    const option = Array.from(select.options).find((o) => o.value === '@oa/gpt-4o');
+    expect(option?.disabled).toBe(true);
+  });
+
   it('gates a hosted evaluator behind a data-sharing acknowledgment, then saves', async () => {
     let acked = false;
     const { user } = setup({
@@ -307,6 +360,8 @@ describe('settings tab', () => {
       },
     });
     await user.click(await screen.findByRole('tab', { name: 'Settings' }));
+    const select = await screen.findByLabelText('Model for declared model 1');
+    await user.selectOptions(select, 'Custom (type manually)…');
     const modelField = await screen.findByLabelText('Model for declared model 1');
     await user.clear(modelField);
     await user.type(modelField, '@azure-main/gpt-4o-mini');

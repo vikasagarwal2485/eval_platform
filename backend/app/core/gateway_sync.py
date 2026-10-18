@@ -30,11 +30,14 @@ logger = logging.getLogger(__name__)
 
 # platform `Provider.kind` -> LiteLLM provider prefix. Verified against a running gateway while
 # researching this change: LiteLLM's Azure integration uses `azure/`, not `azure-openai/` (the
-# platform's own `kind` string) - openai and anthropic match directly.
+# platform's own `kind` string) - openai and anthropic match directly. `ollama` (`add-ollama-provider-kind`)
+# uses the same `ollama_chat` prefix the bare-local-ref branch below already uses - a registered Ollama
+# model is exactly as local as an unregistered one, just reached via a different Ollama server/base_url.
 _LITELLM_PROVIDER_PREFIX = {
     "openai": "openai",
     "anthropic": "anthropic",
     "azure-openai": "azure",
+    "ollama": "ollama_chat",
 }
 
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
@@ -89,12 +92,16 @@ def to_litellm_params(session: Session, ref: str, params: dict[str, Any] | None,
         prefix = _LITELLM_PROVIDER_PREFIX.get(provider.kind)
         if prefix is None:
             raise ValueError(f"no known LiteLLM provider prefix for provider kind '{provider.kind}'")
-        litellm_params = {
-            "model": f"{prefix}/{model_ref.model}",
-            "api_key": f"os.environ/{provider.key_env}",
-        }
-        if provider.base_url:
-            litellm_params["api_base"] = provider.base_url
+        litellm_params = {"model": f"{prefix}/{model_ref.model}"}
+        if provider.kind == "ollama":
+            # no key at all - and unlike the other kinds, this one needs an api_base even when the operator
+            # left the provider's own base_url unset, since there's no LiteLLM-side default for ollama_chat
+            # the way there is for openai/anthropic/azure's real cloud endpoints.
+            litellm_params["api_base"] = provider.base_url or settings.ollama_base_url
+        else:
+            litellm_params["api_key"] = f"os.environ/{provider.key_env}"
+            if provider.base_url:
+                litellm_params["api_base"] = provider.base_url
         if provider.api_version:
             litellm_params["api_version"] = provider.api_version
     if params:

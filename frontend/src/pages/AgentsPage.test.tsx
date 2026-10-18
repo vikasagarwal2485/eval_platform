@@ -104,6 +104,34 @@ describe('registration', () => {
     expect(post?.body.declared_models).toEqual({ default: 'qwen3:8b' });
   });
 
+  it('offers a closed dropdown of task types instead of free text', async () => {
+    const { user, calls } = setup([], {
+      'POST /agents': { ...agent({ name: 'new-bot' }), token: 'RAW-TOKEN-VALUE' },
+    });
+    await user.click(await screen.findByRole('button', { name: 'Register agent' }));
+    await user.type(screen.getByLabelText('Name'), 'new-bot');
+
+    const taskSelect = screen.getByLabelText('Task type for declared model 1') as HTMLSelectElement;
+    expect(Array.from(taskSelect.options).map((o) => o.textContent)).toEqual([
+      'Select a task…',
+      'Reasoning',
+      'Generation',
+      'Classification',
+      'Default (single, undifferentiated task)',
+    ]);
+    await user.selectOptions(taskSelect, 'reasoning');
+    await user.type(screen.getByLabelText('Model for declared model 1'), 'qwen3:8b');
+
+    await user.click(screen.getByRole('button', { name: '+ Add another model' }));
+    await user.selectOptions(screen.getByLabelText('Task type for declared model 2'), 'generation');
+    await user.type(screen.getByLabelText('Model for declared model 2'), 'qwen3:14b');
+
+    await user.click(screen.getByRole('button', { name: 'Register' }));
+    await screen.findByText('RAW-TOKEN-VALUE');
+    const post = calls.find((c) => c.method === 'POST' && c.path === '/agents');
+    expect(post?.body.declared_models).toEqual({ reasoning: 'qwen3:8b', generation: 'qwen3:14b' });
+  });
+
   it('sends a fallback as part of the declared-model object, omitted entirely when blank', async () => {
     const { user, calls } = setup([], {
       'POST /agents': { ...agent({ name: 'new-bot' }), token: 'RAW-TOKEN-VALUE' },

@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from app import repo
 from app.api.deps import get_session
 from app.models import Provider, RegisteredModel
-from app.providers.backend import ProviderConfig
+from app.providers.backend import ProviderConfig, provider_availability
 from app.providers.errors import ProviderAuthError, ProviderError, ProviderRateLimited, ProviderUnavailable
 from app.providers.refs import MAX_MODEL_ID, format_ref, valid_provider_name
 from app.providers.secrets import valid_env_name
@@ -66,12 +66,12 @@ def _check_reasoning_effort(v: str | None) -> str | None:
 class ProviderIn(BaseModel):
     model_config = ConfigDict(extra="forbid")  # e.g. an `api_key` field is rejected, not ignored
 
-    kind: Literal["openai", "anthropic", "azure-openai"]
+    kind: Literal["openai", "anthropic", "azure-openai", "ollama"]
     name: str
-    key_env: str
-    base_url: str | None = None
+    key_env: str | None = None  # not applicable to `ollama` - it has no key at all
+    base_url: str | None = None  # for `ollama`, this is that server's own address
     api_version: str | None = None  # required for azure-openai; unused by other kinds
-    acknowledge_data_sharing: bool = False
+    acknowledge_data_sharing: bool = False  # not required for `ollama` - nothing leaves the machine
 
     @field_validator("name")
     @classmethod
@@ -82,8 +82,8 @@ class ProviderIn(BaseModel):
 
     @field_validator("key_env")
     @classmethod
-    def _key_env(cls, v: str) -> str:
-        return _check_env(v)
+    def _key_env(cls, v: str | None) -> str | None:
+        return None if v is None else _check_env(v)
 
     @field_validator("base_url")
     @classmethod
@@ -105,6 +105,12 @@ class ProviderIn(BaseModel):
                     + " and ".join(missing)
                     + " (the Azure resource endpoint and its API version)"
                 )
+        return self
+
+    @model_validator(mode="after")
+    def _non_ollama_requires_key_env(self) -> ProviderIn:
+        if self.kind != "ollama" and not self.key_env:
+            raise ValueError("key_env is required for every provider kind except 'ollama'")
         return self
 
 
@@ -181,6 +187,10 @@ def _model_out(p: Provider, m: RegisteredModel) -> dict:
 
 
 def _provider_out(request: Request, p: Provider) -> dict:
+    # `key_available` now means "actually usable", not just "a key is present" (`add-provider-availability-gating`)
+    # - it folds in the last "Test connection" outcome, if one was ever run, so a present-but-wrong key (or an
+    # unreachable Ollama server) stops showing as ready the moment it's been caught once.
+    available, reason = provider_availability(p, request.app.state.router.keys)
     return {
         "id": p.id,
         "kind": p.kind,
@@ -188,7 +198,11 @@ def _provider_out(request: Request, p: Provider) -> dict:
         "key_env": p.key_env,
         "base_url": p.base_url,
         "api_version": p.api_version,
-        "key_available": request.app.state.router.keys.available(p.key_env),
+        "key_available": available,
+        "unavailable_reason": reason,
+        "last_test_status": p.last_test_status,
+        "last_test_message": p.last_test_message,
+        "last_test_at": p.last_test_at.isoformat() if p.last_test_at else None,
         "data_sharing_acknowledged_at": p.ack_at.isoformat() if p.ack_at else None,
         "created_at": p.created_at.isoformat(),
         "models": [_model_out(p, m) for m in p.models],
@@ -203,7 +217,9 @@ def list_providers(request: Request, session: Session = Depends(get_session)):
 
 @router.post("/providers", status_code=201)
 def create_provider(body: ProviderIn, request: Request, session: Session = Depends(get_session)):
-    if not body.acknowledge_data_sharing:
+    # an `ollama` provider sends nothing to anyone - the data-sharing acknowledgment this gate exists for simply
+    # does not apply to it (see ProviderIn's docstring field comment).
+    if body.kind != "ollama" and not body.acknowledge_data_sharing:
         raise HTTPException(
             422, detail={"code": "acknowledgment_required", "message": ACK_TEXT, "field": "acknowledge_data_sharing"}
         )
@@ -214,7 +230,8 @@ def create_provider(body: ProviderIn, request: Request, session: Session = Depen
         key_env=body.key_env,
         base_url=body.base_url,
         api_version=body.api_version,
-        ack_at=datetime.now(UTC),
+        # `ollama` is never asked to acknowledge data sharing, so it never has anything to timestamp here either.
+        ack_at=None if body.kind == "ollama" else datetime.now(UTC),
     )
     return _provider_out(request, p)
 
@@ -322,12 +339,10 @@ def _first_enabled_deployment(p: Provider) -> RegisteredModel | None:
     return next((m for m in p.models if m.enabled), None)
 
 
-@router.post("/providers/{provider_id}/test")
-async def test_provider(provider_id: int, request: Request, session: Session = Depends(get_session)):
-    """One lightweight authenticated request; the outcome never contains the key."""
-    p = repo.get_provider(session, provider_id)
-    base = p.base_url or _backend(request, p).default_base_url
-    if not request.app.state.router.keys.available(p.key_env):
+async def _run_connection_test(request: Request, p: Provider, base: str) -> dict:
+    """The actual test, isolated from persistence so `test_provider` can store whatever this returns
+    (`add-provider-availability-gating`) regardless of which branch produced it."""
+    if p.kind != "ollama" and not request.app.state.router.keys.available(p.key_env):
         return {"status": "key_not_set", "message": _key_missing(p)["message"], "base_url": base}
     deployment, deployment_reasoning = None, False
     if p.kind == "azure-openai":
@@ -354,11 +369,25 @@ async def test_provider(provider_id: int, request: Request, session: Session = D
     return {"status": "working", "message": "The provider accepted the key.", "base_url": base}
 
 
+@router.post("/providers/{provider_id}/test")
+async def test_provider(provider_id: int, request: Request, session: Session = Depends(get_session)):
+    """One lightweight authenticated request; the outcome never contains the key. `ollama` has no key to check -
+    this just pings the server itself. The outcome is persisted (`add-provider-availability-gating`) so
+    `provider_availability` can later decide whether to offer this provider's models anywhere, without
+    re-pinging it on every page load - testing again is how a stale result gets refreshed."""
+    p = repo.get_provider(session, provider_id)
+    base = p.base_url or _backend(request, p).default_base_url
+    result = await _run_connection_test(request, p, base)
+    repo.record_provider_test_result(session, p.id, status=result["status"], message=result["message"])
+    return result
+
+
 @router.get("/providers/{provider_id}/available-models")
 async def available_models(provider_id: int, request: Request, session: Session = Depends(get_session)):
-    """The provider's own model list, with the ones already registered marked. Failing never blocks adding by id."""
+    """The provider's own model list, with the ones already registered marked. Failing never blocks adding by
+    id. `ollama` has no key to check - this lists whatever is currently pulled on that server."""
     p = repo.get_provider(session, provider_id)
-    if not request.app.state.router.keys.available(p.key_env):
+    if p.kind != "ollama" and not request.app.state.router.keys.available(p.key_env):
         return JSONResponse(status_code=409, content={"detail": _key_missing(p)})
     if p.kind == "azure-openai":
         # no inference-plane endpoint lists deployments (design D9); never attempt a call that always fails
