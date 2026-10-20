@@ -9,13 +9,15 @@ export const KIND_LABEL: Record<string, string> = {
   anthropic: 'Anthropic',
   'azure-openai': 'Azure OpenAI',
   ollama: 'Ollama',
+  custom: 'Custom',
 };
-/** `env: ''` for `ollama` - it has no key, so there is no default variable name to suggest. */
+/** `env: ''` for `ollama`/`custom` - neither has a key, so there is no default variable name to suggest. */
 export const KIND_DEFAULTS: Record<string, { name: string; env: string }> = {
   openai: { name: 'openai', env: 'OPENAI_API_KEY' },
   anthropic: { name: 'anthropic', env: 'ANTHROPIC_API_KEY' },
   'azure-openai': { name: 'azure-openai', env: 'AZURE_OPENAI_API_KEY' },
   ollama: { name: 'ollama-main', env: '' },
+  custom: { name: 'custom-model', env: '' },
 };
 
 export function validateName(name: string): string | null {
@@ -44,6 +46,12 @@ export function validateBaseUrl(value: string): string | null {
   } catch {
     return 'The base URL must start with http:// or https://.';
   }
+}
+
+/** Only meaningful for a `custom` provider - the path "Test connection" calls (never a chat completion). */
+export function validateHealthCheckPath(value: string): string | null {
+  if (!value.trim()) return null; // empty is fine - a documented default applies
+  return value.trim().startsWith('/') ? null : "The health-check path must start with '/'.";
 }
 
 export function validateApiVersion(value: string): string | null {

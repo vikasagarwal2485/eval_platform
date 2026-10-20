@@ -388,10 +388,19 @@ def create_provider(
     base_url: str | None,
     ack_at: datetime | None,
     api_version: str | None = None,
+    health_check_path: str | None = None,
 ) -> Provider:
     if get_provider_by_name(session, name):
         raise Conflict(f"A provider named '{name}' already exists")
-    p = Provider(kind=kind, name=name, key_env=key_env, base_url=base_url, ack_at=ack_at, api_version=api_version)
+    p = Provider(
+        kind=kind,
+        name=name,
+        key_env=key_env,
+        base_url=base_url,
+        ack_at=ack_at,
+        api_version=api_version,
+        health_check_path=health_check_path,
+    )
     session.add(p)
     session.flush()
     return p
@@ -406,9 +415,11 @@ def update_provider(
     clear_base_url: bool = False,
     api_version: str | None = None,
     clear_api_version: bool = False,
+    health_check_path: str | None = None,
+    clear_health_check_path: bool = False,
 ) -> Provider:
-    """Change the key variable name, base URL, or API version. The name is part of every model reference and
-    never changes."""
+    """Change the key variable name, base URL, API version, or health-check path. The name is part of every
+    model reference and never changes."""
     p = get_provider(session, provider_id)
     if key_env is not None:
         p.key_env = key_env
@@ -420,6 +431,10 @@ def update_provider(
         p.api_version = None
     elif api_version is not None:
         p.api_version = api_version
+    if clear_health_check_path:
+        p.health_check_path = None
+    elif health_check_path is not None:
+        p.health_check_path = health_check_path
     session.flush()
     return p
 
@@ -578,12 +593,15 @@ def _check_provider_acks(session: Session, refs: list[str], acks: dict) -> None:
     this agent's live conversations to that provider) whose provider hasn't been acknowledged for this agent
     yet. A reference naming a registered `ollama` provider (`add-ollama-provider-kind`) is exempt - it's
     syntactically `@provider/model` like any enterprise reference, but nothing leaves the machine, so requiring
-    the same "this is sent to a hosted provider" acknowledgment for it would be misleading."""
+    the same "this is sent to a hosted provider" acknowledgment for it would be misleading. A `custom`-kind
+    provider (`add-custom-model-provider-kind`) is exempt for a related but distinct reason: the platform itself
+    never sends this agent's data to it at all - only the agent's own code calls it directly, which the
+    platform has no part in and nothing to acknowledge for."""
     for ref in refs:
         if is_cloud_ref(ref):
             provider_name = parse_ref(ref).provider
             provider = get_provider_by_name(session, provider_name)
-            if provider is not None and provider.kind == "ollama":
+            if provider is not None and provider.kind in ("ollama", "custom"):
                 continue
             if provider_name not in acks:
                 raise AckRequired(provider_name)

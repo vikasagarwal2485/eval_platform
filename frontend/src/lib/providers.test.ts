@@ -1,4 +1,10 @@
-import { KIND_DEFAULTS, KIND_LABEL, STATUS_LABEL, validateApiVersion } from './providers';
+import {
+  KIND_DEFAULTS,
+  KIND_LABEL,
+  STATUS_LABEL,
+  validateApiVersion,
+  validateHealthCheckPath,
+} from './providers';
 
 describe('azure-openai provider kind (4.1)', () => {
   it('is labelled and has a conventional default env var name', () => {
@@ -31,5 +37,27 @@ describe('validateApiVersion', () => {
 
   it('accepts a normal API version string', () => {
     expect(validateApiVersion('2024-12-01-preview')).toBeNull();
+  });
+});
+
+describe('custom provider kind (add-custom-model-provider-kind)', () => {
+  it('is labelled and has no default key env var (like ollama)', () => {
+    expect(KIND_LABEL.custom).toBe('Custom');
+    expect(KIND_DEFAULTS.custom.env).toBe('');
+  });
+});
+
+describe('validateHealthCheckPath', () => {
+  it('accepts an empty value - a documented default applies', () => {
+    expect(validateHealthCheckPath('')).toBeNull();
+    expect(validateHealthCheckPath('   ')).toBeNull();
+  });
+
+  it('accepts a path starting with a slash', () => {
+    expect(validateHealthCheckPath('/healthz')).toBeNull();
+  });
+
+  it('rejects a path with no leading slash', () => {
+    expect(validateHealthCheckPath('healthz')).toMatch(/must start with/i);
   });
 });

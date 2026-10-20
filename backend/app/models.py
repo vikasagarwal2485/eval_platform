@@ -34,17 +34,22 @@ class ModelSnapshot(Base):
 
 class Provider(Base):
     """A registered provider - an enterprise one (design D4; holds the *name* of the env var with the key, never
-    the key) or a local `ollama` one (`add-ollama-provider-kind`), which has no key at all - `key_env` is
-    nullable for exactly that kind and unused by it; `base_url` doubles as that Ollama server's address."""
+    the key), a local `ollama` one (`add-ollama-provider-kind`), which has no key at all, or a `custom` one
+    (`add-custom-model-provider-kind`): a directly-called, non-chat-completions HTTP service, also with no key -
+    `key_env` is nullable for exactly those two kinds and unused by them; `base_url` doubles as that Ollama
+    server's address for `ollama`, and is the service's own address for `custom`."""
 
     __tablename__ = "provider"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    kind: Mapped[str] = mapped_column(String(20))  # openai | anthropic | azure-openai | ollama
+    kind: Mapped[str] = mapped_column(String(20))  # openai | anthropic | azure-openai | ollama | custom
     name: Mapped[str] = mapped_column(String(40), unique=True)
     key_env: Mapped[str | None] = mapped_column(String(64), nullable=True)
     base_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     api_version: Mapped[str | None] = mapped_column(String(50), nullable=True)  # required for azure-openai
+    # Only meaningful for `kind == "custom"` ("Test connection" calls this path, never a chat completion);
+    # `/health` is applied at use-time when unset, not stored as a default (`add-custom-model-provider-kind`).
+    health_check_path: Mapped[str | None] = mapped_column(String(200), nullable=True)
     ack_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )  # data-sharing acknowledgment

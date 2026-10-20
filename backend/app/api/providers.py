@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from typing import Literal
 from urllib.parse import urlparse
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -66,12 +67,15 @@ def _check_reasoning_effort(v: str | None) -> str | None:
 class ProviderIn(BaseModel):
     model_config = ConfigDict(extra="forbid")  # e.g. an `api_key` field is rejected, not ignored
 
-    kind: Literal["openai", "anthropic", "azure-openai", "ollama"]
+    kind: Literal["openai", "anthropic", "azure-openai", "ollama", "custom"]
     name: str
-    key_env: str | None = None  # not applicable to `ollama` - it has no key at all
-    base_url: str | None = None  # for `ollama`, this is that server's own address
+    key_env: str | None = None  # not applicable to `ollama`/`custom` - neither has a key at all
+    base_url: str | None = None  # for `ollama`/`custom`, this is that server's own address
     api_version: str | None = None  # required for azure-openai; unused by other kinds
-    acknowledge_data_sharing: bool = False  # not required for `ollama` - nothing leaves the machine
+    # Only meaningful for `kind == "custom"` - the path "Test connection" calls (never a chat completion);
+    # a documented default applies when unset (`add-custom-model-provider-kind`).
+    health_check_path: str | None = None
+    acknowledge_data_sharing: bool = False  # not required for `ollama`/`custom` - nothing leaves the machine
 
     @field_validator("name")
     @classmethod
@@ -95,6 +99,16 @@ class ProviderIn(BaseModel):
     def _version(cls, v: str | None) -> str | None:
         return _check_api_version(v)
 
+    @field_validator("health_check_path")
+    @classmethod
+    def _health_path(cls, v: str | None) -> str | None:
+        if v is None or v == "":
+            return None
+        v = v.strip()
+        if not v.startswith("/"):
+            raise ValueError("the health-check path must start with '/'")
+        return v
+
     @model_validator(mode="after")
     def _azure_requires_endpoint(self) -> ProviderIn:
         if self.kind == "azure-openai":
@@ -108,9 +122,15 @@ class ProviderIn(BaseModel):
         return self
 
     @model_validator(mode="after")
+    def _custom_requires_base_url(self) -> ProviderIn:
+        if self.kind == "custom" and not self.base_url:
+            raise ValueError("custom requires a base URL - it has no shared default endpoint")
+        return self
+
+    @model_validator(mode="after")
     def _non_ollama_requires_key_env(self) -> ProviderIn:
-        if self.kind != "ollama" and not self.key_env:
-            raise ValueError("key_env is required for every provider kind except 'ollama'")
+        if self.kind not in ("ollama", "custom") and not self.key_env:
+            raise ValueError("key_env is required for every provider kind except 'ollama' and 'custom'")
         return self
 
 
@@ -120,6 +140,7 @@ class ProviderUpdate(BaseModel):
     key_env: str | None = None
     base_url: str | None = None  # empty string clears it
     api_version: str | None = None  # empty string clears it
+    health_check_path: str | None = None  # empty string clears it; only meaningful for `kind == "custom"`
 
     @field_validator("key_env")
     @classmethod
@@ -135,6 +156,16 @@ class ProviderUpdate(BaseModel):
     @classmethod
     def _version(cls, v: str | None) -> str | None:
         return _check_api_version(v)
+
+    @field_validator("health_check_path")
+    @classmethod
+    def _health_path(cls, v: str | None) -> str | None:
+        if v is None or v == "":
+            return None
+        v = v.strip()
+        if not v.startswith("/"):
+            raise ValueError("the health-check path must start with '/'")
+        return v
 
 
 class ModelIn(BaseModel):
@@ -201,6 +232,7 @@ def _provider_out(request: Request, p: Provider) -> dict:
         "key_env": p.key_env,
         "base_url": p.base_url,
         "api_version": p.api_version,
+        "health_check_path": p.health_check_path,
         "key_available": available,
         "unavailable_reason": reason,
         "last_test_status": p.last_test_status,
@@ -220,9 +252,9 @@ def list_providers(request: Request, session: Session = Depends(get_session)):
 
 @router.post("/providers", status_code=201)
 def create_provider(body: ProviderIn, request: Request, session: Session = Depends(get_session)):
-    # an `ollama` provider sends nothing to anyone - the data-sharing acknowledgment this gate exists for simply
-    # does not apply to it (see ProviderIn's docstring field comment).
-    if body.kind != "ollama" and not body.acknowledge_data_sharing:
+    # `ollama`/`custom` send nothing to anyone - the data-sharing acknowledgment this gate exists for simply
+    # does not apply to either (see ProviderIn's docstring field comments).
+    if body.kind not in ("ollama", "custom") and not body.acknowledge_data_sharing:
         raise HTTPException(
             422, detail={"code": "acknowledgment_required", "message": ACK_TEXT, "field": "acknowledge_data_sharing"}
         )
@@ -233,8 +265,10 @@ def create_provider(body: ProviderIn, request: Request, session: Session = Depen
         key_env=body.key_env,
         base_url=body.base_url,
         api_version=body.api_version,
-        # `ollama` is never asked to acknowledge data sharing, so it never has anything to timestamp here either.
-        ack_at=None if body.kind == "ollama" else datetime.now(UTC),
+        health_check_path=body.health_check_path,
+        # Neither `ollama` nor `custom` is ever asked to acknowledge data sharing, so neither has anything to
+        # timestamp here either.
+        ack_at=None if body.kind in ("ollama", "custom") else datetime.now(UTC),
     )
     return _provider_out(request, p)
 
@@ -258,6 +292,7 @@ def update_provider(provider_id: int, body: ProviderUpdate, request: Request, se
                 "message": "azure-openai requires a base URL and an API version; they cannot be cleared.",
             },
         )
+    clear_health_check_path = "health_check_path" in fields and body.health_check_path is None
     p = repo.update_provider(
         session,
         provider_id,
@@ -266,6 +301,8 @@ def update_provider(provider_id: int, body: ProviderUpdate, request: Request, se
         clear_base_url=clear_base_url,
         api_version=body.api_version,
         clear_api_version=clear_api_version,
+        health_check_path=body.health_check_path,
+        clear_health_check_path=clear_health_check_path,
     )
     return _provider_out(request, p)
 
@@ -344,9 +381,31 @@ def _first_enabled_deployment(p: Provider) -> RegisteredModel | None:
     return next((m for m in p.models if m.enabled), None)
 
 
+async def _run_custom_health_check(request: Request, base: str, path: str | None) -> dict:
+    """A `custom` provider has no chat-completions surface to ping (`add-custom-model-provider-kind`) - this is
+    a plain, unauthenticated GET at a configurable health-check path (`/health` when unset), never a chat call.
+    A 2xx response is "working"; a connection failure or timeout is "unreachable"; anything else is a generic
+    "error" naming the status code, since a non-2xx response isn't one of the provider-specific failure shapes
+    (auth/rate-limit) every other kind's `ping()` can distinguish - a custom service has no agreed-upon shape for
+    those at all. Uses the same injected transport every other provider kind's test calls already use, when one
+    is configured (tests only; `None` in production means a real connection)."""
+    url = base + (path or "/health")
+    transport = request.app.state.provider_transport
+    try:
+        async with httpx.AsyncClient(timeout=10.0, transport=transport) as c:
+            resp = await c.get(url)
+    except (httpx.ConnectError, httpx.TimeoutException) as exc:
+        return {"status": "unreachable", "message": f"could not reach {url}: {exc}", "base_url": base}
+    if resp.is_success:
+        return {"status": "working", "message": f"{url} responded successfully.", "base_url": base}
+    return {"status": "error", "message": f"{url} responded with status {resp.status_code}.", "base_url": base}
+
+
 async def _run_connection_test(request: Request, p: Provider, base: str) -> dict:
     """The actual test, isolated from persistence so `test_provider` can store whatever this returns
     (`add-provider-availability-gating`) regardless of which branch produced it."""
+    if p.kind == "custom":
+        return await _run_custom_health_check(request, base, p.health_check_path)
     if p.kind != "ollama" and not request.app.state.router.keys.available(p.key_env):
         return {"status": "key_not_set", "message": _key_missing(p)["message"], "base_url": base}
     deployment, deployment_reasoning = None, False
@@ -392,7 +451,7 @@ async def available_models(provider_id: int, request: Request, session: Session 
     """The provider's own model list, with the ones already registered marked. Failing never blocks adding by
     id. `ollama` has no key to check - this lists whatever is currently pulled on that server."""
     p = repo.get_provider(session, provider_id)
-    if p.kind != "ollama" and not request.app.state.router.keys.available(p.key_env):
+    if p.kind not in ("ollama", "custom") and not request.app.state.router.keys.available(p.key_env):
         return JSONResponse(status_code=409, content={"detail": _key_missing(p)})
     if p.kind == "azure-openai":
         # no inference-plane endpoint lists deployments (design D9); never attempt a call that always fails
@@ -402,6 +461,18 @@ async def available_models(provider_id: int, request: Request, session: Session 
                 "detail": {
                     "code": "not_supported",
                     "message": "Azure OpenAI deployments cannot be auto-discovered; add a deployment by name.",
+                }
+            },
+        )
+    if p.kind == "custom":
+        # a custom service has no agreed-upon listing endpoint shape (`add-custom-model-provider-kind`); never
+        # attempt a call that assumes one
+        return JSONResponse(
+            status_code=409,
+            content={
+                "detail": {
+                    "code": "not_supported",
+                    "message": "A custom provider's models cannot be auto-discovered; add a model id by hand.",
                 }
             },
         )

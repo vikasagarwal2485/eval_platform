@@ -52,6 +52,10 @@ def create_app(
     app.state.session_factory = session_factory
 
     app.state.hub = EventHub()
+    # Stored directly too (not just folded into the backend factories) so a `custom`-kind provider's health
+    # check (`add-custom-model-provider-kind`) - a plain HTTP call with no `ModelBackend` of its own - can be
+    # tested against the same injected transport every other provider kind's calls already use.
+    app.state.provider_transport = provider_transport
     app.state.router = ModelRouter(
         app.state.ollama, session_factory, factories=make_factories(settings, provider_transport)
     )

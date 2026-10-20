@@ -17,7 +17,8 @@ from sqlalchemy.orm import Session
 from app import repo
 from app.api.deps import get_session
 from app.core.events import agent_channel
-from app.core.gateway_sync import agent_slug, model_group_name
+from app.core.gateway_sync import agent_slug, custom_kind_endpoint, model_group_name
+from app.schemas import declared_model_ref
 from app.traces.schemas import SpanEvent, TurnEndEvent, TurnStartEvent, UnsupportedSchemaVersion, validate_batch
 
 router = APIRouter(prefix="/api/ingest")
@@ -51,13 +52,23 @@ async def whoami(
 
     slug = agent_slug(agent.name)
     declared_models = agent.declared_models or {}
+    gateway_model_groups: dict[str, str] = {}
+    custom_model_endpoints: dict[str, dict] = {}
+    for task_type, entry in declared_models.items():
+        # A task whose declared model resolves to a `custom`-kind provider (`add-custom-model-provider-kind`)
+        # has no gateway group - there is nothing for the gateway to route to - so its connection info is
+        # exposed directly instead, rather than a group name that would never actually exist for it.
+        endpoint = custom_kind_endpoint(session, declared_model_ref(entry))
+        if endpoint is not None:
+            custom_model_endpoints[task_type] = endpoint
+        else:
+            gateway_model_groups[task_type] = model_group_name(slug, task_type)
     return {
         "name": agent.name,
         "kind": agent.kind,
         "declared_models": declared_models,
-        "gateway_model_groups": {
-            task_type: model_group_name(slug, task_type) for task_type in declared_models
-        },
+        "gateway_model_groups": gateway_model_groups,
+        "custom_model_endpoints": custom_model_endpoints,
     }
 
 

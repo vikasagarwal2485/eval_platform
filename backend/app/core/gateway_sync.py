@@ -45,7 +45,7 @@ _SLUG_RE = re.compile(r"[^a-z0-9]+")
 
 @dataclass(frozen=True)
 class SyncResult:
-    status: str  # "ok" | "error" | "skipped"
+    status: str  # "ok" | "error" | "skipped" | "not_gateway_routed"
     detail: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
@@ -107,6 +107,25 @@ def to_litellm_params(session: Session, ref: str, params: dict[str, Any] | None,
     if params:
         litellm_params.update(params)
     return litellm_params
+
+
+def custom_kind_endpoint(session: Session, ref: str) -> dict[str, str] | None:
+    """`ref`'s connection info if it resolves to a registered `custom`-kind provider
+    (`add-custom-model-provider-kind`) - a model with no gateway deployment to create, ever. `None` for every
+    other case (a bare/local ref, an unregistered provider, or any other kind), leaving those entirely to
+    `to_litellm_params`'s existing resolution and error handling, unchanged. Also reused by `GET
+    /api/ingest/v1/whoami` (`app/api/ingest.py`) to decide, per declared task, whether to expose this
+    connection info instead of a gateway group name - not private to this module."""
+    if not is_cloud_ref(ref):
+        return None
+    try:
+        model_ref = parse_ref(ref)
+    except ValueError:
+        return None
+    provider = session.scalar(select(Provider).where(Provider.name == model_ref.provider))
+    if provider is None or provider.kind != "custom":
+        return None
+    return {"base_url": provider.base_url or "", "model_id": model_ref.model}
 
 
 def _existing_model_id(client: httpx.Client, group_name: str) -> tuple[str | None, bool]:
@@ -209,6 +228,19 @@ def sync_agent_model_groups(
         for task_type, entry in current.items():
             ref = declared_model_ref(entry)
             params = entry.get("params") if isinstance(entry, dict) else None
+
+            if custom_kind_endpoint(session, ref) is not None:
+                # Never gateway-routed - an explicit status, not an error (add-custom-model-provider-kind). Any
+                # fallback this task type declares doesn't apply either: there is no primary group to fall back
+                # from. Clean up whatever gateway groups this task type may have had from a prior,
+                # gateway-routable declared model - `_delete_group` is a no-op if there's nothing to remove.
+                _delete_group(client, model_group_name(slug, task_type))
+                _delete_group(client, fallback_group_name(slug, task_type))
+                results[task_type] = SyncResult(
+                    "not_gateway_routed", "custom-kind model; not routed through the gateway"
+                ).as_dict()
+                continue
+
             try:
                 litellm_params = to_litellm_params(session, ref, params, settings)
             except ValueError as exc:

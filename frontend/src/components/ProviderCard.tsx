@@ -152,11 +152,13 @@ const MODEL_ID_PLACEHOLDER: Record<string, string> = {
   anthropic: 'claude-sonnet-4-20250514',
   'azure-openai': 'my-o3-mini-deployment',
   ollama: 'qwen3:8b',
+  custom: 'classify',
 };
 
 function AddModels({ provider }: { provider: Provider }) {
   const m = useProviderMutations();
   const isAzure = provider.kind === 'azure-openai';
+  const isCustom = provider.kind === 'custom';
   const [modelId, setModelId] = useState('');
   const [reasoning, setReasoning] = useState(false);
   const [reasoningEffort, setReasoningEffort] = useState('');
@@ -252,7 +254,7 @@ function AddModels({ provider }: { provider: Provider }) {
         <button type="submit" disabled={!modelId.trim() || m.addModel.isPending}>
           Add model
         </button>
-        {!isAzure && (
+        {!isAzure && !isCustom && (
           <button
             type="button"
             onClick={() =>
@@ -269,6 +271,11 @@ function AddModels({ provider }: { provider: Provider }) {
       {isAzure && (
         <p className="small muted">
           Azure OpenAI deployments can&rsquo;t be auto-discovered; add each deployment name above.
+        </p>
+      )}
+      {isCustom && (
+        <p className="small muted">
+          A custom provider&rsquo;s models can&rsquo;t be auto-discovered; add each model id above.
         </p>
       )}
       {!!m.addModel.error && <ErrorBox error={m.addModel.error} title="Could not add the model." />}
@@ -325,14 +332,17 @@ function EditProvider({ provider, onDone }: { provider: Provider; onDone: () => 
   const { update } = useProviderMutations();
   const isAzure = provider.kind === 'azure-openai';
   const isOllama = provider.kind === 'ollama';
+  const isCustom = provider.kind === 'custom';
+  const noKey = isOllama || isCustom;
   const [env, setEnv] = useState(provider.key_env ?? '');
   const [url, setUrl] = useState(provider.base_url ?? '');
   const [apiVersion, setApiVersion] = useState(provider.api_version ?? '');
   const [err, setErr] = useState<string | null>(null);
   const save = (e: React.FormEvent) => {
     e.preventDefault();
-    let problem = isOllama ? validateBaseUrl(url) : validateEnvName(env) ?? validateBaseUrl(url);
+    let problem = noKey ? validateBaseUrl(url) : validateEnvName(env) ?? validateBaseUrl(url);
     if (!problem && isAzure && !url.trim()) problem = 'Azure OpenAI requires a base URL.';
+    if (!problem && isCustom && !url.trim()) problem = 'A custom provider requires a base URL.';
     if (!problem && isAzure && !apiVersion.trim()) problem = validateApiVersion(apiVersion);
     setErr(problem);
     if (problem) return;
@@ -340,7 +350,7 @@ function EditProvider({ provider, onDone }: { provider: Provider; onDone: () => 
       {
         id: provider.id,
         base_url: url.trim(),
-        ...(isOllama ? {} : { key_env: env.trim() }),
+        ...(noKey ? {} : { key_env: env.trim() }),
         ...(isAzure ? { api_version: apiVersion.trim() } : {}),
       },
       { onSuccess: onDone },
@@ -349,7 +359,7 @@ function EditProvider({ provider, onDone }: { provider: Provider; onDone: () => 
   return (
     <form onSubmit={save} className="stack" aria-label={`Edit ${provider.name}`} noValidate>
       <div className="row">
-        {!isOllama && (
+        {!noKey && (
           <div className="field" style={{ margin: 0 }}>
             <label htmlFor={`ee-${provider.id}`}>API key environment variable</label>
             <input
@@ -362,7 +372,9 @@ function EditProvider({ provider, onDone }: { provider: Provider; onDone: () => 
           </div>
         )}
         <div className="field" style={{ margin: 0, flex: 1 }}>
-          <label htmlFor={`eu-${provider.id}`}>{isOllama ? 'Ollama server URL' : 'Base URL'}</label>
+          <label htmlFor={`eu-${provider.id}`}>
+            {isOllama ? 'Ollama server URL' : isCustom ? 'Service base URL' : 'Base URL'}
+          </label>
           <input
             id={`eu-${provider.id}`}
             type="text"
@@ -407,15 +419,17 @@ export default function ProviderCard({ provider }: { provider: Provider }) {
   const [editing, setEditing] = useState(false);
   const status = result ? STATUS_LABEL[result.status] : null;
   const isOllama = provider.kind === 'ollama';
+  const isCustom = provider.kind === 'custom';
+  const noKey = isOllama || isCustom;
 
   return (
     <section className="card" aria-label={`Provider ${provider.name}`}>
       <div className="card-head">
         <h2>{provider.name}</h2>
         <span className="badge info">{KIND_LABEL[provider.kind]}</span>
-        {isOllama && <span className="badge info">no key needed</span>}
+        {noKey && <span className="badge info">no key needed</span>}
         {!provider.key_available && <span className="badge warn">unavailable</span>}
-        {!isOllama && provider.key_available && <span className="badge good">key ready</span>}
+        {!noKey && provider.key_available && <span className="badge good">key ready</span>}
         <span className="spacer" />
         <button
           onClick={() => m.test.mutate(provider.id, { onSuccess: setResult })}
@@ -444,6 +458,11 @@ export default function ProviderCard({ provider }: { provider: Provider }) {
       <p className="small muted" style={{ marginTop: 0 }}>
         {isOllama ? (
           <>Server URL <code>{provider.base_url || 'http://localhost:11434 (default)'}</code></>
+        ) : isCustom ? (
+          <>
+            Base URL <code>{provider.base_url}</code> · health-check path{' '}
+            <code>{provider.health_check_path || '/health (default)'}</code>
+          </>
         ) : (
           <>
             Key variable <code>{provider.key_env}</code>

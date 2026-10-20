@@ -187,11 +187,85 @@ def test_whoami_succeeds_even_when_the_agent_is_paused(settings, file_session_fa
         assert r.json()["name"] == "bot"
 
 
+# ------------------------------------------------------------------ add-custom-model-provider-kind
+def test_whoami_exposes_a_custom_providers_endpoint_instead_of_a_gateway_group(settings, file_session_factory):
+    with file_session_factory() as session:
+        repo.create_provider(
+            session,
+            kind="custom",
+            name="context-classifier",
+            key_env=None,
+            base_url="http://127.0.0.1:8765",
+            ack_at=None,
+        )
+        agent, token = repo.create_agent(
+            session,
+            name="classifier-router",
+            kind="reasoning",
+            declared_models={"routing": "qwen3:8b", "classification": "@context-classifier/classify"},
+            eval_config=EvalConfigIn(),
+            rubric=None,
+        )
+        session.commit()
+    with new_client(settings, file_session_factory, FakeOllama()) as c:
+        body = c.get("/api/ingest/v1/whoami", headers={"Authorization": f"Bearer {token}"}).json()
+    # the gateway-routed task is unaffected
+    assert body["gateway_model_groups"] == {"routing": "classifier-router__routing"}
+    # the custom-kind task has no gateway group at all - its connection info instead
+    assert "classification" not in body["gateway_model_groups"]
+    assert body["custom_model_endpoints"] == {
+        "classification": {"base_url": "http://127.0.0.1:8765", "model_id": "classify"}
+    }
+
+
+def test_whoami_custom_model_endpoints_is_empty_when_nothing_is_custom(settings, file_session_factory):
+    agent_id, token = _make_agent(file_session_factory)
+    with new_client(settings, file_session_factory, FakeOllama()) as c:
+        body = c.get("/api/ingest/v1/whoami", headers={"Authorization": f"Bearer {token}"}).json()
+    assert body["custom_model_endpoints"] == {}
+
+
+def test_whoami_custom_endpoint_carries_no_secret_even_with_an_adversarial_name(settings, file_session_factory):
+    """A custom provider's base URL is returned as-is (it's an address, not a credential) - but nothing beyond
+    `base_url`/`model_id` must ever appear for it, even if an operator names things to look secret-like."""
+    with file_session_factory() as session:
+        repo.create_provider(
+            session,
+            kind="custom",
+            name="looks-like-a-token-abc123",
+            key_env=None,
+            base_url="http://127.0.0.1:9999/sk-not-a-real-secret",
+            ack_at=None,
+        )
+        agent, token = repo.create_agent(
+            session,
+            name="bot2",
+            kind="reasoning",
+            declared_models={"classification": "@looks-like-a-token-abc123/model-id"},
+            eval_config=EvalConfigIn(),
+            rubric=None,
+        )
+        session.commit()
+    with new_client(settings, file_session_factory, FakeOllama()) as c:
+        body = c.get("/api/ingest/v1/whoami", headers={"Authorization": f"Bearer {token}"}).json()
+    endpoint = body["custom_model_endpoints"]["classification"]
+    assert set(endpoint) == {"base_url", "model_id"}
+    assert endpoint == {"base_url": "http://127.0.0.1:9999/sk-not-a-real-secret", "model_id": "model-id"}
+    for forbidden in ("token", "token_hash", "token_prefix", "api_key", "gateway"):
+        assert forbidden not in body
+
+
 def test_whoami_never_returns_a_secret(settings, file_session_factory):
     _agent_id, token = _make_agent(file_session_factory)
     with new_client(settings, file_session_factory, FakeOllama()) as c:
         body = c.get("/api/ingest/v1/whoami", headers={"Authorization": f"Bearer {token}"}).json()
-        assert set(body) == {"name", "kind", "declared_models", "gateway_model_groups"}
+        assert set(body) == {
+            "name",
+            "kind",
+            "declared_models",
+            "gateway_model_groups",
+            "custom_model_endpoints",
+        }
         serialized = str(body)
         assert token not in serialized
         for forbidden in ("token", "token_hash", "token_prefix", "api_key", "gateway"):

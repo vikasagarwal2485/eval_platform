@@ -277,7 +277,9 @@ def test_sync_removes_the_fallback_group_when_fallback_is_cleared_but_task_type_
     agent.declared_models = {"reasoning": "qwen3:8b"}
     session.flush()
     results = sync_agent_model_groups(
-        session, agent, _settings(),
+        session,
+        agent,
+        _settings(),
         previous_declared_models={"reasoning": {"model": "qwen3:8b", "fallback": "gemma4:e4b"}},
     )
     assert results["reasoning__fallback"] == {"status": "ok"}
@@ -290,7 +292,9 @@ def test_sync_removes_the_fallback_group_when_its_task_type_is_removed(session, 
     agent.declared_models = {"generation": "qwen3:8b"}
     session.flush()
     results = sync_agent_model_groups(
-        session, agent, _settings(),
+        session,
+        agent,
+        _settings(),
         previous_declared_models={
             "reasoning": {"model": "qwen3:8b", "fallback": "gemma4:e4b"},
             "generation": "qwen3:8b",
@@ -346,3 +350,65 @@ def test_provider_credential_is_never_sent_as_a_literal_value(session, mock_gate
     for _method, _path, body in mock_gateway.calls:
         if body:
             assert json.dumps(body).count("OPENAI_MAIN_KEY") <= 1  # only the os.environ/ reference, nowhere else
+
+
+# ------------------------------------------------------------------ add-custom-model-provider-kind
+def test_custom_kind_declared_model_is_not_gateway_routed_not_an_error(session, mock_gateway):
+    repo.create_provider(
+        session, kind="custom", name="context-classifier", key_env=None, base_url="http://127.0.0.1:8765", ack_at=None
+    )
+    agent = _agent(session, {"classification": "@context-classifier/classify"})
+    results = sync_agent_model_groups(session, agent, _settings())
+    assert results == {
+        "classification": {
+            "status": "not_gateway_routed",
+            "detail": "custom-kind model; not routed through the gateway",
+        }
+    }
+    assert mock_gateway.db_models == {}  # no deployment ever created for it
+
+
+def test_custom_kind_alongside_a_normal_task_type_only_the_custom_one_is_skipped(session, mock_gateway):
+    repo.create_provider(
+        session, kind="custom", name="context-classifier", key_env=None, base_url="http://127.0.0.1:8765", ack_at=None
+    )
+    agent = _agent(session, {"reasoning": "qwen3:8b", "classification": "@context-classifier/classify"})
+    results = sync_agent_model_groups(session, agent, _settings())
+    assert results["reasoning"] == {"status": "ok"}
+    assert results["classification"]["status"] == "not_gateway_routed"
+    assert {m["model_name"] for m in mock_gateway.db_models.values()} == {"my-reasoner__reasoning"}
+
+
+def test_switching_a_task_type_from_gateway_routed_to_custom_removes_its_old_group(session, mock_gateway):
+    agent = _agent(session, {"classification": "qwen3:8b"})
+    sync_agent_model_groups(session, agent, _settings())
+    assert {m["model_name"] for m in mock_gateway.db_models.values()} == {"my-reasoner__classification"}
+
+    repo.create_provider(
+        session, kind="custom", name="context-classifier", key_env=None, base_url="http://127.0.0.1:8765", ack_at=None
+    )
+    agent.declared_models = {"classification": "@context-classifier/classify"}
+    session.flush()
+    results = sync_agent_model_groups(
+        session, agent, _settings(), previous_declared_models={"classification": "qwen3:8b"}
+    )
+    assert results["classification"]["status"] == "not_gateway_routed"
+    assert mock_gateway.db_models == {}  # the old gateway-routed group was removed, not left orphaned
+
+
+def test_a_fallback_declared_alongside_a_custom_kind_primary_is_also_never_gateway_routed(session, mock_gateway):
+    repo.create_provider(
+        session, kind="custom", name="context-classifier", key_env=None, base_url="http://127.0.0.1:8765", ack_at=None
+    )
+    agent = _agent(
+        session,
+        {"classification": {"model": "@context-classifier/classify", "fallback": "qwen3:8b"}},
+    )
+    results = sync_agent_model_groups(session, agent, _settings())
+    assert results == {
+        "classification": {
+            "status": "not_gateway_routed",
+            "detail": "custom-kind model; not routed through the gateway",
+        }
+    }
+    assert mock_gateway.db_models == {}  # neither the primary nor its fallback ever gets a gateway deployment

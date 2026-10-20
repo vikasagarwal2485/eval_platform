@@ -40,6 +40,7 @@ def test_register_a_provider(client, monkeypatch):
         "key_env",
         "base_url",
         "api_version",
+        "health_check_path",
         "key_available",
         "unavailable_reason",
         "last_test_status",

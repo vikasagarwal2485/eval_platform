@@ -22,7 +22,7 @@ export interface ModelInfo {
   unavailable_reason: string | null;
 }
 export type ModelSource = 'local' | 'cloud';
-export type ProviderKind = 'openai' | 'anthropic' | 'azure-openai' | 'ollama';
+export type ProviderKind = 'openai' | 'anthropic' | 'azure-openai' | 'ollama' | 'custom';
 
 export interface Health {
   status: string;
@@ -359,9 +359,12 @@ export interface Provider {
   base_url: string | null;
   /** required for azure-openai; unused by other kinds */
   api_version: string | null;
+  /** only meaningful for `custom` - the path "Test connection" calls (never a chat completion); a documented
+   * default applies when unset */
+  health_check_path: string | null;
   /** whether this provider is actually usable right now (`add-provider-availability-gating`): the key is
-   * present (always true for `ollama`, which has none) AND its last connection test, if one was ever run,
-   * didn't fail. The key itself is never exposed. */
+   * present (always true for `ollama`/`custom`, neither of which has one) AND its last connection test, if one
+   * was ever run, didn't fail. The key itself is never exposed. */
   key_available: boolean;
   /** why `key_available` is false; null when it's true */
   unavailable_reason: string | null;
@@ -377,9 +380,10 @@ export interface Provider {
 export interface ProviderCreate {
   kind: ProviderKind;
   name: string;
-  key_env?: string | null; // required for every kind except `ollama`
+  key_env?: string | null; // required for every kind except `ollama`/`custom`
   base_url?: string | null;
   api_version?: string | null;
+  health_check_path?: string | null; // only meaningful for `custom`
   acknowledge_data_sharing: boolean;
 }
 export type ConnectionStatus =

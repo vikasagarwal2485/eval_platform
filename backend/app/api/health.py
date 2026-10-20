@@ -52,13 +52,16 @@ def cloud_models(request: Request) -> list[ModelInfo]:
     model itself disabled on the Models page, is caught here too, not just an empty env var. A disabled model
     is still listed (never silently dropped - `add-model-classification-tag`), just shown unavailable with the
     reason, the same way a failed-key model already was. Excludes models registered under an `ollama`-kind
-    provider (`add-ollama-provider-kind`) - those are local, not cloud; see `_registered_ollama_models`."""
+    provider (`add-ollama-provider-kind`) - those are local, not cloud; see `_registered_ollama_models`. Also
+    excludes `custom`-kind models (`add-custom-model-provider-kind`) entirely - not local, not cloud, not a chat
+    model at all, so they must never appear anywhere a chat model is expected (Run Evaluation setup, a
+    declared-model or evaluator picker) - not even marked unavailable."""
     keys = request.app.state.router.keys
     out: list[ModelInfo] = []
     with request.app.state.session_factory() as s:
         for m in repo.list_registered_models(s):
             p = m.provider
-            if p.kind == "ollama":
+            if p.kind in ("ollama", "custom"):
                 continue
             ok, reason = _disabled_or(*provider_availability(p, keys), m)
             out.append(

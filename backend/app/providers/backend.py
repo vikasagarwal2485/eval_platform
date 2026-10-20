@@ -55,14 +55,15 @@ def provider_availability(p: Provider, keys: KeyProvider) -> tuple[bool, str | N
     are listed, gated for selection, or preflighted before a run (`add-provider-availability-gating`).
 
     Two independent things can make a provider unusable, and only the second needs a cached result to catch:
-    - its key env var isn't set right now (skipped for `ollama`, which has no key) - a cheap, always-live check;
+    - its key env var isn't set right now (skipped for `ollama`/`custom`, neither of which has a key) - a cheap,
+      always-live check;
     - its last "Test connection" call (`POST /providers/{id}/test`), if one was ever run, didn't succeed - a key
       that's present but wrong, or an Ollama server that's actually unreachable, looks identical to a working
       one under the first check alone. A provider that has never been tested is treated as available - this is
       a deliberate trade-off (see design.md): re-pinging every provider on every page load would add real
       latency and cost for something "Test connection" already exists to do explicitly; staleness is resolved by
       testing again, not by testing silently in the background."""
-    if p.kind != "ollama" and not keys.available(p.key_env):
+    if p.kind not in ("ollama", "custom") and not keys.available(p.key_env):
         return False, f"API key not set: environment variable {p.key_env} is empty"
     if p.last_test_status and p.last_test_status != "working":
         return False, f"Last connection test failed: {p.last_test_message or p.last_test_status}"

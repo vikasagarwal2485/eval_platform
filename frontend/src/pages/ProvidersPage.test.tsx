@@ -21,6 +21,7 @@ const provider = (over = {}) => ({
   name: 'oa',
   key_env: 'OA_KEY',
   base_url: null,
+  health_check_path: null,
   key_available: true,
   unavailable_reason: null,
   last_test_status: null,
@@ -135,6 +136,7 @@ describe('registering a provider', () => {
       key_env: 'OPENAI_API_KEY',
       base_url: null,
       api_version: null,
+      health_check_path: null,
       acknowledge_data_sharing: true,
     });
   });
@@ -183,6 +185,7 @@ describe('registering a provider', () => {
       key_env: 'AZURE_OPENAI_API_KEY',
       base_url: 'https://my-resource.openai.azure.com',
       api_version: '2024-12-01-preview',
+      health_check_path: null,
       acknowledge_data_sharing: true,
     });
   });
@@ -566,6 +569,7 @@ describe('Ollama provider card (add-ollama-provider-kind)', () => {
       key_env: null,
       base_url: null,
       api_version: null,
+      health_check_path: null,
       acknowledge_data_sharing: false,
     });
   });
@@ -617,5 +621,77 @@ describe('Ollama provider card (add-ollama-provider-kind)', () => {
     await user.click(within(c).getByRole('button', { name: 'Edit' }));
     expect(within(c).queryByLabelText('API key environment variable')).toBeNull();
     expect(within(c).getByLabelText('Ollama server URL')).toBeInTheDocument();
+  });
+});
+
+describe('Custom provider card (add-custom-model-provider-kind)', () => {
+  const custom = (over = {}) =>
+    provider({
+      kind: 'custom',
+      name: 'context-classifier',
+      key_env: null,
+      base_url: 'http://127.0.0.1:8765',
+      health_check_path: null,
+      data_sharing_acknowledged_at: null,
+      models: [],
+      ...over,
+    });
+  const customCard = async () => screen.findByRole('region', { name: 'Provider context-classifier' });
+
+  it('the kind dropdown offers Custom', async () => {
+    const { user } = setup([]);
+    await screen.findByRole('heading', { name: 'Add a model' });
+    await user.selectOptions(screen.getByLabelText('Provider'), 'custom');
+    expect(screen.getByLabelText(/Service base URL/)).toBeInTheDocument();
+    expect(screen.queryByLabelText('API key environment variable')).toBeNull();
+    expect(screen.queryByRole('checkbox', { name: /I understand/ })).toBeNull();
+  });
+
+  it('requires a base URL', async () => {
+    const { user, calls } = setup([]);
+    await user.selectOptions(await screen.findByLabelText('Provider'), 'custom');
+    await user.click(screen.getByRole('button', { name: 'Register' }));
+    expect(await screen.findByText(/enter this service.s base url/i)).toBeInTheDocument();
+    expect(posted(calls, '/providers')).toHaveLength(0);
+  });
+
+  it('registers a custom provider with an optional health-check path, no key and no acknowledgment', async () => {
+    const { user, calls } = setup([], { 'POST /providers': custom() });
+    await user.selectOptions(await screen.findByLabelText('Provider'), 'custom');
+    await user.type(screen.getByLabelText(/Service base URL/), 'http://127.0.0.1:8765');
+    await user.type(screen.getByLabelText(/Health-check path/), '/healthz');
+    await user.click(screen.getByRole('button', { name: 'Register' }));
+    await waitFor(() => expect(posted(calls, '/providers')).toHaveLength(1));
+    expect(posted(calls, '/providers')[0]).toEqual({
+      kind: 'custom',
+      name: 'custom-model',
+      key_env: null,
+      base_url: 'http://127.0.0.1:8765',
+      api_version: null,
+      health_check_path: '/healthz',
+      acknowledge_data_sharing: false,
+    });
+  });
+
+  it('shows "no key needed" instead of a key-ready/not-set badge', async () => {
+    setup([custom()]);
+    const c = await customCard();
+    expect(within(c).getByText('no key needed')).toBeInTheDocument();
+    expect(within(c).queryByText('key ready')).toBeNull();
+    expect(within(c).queryByText('key not set')).toBeNull();
+  });
+
+  it('auto-discovery is not offered for a custom provider', async () => {
+    setup([custom()]);
+    const c = await customCard();
+    expect(within(c).queryByRole('button', { name: /Fetch models from/ })).toBeNull();
+  });
+
+  it('editing hides the key field and relabels the URL field', async () => {
+    const { user } = setup([custom()]);
+    const c = await customCard();
+    await user.click(within(c).getByRole('button', { name: 'Edit' }));
+    expect(within(c).queryByLabelText('API key environment variable')).toBeNull();
+    expect(within(c).getByLabelText('Service base URL')).toBeInTheDocument();
   });
 });

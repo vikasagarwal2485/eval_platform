@@ -7,6 +7,7 @@ import {
   validateApiVersion,
   validateBaseUrl,
   validateEnvName,
+  validateHealthCheckPath,
   validateName,
 } from '../lib/providers';
 import { ErrorBox } from './ui';
@@ -19,11 +20,14 @@ export default function ProviderForm({ onDone }: { onDone?: () => void }) {
   const [env, setEnv] = useState(KIND_DEFAULTS.openai.env);
   const [baseUrl, setBaseUrl] = useState('');
   const [apiVersion, setApiVersion] = useState('');
+  const [healthCheckPath, setHealthCheckPath] = useState('');
   const [ack, setAck] = useState(false);
   const [touched, setTouched] = useState({ name: false, env: false });
   const [errors, setErrors] = useState<Record<string, string>>({});
   const isAzure = kind === 'azure-openai';
   const isOllama = kind === 'ollama';
+  const isCustom = kind === 'custom';
+  const noKey = isOllama || isCustom;
 
   const changeKind = (k: ProviderKind) => {
     setKind(k);
@@ -36,7 +40,7 @@ export default function ProviderForm({ onDone }: { onDone?: () => void }) {
     const found: Record<string, string> = {};
     const n = validateName(name);
     if (n) found.name = n;
-    if (!isOllama) {
+    if (!noKey) {
       const v = validateEnvName(env);
       if (v) found.env = v;
     }
@@ -47,28 +51,36 @@ export default function ProviderForm({ onDone }: { onDone?: () => void }) {
       const a = validateApiVersion(apiVersion);
       if (u) found.baseUrl = u;
       if (a) found.apiVersion = a;
+    } else if (isCustom) {
+      // required for custom: there is no shared default endpoint of any kind
+      const u = validateBaseUrl(baseUrl) ?? (baseUrl.trim() ? null : 'Enter this service’s base URL.');
+      if (u) found.baseUrl = u;
+      const h = validateHealthCheckPath(healthCheckPath);
+      if (h) found.healthCheckPath = h;
     } else {
       const u = validateBaseUrl(baseUrl);
       if (u) found.baseUrl = u;
     }
-    // ollama sends nothing anywhere, so there is nothing to acknowledge
-    if (!isOllama && !ack) found.ack = `Acknowledge that evaluation content is sent to ${KIND_LABEL[kind]}.`;
+    // ollama/custom send nothing anywhere, so there is nothing to acknowledge
+    if (!noKey && !ack) found.ack = `Acknowledge that evaluation content is sent to ${KIND_LABEL[kind]}.`;
     setErrors(found);
     if (Object.keys(found).length) return;
     create.mutate(
       {
         kind,
         name,
-        key_env: isOllama ? null : env.trim(),
+        key_env: noKey ? null : env.trim(),
         base_url: baseUrl.trim() || null,
         api_version: isAzure ? apiVersion.trim() : null,
-        acknowledge_data_sharing: !isOllama,
+        health_check_path: isCustom ? healthCheckPath.trim() || null : null,
+        acknowledge_data_sharing: !noKey,
       },
       {
         onSuccess: () => {
           setAck(false);
           setBaseUrl('');
           setApiVersion('');
+          setHealthCheckPath('');
           setTouched({ name: false, env: false });
           onDone?.();
         },
@@ -80,10 +92,16 @@ export default function ProviderForm({ onDone }: { onDone?: () => void }) {
     <form className="card" onSubmit={submit} aria-labelledby="add-provider-h" noValidate>
       <h2 id="add-provider-h">Add a model</h2>
       <p className="small muted">
-        {isOllama
-          ? "Register your local Ollama server, then fetch and add its models one by one - same as any other provider, but with no key involved."
-          : <>Enter the <strong>name</strong> of the environment variable that holds the key. The
-            application reads it when it makes a call and never stores, shows or exports it.</>}
+        {isOllama ? (
+          "Register your local Ollama server, then fetch and add its models one by one - same as any other provider, but with no key involved."
+        ) : isCustom ? (
+          'Register a directly-called HTTP service that is not chat-completions-shaped (for example, a classifier an agent calls on its own) - no key involved; add its models by typing an id by hand.'
+        ) : (
+          <>
+            Enter the <strong>name</strong> of the environment variable that holds the key. The
+            application reads it when it makes a call and never stores, shows or exports it.
+          </>
+        )}
       </p>
       <div className="row" style={{ alignItems: 'flex-start' }}>
         <div className="field">
@@ -97,6 +115,7 @@ export default function ProviderForm({ onDone }: { onDone?: () => void }) {
             <option value="anthropic">Anthropic</option>
             <option value="azure-openai">Azure OpenAI</option>
             <option value="ollama">Ollama</option>
+            <option value="custom">Custom</option>
           </select>
         </div>
         <div className="field">
@@ -120,7 +139,7 @@ export default function ProviderForm({ onDone }: { onDone?: () => void }) {
             </div>
           )}
         </div>
-        {!isOllama && (
+        {!noKey && (
           <div className="field">
             <label htmlFor="pv-env">API key environment variable</label>
             <input
@@ -147,13 +166,15 @@ export default function ProviderForm({ onDone }: { onDone?: () => void }) {
       <div className="row" style={{ alignItems: 'flex-start' }}>
         <div className="field" style={{ flex: 1 }}>
           <label htmlFor="pv-url">
-            {isOllama ? 'Ollama server URL' : 'Base URL'}{' '}
+            {isOllama ? 'Ollama server URL' : isCustom ? 'Service base URL' : 'Base URL'}{' '}
             <span className="hint">
               {isAzure
                 ? '(required: your Azure resource endpoint)'
                 : isOllama
                   ? '(optional: defaults to http://localhost:11434)'
-                  : '(optional: gateways and OpenAI-compatible endpoints)'}
+                  : isCustom
+                    ? '(required: this service has no shared default endpoint)'
+                    : '(optional: gateways and OpenAI-compatible endpoints)'}
             </span>
           </label>
           <input
@@ -166,7 +187,9 @@ export default function ProviderForm({ onDone }: { onDone?: () => void }) {
                 ? 'https://my-resource.openai.azure.com'
                 : isOllama
                   ? 'http://localhost:11434'
-                  : 'https://…'
+                  : isCustom
+                    ? 'http://127.0.0.1:8765'
+                    : 'https://…'
             }
             aria-invalid={!!errors.baseUrl}
             onChange={(e) => setBaseUrl(e.target.value)}
@@ -187,8 +210,24 @@ export default function ProviderForm({ onDone }: { onDone?: () => void }) {
             {errors.apiVersion && <div className="field-error">{errors.apiVersion}</div>}
           </div>
         )}
+        {isCustom && (
+          <div className="field">
+            <label htmlFor="pv-health-path">
+              Health-check path <span className="hint">(optional: defaults to /health)</span>
+            </label>
+            <input
+              id="pv-health-path"
+              type="text"
+              value={healthCheckPath}
+              placeholder="/health"
+              aria-invalid={!!errors.healthCheckPath}
+              onChange={(e) => setHealthCheckPath(e.target.value)}
+            />
+            {errors.healthCheckPath && <div className="field-error">{errors.healthCheckPath}</div>}
+          </div>
+        )}
       </div>
-      {!isOllama && (
+      {!noKey && (
         <>
           <label className="check">
             <input
