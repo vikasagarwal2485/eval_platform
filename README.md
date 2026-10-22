@@ -1,4 +1,4 @@
-# LLM Eval Platform
+# Model Eval Platform
 
 Compare **accuracy, reasoning and speed** of the models installed in your local [Ollama](https://ollama.com), *and*
 of models hosted by OpenAI or Anthropic. Pick several models in a web UI, send them classification, reasoning and

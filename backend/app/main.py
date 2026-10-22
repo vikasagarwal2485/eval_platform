@@ -41,7 +41,7 @@ def create_app(
         await app.state.runner.stop()
         await app.state.router.aclose()  # closes enterprise backends and the Ollama client
 
-    app = FastAPI(title="LLM Eval Platform", lifespan=lifespan)
+    app = FastAPI(title="Model Eval Platform", lifespan=lifespan)
     app.state.settings = settings
     app.state.ollama = ollama or HttpOllamaClient(settings.ollama_base_url, settings.request_timeout_s)
     app.state.discovery = ModelDiscovery(app.state.ollama)

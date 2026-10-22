@@ -1,18 +1,24 @@
 # Reference agents
 
-Two small, runnable agents that demonstrate the live-agent-evaluation loop end to end: they run outside the eval
+Small, runnable agents that demonstrate the live-agent-evaluation loop end to end: they run outside the eval
 platform, stream every interaction into it over the [agent SDK](eval_agent_sdk/__init__.py), and get evaluated by
 a model that never produced their answers.
 
 - **`chatbot.py`** - a REPL chatbot over one local Ollama model. Each exchange is one turn with one LLM span.
-- **`reasoning_agent.py`** - answers a problem through three LLM calls per turn (plan, solve, verify), so one turn
-  has multiple spans, potentially from different models. `--suite` replays a suite file's reasoning cases and
-  sends each one's expected answer as the turn's reference, so the platform's deterministic correctness check
-  runs alongside the evaluator's score.
+- **`reasoning_agent.py`** - answers a problem through four LLM calls per turn (classify, plan, solve, verify), so
+  one turn has multiple spans, potentially from different models. `--suite` replays a suite file's reasoning
+  cases and sends each one's expected answer as the turn's reference, so the platform's deterministic correctness
+  check runs alongside the evaluator's score.
+- **`classifier_router_agent.py`** - a LangChain/LangGraph multi-agent orchestrator: classifies a problem via an
+  external, non-LLM context-classifier service, makes one gateway-routed LLM call that must call a tool (over
+  MCP) to decide what happens next, then either hands the problem to `reasoning_agent.py` (as its own, separately
+  registered agent) or finishes the turn immediately with a canned response. See *Classifier-routed multi-agent
+  orchestrator* below.
 
 `chatbot.py` needs only `httpx` (see [`eval_agent_sdk`](eval_agent_sdk/__init__.py)) - no platform backend
 dependency. `reasoning_agent.py` also needs `litellm` (its LLM calls go through the shared gateway - see
-*Task-routed calls* below) and, for `--suite <file>.yaml`, `pyyaml` (a `.json` suite needs nothing extra). See
+*Task-routed calls* below) and, for `--suite <file>.yaml`, `pyyaml` (a `.json` suite needs nothing extra).
+`classifier_router_agent.py` additionally needs `langchain`, `langchain-openai`, `langgraph` and `mcp`. See
 [`requirements.txt`](requirements.txt).
 
 ### Task-routed calls (`reasoning_agent.py`)
@@ -164,6 +170,97 @@ make agents-setup   # from the repo root: creates agents/.venv and installs requ
 Run either agent from the **repo root** with that venv's interpreter, e.g.
 `agents/.venv/bin/python -m agents.chatbot --help`. If you're already inside `backend/.venv` (it depends on
 `httpx` and `pyyaml` too), that works as well - a separate venv is a convenience, not a requirement.
+
+## Classifier-routed multi-agent orchestrator
+
+`classifier_router_agent.py` (`openspec/changes/add-classifier-router-agent`) proves the same gateway-only,
+self-discovered, fallback-capable task-routing conventions `reasoning_agent.py` already uses hold for a real
+agentic-framework (LangChain/LangGraph) agent that uses actual LLM-driven tool-calling and hands work off to a
+*second*, independently registered agent - not just a single agent making several calls of its own.
+
+Per turn:
+1. **Classify** - an HTTP call to an external, already-running context-classifier service
+   (`https://github.com/vikasagarwal2485/llms/tree/main/classifier_model`'s `POST /classify`) - a `tool` span,
+   not an `llm` span. Not a generative model call, so it is explicitly exempt from the gateway-only constraint
+   every other call in this repo's agents is held to.
+2. **Route** - one gateway-routed LLM call (via `langchain-openai`'s `ChatOpenAI`, addressed to this agent's own
+   discovered `routing` task group) that must call the `resolve_route` tool, reached over MCP, to decide what
+   happens next. The tool's own result *is* the routing decision - the orchestrator's own code never branches on
+   the classifier's raw labels.
+3. **Act** - either **hand off** to `reasoning_agent.py`, spawned as its own subprocess with its own platform
+   token and gateway key (it registers its own, separate turn, under its own agent identity - never attributed
+   to the orchestrator's spans), or **short-circuit**: finish the turn immediately with a canned response and no
+   further model call at all. An unmapped classification result ends the turn in a visible error rather than
+   guessing a branch.
+
+The `resolve_route` tool is served by `routing_mcp/server.py`, a small standalone MCP server (stdio transport)
+this agent spawns and owns for the duration of resolving one turn's routing decision. Its label -> action mapping
+lives in `routing_mcp/routes.yaml` - edit that file to add, reorder or change rules; no code change is needed
+anywhere.
+
+### Prerequisites
+
+- The context-classifier service running and reachable (default `http://127.0.0.1:8765`).
+- That service registered as a **`custom`-kind** provider/model on the platform (`add-custom-model-provider-kind`)
+  - no key, just a base URL - so this agent can discover its address instead of relying on a hardcoded one:
+
+  ```bash
+  curl -s -X POST http://localhost:8000/api/providers \
+    -H 'Content-Type: application/json' \
+    -d '{"kind": "custom", "name": "context-classifier", "base_url": "http://127.0.0.1:8765"}'
+  curl -s -X POST http://localhost:8000/api/providers/<id-from-above>/models \
+    -H 'Content-Type: application/json' -d '{"model_id": "classify"}'
+  ```
+
+- This agent registered with a `routing` declared model (any chat-capable model/group) and a `classification`
+  declared model pointing at the custom provider's model above:
+
+  ```bash
+  curl -s -X POST http://localhost:8000/api/agents \
+    -H 'Content-Type: application/json' \
+    -d '{"name": "classifier-router-agent", "kind": "reasoning", "declared_models": {"routing": "qwen3:8b", "classification": "@context-classifier/classify"}}'
+  ```
+  (`kind` is `reasoning` - the registry's `chatbot`/`reasoning` kinds are not extended for this agent; see
+  design.md's Non-Goals.)
+
+- `reasoning_agent.py` registered too (however you'd normally run it), for the handoff branch - note its token
+  and gateway key.
+- A virtual gateway key for *this* agent, scoped to its own `routing` group (`gateway/README.md`).
+
+### Running it
+
+```bash
+agents/.venv/bin/python -m agents.classifier_router_agent \
+  --platform-url http://localhost:8000 --token <this-agent's-token> \
+  --gateway-url http://localhost:4000 --gateway-key <this-agent's-virtual-key> \
+  --reasoning-agent-token <reasoning-agent's-token> \
+  --reasoning-agent-gateway-key <reasoning-agent's-virtual-key> \
+  --problem "The Lakers won their basketball game last night in overtime."
+```
+
+Both the routing model group and the classifier's address are discovered from this agent's own registration at
+startup (`GET /api/ingest/v1/whoami` - the same mechanism `reasoning_agent.py` uses, extended by
+`add-custom-model-provider-kind` to also expose a `custom`-kind dependency's address). Override either
+explicitly when needed - e.g. to point a test run at a different agent's group or a different classifier
+instance - with no platform round-trip for the one(s) you override:
+
+```bash
+agents/.venv/bin/python -m agents.classifier_router_agent \
+  --platform-url ... --token ... --gateway-url ... --gateway-key ... \
+  --reasoning-agent-token ... --reasoning-agent-gateway-key ... \
+  --routing-model-group my-router__routing --classifier-url http://127.0.0.1:9999 \
+  --problem "..."
+```
+
+`--routing-fallback-group` names a gateway group to fall back to if the routing call's primary group is
+unreachable, the same way `reasoning_agent.py`'s fallback flags work.
+
+**A note on the classifier's own labels**: the reference `routes.yaml` routes any `spam`-labeled result to the
+short-circuit branch and any `ag_news` result to the handoff branch. The classifier is a real, independently
+trained model and its `spam` detector can be noisy in practice - a perfectly ordinary sentence can occasionally
+come back labeled `spam` with high confidence. That is the classifier's own behavior, not a bug in this agent;
+if you want more predictable demo behavior, check `/classify`'s raw response for a given sentence first (`curl
+-s -X POST http://127.0.0.1:8765/classify -d '{"text": "..."}'`) before using it as a worked example.
 
 ## Demonstration setup: agent and evaluator on different models
 

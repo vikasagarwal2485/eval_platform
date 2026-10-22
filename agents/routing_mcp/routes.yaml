@@ -1,0 +1,29 @@
+# Routing-mapping config for routing_mcp/server.py's `resolve_route` tool (task 1.2, design.md Decision 7).
+#
+# An ordered list of rules - first match wins. Each rule names a classifier `task` (one of the keys the
+# context-classifier service's `/classify` response's `results` object has, e.g. `ag_news`, `spam`) and the
+# `label` that task must report to match (or `"*"` to match any label under that task). `action` is one of:
+#   - short_circuit: the orchestrator finishes the turn immediately with `response`, no further model call
+#   - handoff: the orchestrator hands the problem to `target_agent` (a separately registered reference agent)
+#
+# Edit this file to add, reorder, or change rules - no change to server.py or the router agent is needed
+# (design.md Decision 7 / spec `reference-agents`: "The mapping can be extended without touching the
+# orchestrator's own logic").
+#
+# A classifier result matching no rule here falls through to `default`, which the server always reports as
+# an error rather than guessing a route (spec `reference-agents`: "An unmapped classification result does not
+# guess a target").
+
+rules:
+  - task: spam
+    label: spam
+    action: short_circuit
+    response: "This message looks like spam and was not forwarded to any agent."
+
+  - task: ag_news
+    label: "*"
+    action: handoff
+    target_agent: reasoning-agent
+
+default:
+  action: error

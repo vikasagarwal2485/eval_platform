@@ -96,7 +96,14 @@ declared model a given turn ends up actually using.
 - **THEN** the save is still rejected, exactly as if it had matched the `reasoning` model
 
 ### Requirement: Registering a hosted model as an evaluator requires acknowledging data sharing
-When the user's evaluator list for an agent includes an enterprise (non-local) model, the system SHALL require an explicit acknowledgment that this agent's live conversations will be sent to that model's provider before the settings can be saved. The same acknowledgment is required when a declared model's primary or fallback reference is an enterprise model, since either may carry this agent's live conversations to that provider.
+When the user's evaluator list for an agent includes an enterprise (non-local) model, the system
+SHALL require an explicit acknowledgment that this agent's live conversations will be sent to that
+model's provider before the settings can be saved. The same acknowledgment is required when a
+declared model's primary or fallback reference is an enterprise model, since either may carry this
+agent's live conversations to that provider. A reference to a `custom`-kind provider is exempt,
+like an `ollama` one, but for a different reason: the platform itself never sends this agent's data
+to a `custom`-kind provider at all - only the agent's own code calls it directly, if it chooses to -
+so there is nothing here for the platform to ask the user to acknowledge.
 
 #### Scenario: Acknowledgment required
 - **WHEN** the user adds a registered enterprise model as an evaluator for an agent and has not acknowledged data sharing for that agent
@@ -112,11 +119,20 @@ When the user's evaluator list for an agent includes an enterprise (non-local) m
 - **THEN** saving is blocked exactly as it would be for a hosted evaluator or a hosted primary
   declared model
 
+#### Scenario: A custom-kind reference needs no acknowledgment
+- **WHEN** a declared model's primary or fallback reference resolves to a registered `custom`-kind
+  provider
+- **THEN** registration or settings saving succeeds without requiring (or offering) a data-sharing
+  acknowledgment for that provider
+
 ### Requirement: An agent can discover its own registration
-The system SHALL let a registered agent read back its own name, kind, declared models, and the
-gateway model group name computed for each of its declared task types, authenticated by the same
-ingest token it uses to send events. The response SHALL NOT include the ingest token itself, any
-gateway credential, or any provider secret.
+The system SHALL let a registered agent read back its own name, kind, declared models, and, for
+each of its declared task types, either the gateway model group name computed for it or - when
+that task's declared model resolves to a provider with no gateway deployment to route to (a
+`custom`-kind provider) - that provider's base URL and the model's id, so an agent can locate a
+non-gateway-routed dependency the same way it already locates a gateway-routed one. This is
+authenticated by the same ingest token it uses to send events. The response SHALL NOT include the
+ingest token itself, any gateway credential, or any provider secret.
 
 #### Scenario: An agent reads its own identity and group names
 - **WHEN** an agent calls the self-discovery endpoint with its own valid ingest token
@@ -137,6 +153,18 @@ gateway credential, or any provider secret.
 - **WHEN** any agent calls the self-discovery endpoint
 - **THEN** the response contains only its name, kind, declared models and computed gateway group
   names, and never its ingest token, a gateway credential, or a provider secret
+
+#### Scenario: A declared task backed by a custom-kind provider exposes its address, not a gateway group
+- **WHEN** an agent calls the self-discovery endpoint and one of its declared task types resolves
+  to a `custom`-kind provider
+- **THEN** that task type is absent from the response's gateway-group names, and the response
+  instead gives that provider's base URL and the declared model's id for that task type
+
+#### Scenario: A custom provider's base URL is not treated as a secret
+- **WHEN** the self-discovery response includes a `custom`-kind provider's base URL for a declared
+  task type
+- **THEN** that URL is returned as-is, since it is an address to call, not a credential - unlike an
+  ingest token, gateway credential or provider secret, which are never returned
 
 ### Requirement: Pause, resume and delete an agent
 The system SHALL let the user pause an agent (rejecting further ingest with a clear status so a well-behaved SDK stops retrying), resume it, and delete it. Deleting an agent SHALL remove its sessions, turns, spans and evaluations.

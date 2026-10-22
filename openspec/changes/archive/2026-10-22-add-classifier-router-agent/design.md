@@ -97,12 +97,17 @@ passthrough fields via `extra_body`/`model_kwargs`. The exact field/kwarg name i
 confirmed live against the installed `langchain-openai` version during implementation (task 2.1), mirroring how
 the `openai/`-prefix requirement itself was confirmed empirically rather than assumed.
 
-**5. The routing decision is a one-round ReAct-style tool call, not an open-ended agent loop.** The routing LLM
-is given the classifier's full per-task result and exactly one tool (`resolve_route`) bound via LangChain's
-tool-calling API; a system prompt instructs it to call that tool before answering. The graph executes at most
-one tool call, feeds the result back, and takes the model's next response as the final routing decision - kept
-intentionally simple (one bounded round-trip, not a multi-step agent loop) since the actual decision logic lives
-in the deterministic MCP tool, not the LLM's own reasoning.
+**5. The routing decision is one LLM call plus one tool execution, not an open-ended agent loop - and the
+tool's own result *is* the decision, with no confirmatory second LLM call.** The routing LLM is given the
+classifier's full per-task result and exactly one tool (`resolve_route`) bound via LangChain's tool-calling
+API; a system prompt instructs it to call that tool. Only its first requested tool call is executed (via the
+MCP server); that call's return value is used directly as the routing decision. **Revised during
+implementation** from an earlier draft that fed the tool's result back for a second LLM call and parsed
+*that* response as the decision: every scenario in spec.md ("the routing decision resolves through a tool
+call, not a hardcoded branch") is satisfied by the tool's own result just as precisely, without the fragility
+of depending on a model to correctly restate a JSON object verbatim as its final answer. The real LLM-driven
+tool-calling this change exists to prove is still fully exercised - the model must still decide to invoke the
+tool with the right argument; only the redundant second round-trip is removed.
 
 **6. MCP server over stdio, spawned by the router as a subprocess - not a long-running network service.** A
 "real MCP server" per the user's explicit choice, and MCP's own stdio transport is the common case for exactly

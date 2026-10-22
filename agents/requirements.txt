@@ -12,3 +12,11 @@ pyyaml>=6.0
 # see openspec/changes/add-litellm-gateway-infra. Pinned per that change's dependency-risk note: litellm is a
 # large, fast-moving package (100+ provider integrations in one install); bump deliberately, not unpinned.
 litellm==1.105.1
+# langchain/langgraph/mcp: classifier_router_agent.py's agentic-framework orchestration (classify -> routing
+# LLM call with real tool-calling -> handoff/short-circuit) - see
+# openspec/changes/add-classifier-router-agent. Pinned for the same reason as litellm above: all three are
+# fast-moving packages; bump deliberately, not unpinned.
+langchain==1.4.6
+langchain-openai==1.7.2
+langgraph==1.2.16
+mcp==2.3.0
