@@ -12,30 +12,57 @@ function SuiteCases({
   suiteId,
   excluded,
   onToggle,
+  onSetExcluded,
 }: {
   suiteId: number;
   excluded: number[];
   onToggle: (caseId: number) => void;
+  onSetExcluded: (caseIds: number[]) => void;
 }) {
   const { data, isLoading } = useSuite(suiteId);
   if (isLoading) return <Spinner label="Loading cases" />;
+  const allIds = data?.cases.map((c) => c.id) ?? [];
   return (
-    <ul style={{ listStyle: 'none', padding: 0, margin: '8px 0 0' }}>
-      {data?.cases.map((c) => (
-        <li key={c.id}>
-          <label className="check">
-            <input
-              type="checkbox"
-              checked={!excluded.includes(c.id)}
-              onChange={() => onToggle(c.id)}
-            />
-            <span>
-              <CategoryBadge category={c.category} /> {c.title || c.prompt.slice(0, 80)}
-            </span>
-          </label>
-        </li>
-      ))}
-    </ul>
+    <>
+      <div className="row" style={{ marginTop: 8, gap: 8 }}>
+        <span className="small muted" aria-live="polite">
+          {allIds.length - excluded.length} of {allIds.length} selected
+        </span>
+        <span className="spacer" />
+        <button
+          type="button"
+          className="link"
+          disabled={excluded.length === 0}
+          onClick={() => onSetExcluded([])}
+        >
+          Select all cases
+        </button>
+        <button
+          type="button"
+          className="link"
+          disabled={excluded.length === allIds.length}
+          onClick={() => onSetExcluded(allIds)}
+        >
+          Unselect all cases
+        </button>
+      </div>
+      <ul style={{ listStyle: 'none', padding: 0, margin: '8px 0 0' }}>
+        {data?.cases.map((c) => (
+          <li key={c.id}>
+            <label className="check">
+              <input
+                type="checkbox"
+                checked={!excluded.includes(c.id)}
+                onChange={() => onToggle(c.id)}
+              />
+              <span>
+                <CategoryBadge category={c.category} /> {c.title || c.prompt.slice(0, 80)}
+              </span>
+            </label>
+          </li>
+        ))}
+      </ul>
+    </>
   );
 }
 
@@ -67,6 +94,8 @@ export default function SuitePicker({
       },
     });
   };
+  const setExcluded = (suiteId: number, caseIds: number[]) =>
+    onChange({ ...value, excluded: { ...value.excluded, [suiteId]: caseIds } });
 
   if (isLoading) return <Spinner label="Loading suites" />;
   if (error) return <ErrorBox error={error} title="Could not load suites." />;
@@ -107,6 +136,7 @@ export default function SuitePicker({
                 suiteId={s.id}
                 excluded={value.excluded[s.id] ?? []}
                 onToggle={(cid) => toggleCase(s.id, cid)}
+                onSetExcluded={(ids) => setExcluded(s.id, ids)}
               />
             )}
           </div>

@@ -215,4 +215,5 @@ export const baseRoutes = {
   'GET /providers': [],
   'GET /suites': SUITES,
   'GET /suites/1': SUITE_DETAIL,
+  'GET /skills': [],
 };

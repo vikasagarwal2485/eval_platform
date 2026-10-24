@@ -8,12 +8,15 @@ import ProvidersPage from './pages/ProvidersPage';
 import ResultsPage from './pages/ResultsPage';
 import RunLivePage from './pages/RunLivePage';
 import RunSetupPage from './pages/RunSetupPage';
+import SkillsPage from './pages/SkillsPage';
 import SuitesPage from './pages/SuitesPage';
 
-const RUN_EVALUATION_PATHS = ['/', '/suites', '/history'];
+const RUN_EVALUATION_PATHS = ['/', '/suites', '/skills', '/history'];
 
-/** Shared by Run Evaluation setup, Suites and History - they're one section of sub-tabs under the single
- * "Run Evaluation setup" top-level nav item, rather than three separate top-level items. */
+/** Shared by Run Evaluation setup, Suites, Skills and History - they're one section of sub-tabs
+ * under the single "Run Evaluation setup" top-level nav item, rather than separate top-level
+ * items. Skills (add-run-skills) joins Suites here rather than becoming its own top-level item,
+ * since both are registries that feed into the same Run setup page. */
 function RunEvaluationLayout() {
   return (
     <>
@@ -22,6 +25,7 @@ function RunEvaluationLayout() {
           Setup
         </NavLink>
         <NavLink to="/suites">Suites</NavLink>
+        <NavLink to="/skills">Skills</NavLink>
         <NavLink to="/history">History</NavLink>
       </nav>
       <Outlet />
@@ -54,6 +58,7 @@ export default function App() {
             <Route element={<RunEvaluationLayout />}>
               <Route path="/" element={<RunSetupPage />} />
               <Route path="/suites" element={<SuitesPage />} />
+              <Route path="/skills" element={<SkillsPage />} />
               <Route path="/history" element={<HistoryPage />} />
             </Route>
             <Route path="/runs/:id/live" element={<RunLivePage />} />

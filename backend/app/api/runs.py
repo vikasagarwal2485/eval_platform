@@ -81,7 +81,7 @@ def _unavailable_response(problems: list[dict]):
 
 def _progress(session: Session, run: Run) -> dict:
     done = session.scalar(select(func.count()).select_from(Result).where(Result.run_id == run.id)) or 0
-    cfg = RunConfig(**run.config)
+    cfg = RunConfig(**{k: v for k, v in run.config.items() if k != "skills"})
     return {"completed": done, "total": len(run.model_ids) * len(run.cases) * cfg.repeats}
 
 
@@ -175,6 +175,10 @@ async def create_run(body: RunCreate, request: Request, session: Session = Depen
     cases = _collect_cases(session, body)
     if not cases:
         return _err(422, "no_cases", "Select at least one test case or enter an ad-hoc prompt.")
+    try:
+        skills = repo.skills_by_ids(session, body.config.skill_ids)
+    except repo.NotFound as exc:
+        return _err(422, "skill_unavailable", str(exc))
     problems, infos = await _availability(request, names + ([judge_model] if judge_model else []))
     if problems:
         return _unavailable_response(problems)
@@ -183,10 +187,14 @@ async def create_run(body: RunCreate, request: Request, session: Session = Depen
         version = await request.app.state.ollama.version()
     except OllamaError:  # Ollama may be down when only enterprise models are used
         version = None
+    config = body.config.model_dump()
+    # Snapshot each attached skill's current name/instructions now - editing or deleting a skill
+    # later must never change what this run shows it used (add-run-skills, design.md Decision 5).
+    config["skills"] = [{"id": s.id, "name": s.name, "instructions": s.instructions} for s in skills]
     run = repo.create_run(
         session,
         name=body.name,
-        config=body.config.model_dump(),
+        config=config,
         judge_model=judge_model,
         judge_mode=mode,
         snapshots=snaps,
@@ -256,6 +264,7 @@ async def rerun(run_id: int, request: Request, session: Session = Depends(get_se
 class RescoreBody(BaseModel):
     judge_model: str | None = None
     judge_reasoning: bool = False
+    judge_skill_adherence: bool = False
     judge_mode: Literal["none", "single", "cross_model"] | None = None
 
 
@@ -276,7 +285,16 @@ async def rescore(run_id: int, body: RescoreBody, request: Request, session: Ses
     problems, _ = await _availability(request, to_check)
     if problems:
         return _unavailable_response(problems)
-    request.app.state.runner.submit(Job("rescore", run_id, judge_model, body.judge_reasoning, mode))
+    request.app.state.runner.submit(
+        Job(
+            "rescore",
+            run_id,
+            judge_model,
+            judge_reasoning=body.judge_reasoning,
+            judge_skill_adherence=body.judge_skill_adherence,
+            judge_mode=mode,
+        )
+    )
     return {"status": "queued"}
 
 

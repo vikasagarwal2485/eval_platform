@@ -146,8 +146,35 @@ export const COLUMNS: Col[] = [
   },
 ];
 
-export function sortRows(rows: Row[], key: string, dir: 'asc' | 'desc'): Row[] {
-  const col = COLUMNS.find((c) => c.key === key) ?? COLUMNS[1];
+/** Only shown when at least one row actually has a skill-adherence judgement (add-skill-adherence-scoring)
+ * - most runs don't attach a skill, and a column of all dashes would just be clutter for them. */
+export const SKILL_ADHERENCE_COLUMN: Col = {
+  key: 'skill_adherence',
+  label: 'Followed skill',
+  numeric: true,
+  higherIsBetter: true,
+  value: (r) => r.skill_adherence?.mean_score ?? null,
+  render: (r) => {
+    const sa = r.skill_adherence;
+    if (!sa) return dash;
+    return (
+      <>
+        {sa.mean_score === null ? <span className="muted">unscored</span> : fmtPct(sa.mean_score)}{' '}
+        <span className="small muted">
+          {sa.judged}/{sa.judged + sa.errors}
+        </span>
+      </>
+    );
+  },
+};
+
+export function sortRows(
+  rows: Row[],
+  key: string,
+  dir: 'asc' | 'desc',
+  cols: Col[] = COLUMNS,
+): Row[] {
+  const col = cols.find((c) => c.key === key) ?? cols[1];
   const sign = dir === 'asc' ? 1 : -1;
   return [...rows].sort((a, b) => {
     const va = col.value(a);
@@ -170,15 +197,20 @@ export default function Leaderboard({
   judgeMode?: JudgeMode;
 }) {
   const rows = useMemo(() => baseRows.map((r) => ({ ...r, judgeMode })), [baseRows, judgeMode]);
+  const columns = useMemo(
+    () =>
+      rows.some((r) => r.skill_adherence !== null) ? [...COLUMNS, SKILL_ADHERENCE_COLUMN] : COLUMNS,
+    [rows],
+  );
   const [sort, setSort] = useState<{ key: string; dir: 'asc' | 'desc' }>({
     key: 'composite',
     dir: 'desc',
   });
-  const sorted = useMemo(() => sortRows(rows, sort.key, sort.dir), [rows, sort]);
+  const sorted = useMemo(() => sortRows(rows, sort.key, sort.dir, columns), [rows, sort, columns]);
   const ranks = useMemo(() => {
-    const byComposite = sortRows(rows, 'composite', 'desc');
+    const byComposite = sortRows(rows, 'composite', 'desc', columns);
     return new Map(byComposite.map((r, i) => [r.model, r.composite === null ? null : i + 1]));
-  }, [rows]);
+  }, [rows, columns]);
 
   const onSort = (col: Col) =>
     setSort((s) =>
@@ -193,7 +225,7 @@ export default function Leaderboard({
         <thead>
           <tr>
             <th className="num">Rank</th>
-            {COLUMNS.map((c) => (
+            {columns.map((c) => (
               <th
                 key={c.key}
                 className={c.numeric ? 'num' : undefined}
@@ -216,7 +248,7 @@ export default function Leaderboard({
               className={ranks.get(r.model) === 1 && rows.length > 1 ? 'best' : undefined}
             >
               <td className="num">{ranks.get(r.model) ?? dash}</td>
-              {COLUMNS.map((c) => (
+              {columns.map((c) => (
                 <td key={c.key} className={c.numeric ? 'num' : undefined}>
                   {c.render(r)}
                 </td>

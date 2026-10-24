@@ -203,8 +203,22 @@ describe('cross-model judging accessibility (5.6)', () => {
       judging: {
         mode: 'cross_model',
         judges: [
-          { model: 'alpha:1', judged: 3, errors: 0, mean_score: 0.8, reasoning_mean_score: null },
-          { model: 'bravo:2', judged: 2, errors: 1, mean_score: 0.4, reasoning_mean_score: null },
+          {
+            model: 'alpha:1',
+            judged: 3,
+            errors: 0,
+            mean_score: 0.8,
+            reasoning_mean_score: null,
+            skill_adherence_mean_score: null,
+          },
+          {
+            model: 'bravo:2',
+            judged: 2,
+            errors: 1,
+            mean_score: 0.4,
+            reasoning_mean_score: null,
+            skill_adherence_mean_score: null,
+          },
         ],
       },
     },

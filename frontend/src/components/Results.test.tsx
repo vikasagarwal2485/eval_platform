@@ -222,8 +222,22 @@ const CROSS = {
   judging: {
     mode: 'cross_model',
     judges: [
-      { model: 'alpha:1', judged: 3, errors: 0, mean_score: 0.8, reasoning_mean_score: null },
-      { model: 'bravo:2', judged: 3, errors: 1, mean_score: 0.35, reasoning_mean_score: 0.5 },
+      {
+        model: 'alpha:1',
+        judged: 3,
+        errors: 0,
+        mean_score: 0.8,
+        reasoning_mean_score: null,
+        skill_adherence_mean_score: null,
+      },
+      {
+        model: 'bravo:2',
+        judged: 3,
+        errors: 1,
+        mean_score: 0.35,
+        reasoning_mean_score: 0.5,
+        skill_adherence_mean_score: null,
+      },
     ],
   },
 };
@@ -261,6 +275,32 @@ describe('cross-model judging results', () => {
       within(table).getByRole('columnheader', { name: 'Average reasoning score' }),
     ).toBeInTheDocument();
     expect(screen.getByText(/not perfectly like-for-like/)).toBeInTheDocument();
+    expect(
+      within(table).queryByRole('columnheader', { name: 'Average skill-adherence score' }),
+    ).toBeNull();
+  });
+
+  it('shows an average skill-adherence score column only when a judge actually judged it', async () => {
+    setup(
+      crossRows(),
+      {},
+      {
+        ...CROSS,
+        judging: {
+          ...CROSS.judging,
+          judges: CROSS.judging.judges.map((j, i) => ({
+            ...j,
+            skill_adherence_mean_score: i === 0 ? 0.9 : null,
+          })),
+        },
+      },
+    );
+    const table = await screen.findByRole('table', { name: 'Judge strictness' });
+    expect(
+      within(table).getByRole('columnheader', { name: 'Average skill-adherence score' }),
+    ).toBeInTheDocument();
+    const rows = within(table).getAllByRole('row').slice(1);
+    expect(within(rows[0]).getByText('90.0%')).toBeInTheDocument();
   });
 
   it('still flags self-judging for a single judge that is also a contestant, and points to cross-model', async () => {
@@ -341,5 +381,82 @@ describe('cross-model judging results', () => {
     expect(within(select).getByRole('option', { name: 'Cross-model judging' })).toBeDisabled();
     expect(screen.getByText(/only one model/)).toBeInTheDocument();
     expect(select).toHaveAccessibleDescription(/only one model/);
+  });
+});
+
+// ---------------------------------------------------------------- skills (add-run-skills)
+describe('a run shows the skills it used', () => {
+  it('shows attached skills from the run’s own stored snapshot, not a live registry lookup', async () => {
+    const withSkills = runOf(['a:1']);
+    withSkills.config = {
+      ...withSkills.config,
+      skill_ids: [7],
+      skills: [{ id: 7, name: 'step-by-step', instructions: 'Think step by step, in detail.' }],
+    };
+    setup(THREE_MODELS.slice(0, 1), { 'GET /runs/5': withSkills });
+    const skills = await screen.findByText(/Skills:/);
+    expect(within(skills.closest('p')!).getByText('step-by-step')).toBeInTheDocument();
+    // the full instructions text is available (e.g. as a tooltip) without any extra request
+    expect(
+      within(skills.closest('p')!).getByTitle('Think step by step, in detail.'),
+    ).toBeInTheDocument();
+  });
+
+  it('shows nothing extra for a run with no skills attached', async () => {
+    setup(THREE_MODELS.slice(0, 1));
+    await screen.findByRole('table', { name: 'Model leaderboard' });
+    expect(screen.queryByText(/Skills:/)).toBeNull();
+  });
+});
+
+describe('skill adherence in the leaderboard (add-skill-adherence-scoring)', () => {
+  it('omits the "Followed skill" column when no row has an adherence judgement', async () => {
+    setup(THREE_MODELS.slice(0, 2));
+    const table = await screen.findByRole('table', { name: 'Model leaderboard' });
+    expect(within(table).queryByRole('button', { name: 'Followed skill' })).toBeNull();
+  });
+
+  it('shows per-model adherence once at least one row has it, with a dash for rows that have none', async () => {
+    setup([
+      row('alpha:1', {
+        cls: 1,
+        gen: 0.8,
+        latency: 1,
+        tps: 1,
+        skillAdherence: { mean_score: 0.9, judged: 4, errors: 0 },
+      }),
+      row('bravo:2', { cls: 1, gen: 0.7, latency: 1, tps: 1 }), // never judged for adherence
+    ]);
+    const table = await screen.findByRole('table', { name: 'Model leaderboard' });
+    expect(within(table).getByRole('button', { name: 'Followed skill' })).toBeInTheDocument();
+    const rows = within(table).getAllByRole('row').slice(1);
+    expect(within(rows[0]).getByText('90.0%')).toBeInTheDocument();
+    expect(within(rows[0]).getByText('4/4')).toBeInTheDocument();
+    expect(within(rows[1]).getAllByRole('cell').pop()).toHaveTextContent('—');
+  });
+
+  it('sorts by the "Followed skill" column', async () => {
+    const user = userEvent.setup();
+    setup([
+      row('alpha:1', {
+        cls: 1,
+        latency: 1,
+        tps: 1,
+        skillAdherence: { mean_score: 0.4, judged: 1, errors: 0 },
+      }),
+      row('bravo:2', {
+        cls: 1,
+        latency: 1,
+        tps: 1,
+        skillAdherence: { mean_score: 0.9, judged: 1, errors: 0 },
+      }),
+    ]);
+    const table = await screen.findByRole('table', { name: 'Model leaderboard' });
+    await user.click(within(table).getByRole('button', { name: 'Followed skill' }));
+    const firstRowModel = () =>
+      within(table).getAllByRole('row')[1].querySelector('strong')?.textContent;
+    expect(firstRowModel()).toBe('bravo:2'); // higher adherence first (higherIsBetter)
+    await user.click(within(table).getByRole('button', { name: /Followed skill/ }));
+    expect(firstRowModel()).toBe('alpha:1');
   });
 });

@@ -1,4 +1,4 @@
-import type { JudgeMode, ModelInfo, RunConfig } from '../api/types';
+import type { JudgeMode, ModelInfo, RunConfig, Skill } from '../api/types';
 import { KIND_LABEL } from '../lib/providers';
 import NumberField from './NumberField';
 import { Banner } from './ui';
@@ -12,6 +12,8 @@ interface Props {
   onJudgeChange: (m: string | null) => void;
   models: ModelInfo[];
   selectedModels: string[];
+  /** registered skills (add-run-skills) offered for attachment to every model in this run */
+  skills: Skill[];
   /** cases that would be judged, per model and repeat (used only for the cost estimate) */
   caseCounts: { generation: number; reasoning: number };
   /** every selected case, all categories (used for the generation request estimate) */
@@ -54,12 +56,20 @@ export default function ConfigPanel({
   onJudgeChange,
   models,
   selectedModels,
+  skills,
   caseCounts,
   totalCaseCount,
   notice,
   onDismissNotice,
 }: Props) {
   const set = <K extends keyof RunConfig>(k: K, v: RunConfig[K]) => onChange({ ...config, [k]: v });
+  const toggleSkill = (id: number) =>
+    set(
+      'skill_ids',
+      config.skill_ids.includes(id)
+        ? config.skill_ids.filter((x) => x !== id)
+        : [...config.skill_ids, id],
+    );
   const n = selectedModels.length;
   const canCross = n >= 2;
   const selfJudge = judgeMode === 'single' && !!judgeModel && selectedModels.includes(judgeModel);
@@ -110,6 +120,38 @@ export default function ConfigPanel({
   return (
     <section className="card" aria-labelledby="cfg-h">
       <h2 id="cfg-h">3. Settings</h2>
+
+      <fieldset>
+        <legend>Skills</legend>
+        {skills.length === 0 ? (
+          <p className="small muted">
+            No skills registered yet. Create one on the Skills page, then attach it here.
+          </p>
+        ) : (
+          <>
+            <p className="small muted">
+              Each attached skill's instructions are sent with every request in this run, for every
+              selected model. Run the same setup once with and once without a skill to compare their
+              effect on quality, latency and tokens/sec.
+            </p>
+            <div className="stack" style={{ gap: 8 }}>
+              {skills.map((s) => (
+                <label className="check" key={s.id}>
+                  <input
+                    type="checkbox"
+                    checked={config.skill_ids.includes(s.id)}
+                    onChange={() => toggleSkill(s.id)}
+                  />
+                  <span>
+                    <strong>{s.name}</strong>
+                    {s.description && <span className="muted"> — {s.description}</span>}
+                  </span>
+                </label>
+              ))}
+            </div>
+          </>
+        )}
+      </fieldset>
 
       <fieldset>
         <legend>Judging (scores generated text)</legend>
@@ -251,6 +293,22 @@ export default function ConfigPanel({
           />
           <span>Also judge the quality of reasoning traces</span>
         </label>
+
+        <label className="check" style={{ marginTop: 8 }}>
+          <input
+            type="checkbox"
+            checked={config.judge_skill_adherence}
+            disabled={!judging || config.skill_ids.length === 0}
+            aria-describedby="skill-adherence-help"
+            onChange={(e) => set('judge_skill_adherence', e.target.checked)}
+          />
+          <span>Also judge whether the response followed the attached skill(s)</span>
+        </label>
+        <div id="skill-adherence-help" className="small muted" style={{ marginLeft: 24 }}>
+          {config.skill_ids.length === 0
+            ? 'Attach a skill above to enable this.'
+            : 'Adds a judge call per answer asking whether it visibly followed the skill’s instructions - shown per model in the leaderboard.'}
+        </div>
       </fieldset>
 
       <fieldset>

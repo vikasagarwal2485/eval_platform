@@ -32,6 +32,7 @@ def test_summary_reports_mode_per_judge_stats_and_no_self_judging(settings, file
         "errors": 0,
         "mean_score": pytest.approx(0.75),
         "reasoning_mean_score": None,
+        "skill_adherence_mean_score": None,
     }
     assert judges["b:1"]["mean_score"] == pytest.approx(0.25)
     for row in s["leaderboard"]:

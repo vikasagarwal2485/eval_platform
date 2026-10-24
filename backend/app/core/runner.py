@@ -22,7 +22,7 @@ from app.core.metrics import StreamCollector
 from app.core.model_discovery import ModelDiscovery
 from app.core.scoring import service as scoring
 from app.core.scoring.thinking import split_thinking
-from app.core.templates import build_messages, build_prompt
+from app.core.templates import apply_skills, build_messages, build_prompt
 from app.models import ModelSnapshot, Run, RunCase
 from app.ollama.client import OllamaClient, OllamaError, OllamaUnreachable
 from app.providers.backend import caps_for_kind
@@ -50,6 +50,7 @@ class Job:
     run_id: int
     judge_model: str | None = None
     judge_reasoning: bool = False
+    judge_skill_adherence: bool = False
     judge_mode: str | None = None  # none | single | cross_model (None = inferred from judge_model)
 
 
@@ -153,7 +154,9 @@ class Runner:
         run = repo.get_run(session, run_id)
         if run.status != "queued":  # cancelled while waiting
             return
-        cfg = RunConfig(**run.config)
+        # "skills" is a snapshot sibling of RunConfig's own fields in run.config (add-run-skills) -
+        # not one of them, so it's read separately (run.config.get("skills")) rather than through cfg.
+        cfg = RunConfig(**{k: v for k, v in run.config.items() if k != "skills"})
         cases = list(run.cases)
         snaps = repo.run_snapshots(session, run)
         total = len(snaps) * len(cases) * cfg.repeats
@@ -275,7 +278,7 @@ class Runner:
             {"model": snap.name, "case_id": case.id, "case_title": case.title or case.prompt[:60], "repeat": rep},
         )
         sent, version = build_prompt(case.category, case.prompt, case.config)
-        fields = await self._generate(run_id, snap, case, sent, cfg)
+        fields = await self._generate(run_id, snap, case, sent, cfg, run.config.get("skills"))
         fatal = fields.pop("fatal", None)
         m = fields["metrics"]
         result = repo.add_result(
@@ -316,12 +319,20 @@ class Runner:
         if fatal:
             raise RunAborted(fatal)
 
-    async def _generate(self, run_id: int, snap: ModelSnapshot, case: RunCase, sent: str, cfg: RunConfig) -> dict:
+    async def _generate(
+        self,
+        run_id: int,
+        snap: ModelSnapshot,
+        case: RunCase,
+        sent: str,
+        cfg: RunConfig,
+        skills: list[dict] | None = None,
+    ) -> dict:
         """Stream one chat request. Returns Result fields; never raises for per-request failures.
         Connection loss is retried, then reported via `fatal`."""
         think = cfg.think if "thinking" in snap.capabilities else None
         timeout = cfg.request_timeout_s or self.settings.request_timeout_s
-        messages = build_messages(case.system_prompt, sent)
+        messages = build_messages(apply_skills(case.system_prompt, skills), sent)
         circuits = self._circuits.setdefault(run_id, Circuits())
         if (why := circuits.blocked(snap.name)) is not None:  # an earlier failure closed this model or provider
             return self._error_fields(StreamCollector(), why)
@@ -411,6 +422,7 @@ class Runner:
                 await self._judge_names(session, run_id, run.judge_mode, run.judge_model)
             ),
             judge_reasoning=cfg.judge_reasoning,
+            judge_skill_adherence=cfg.judge_skill_adherence,
             cancelled=lambda: self._cancelled(run_id),
             on_progress=progress,
             unload=self._unload_quietly,
@@ -435,6 +447,7 @@ class Runner:
                 judge_model=job.judge_model,
                 judge_think=await self._think_map(await self._judge_names(session, run_id, mode, job.judge_model)),
                 judge_reasoning=job.judge_reasoning,
+                judge_skill_adherence=job.judge_skill_adherence,
                 cancelled=lambda: self._cancelled(run_id),
                 on_progress=progress,
                 unload=self._unload_quietly,

@@ -69,6 +69,7 @@ function ScoreDetails({ r }: { r: ResultItem }) {
   const judge = r.scores.find((s) => s.kind === 'judge');
   const cons = r.scores.find((s) => s.kind === 'constraints');
   const reasoning = r.scores.find((s) => s.kind === 'judge_reasoning');
+  const adherence = r.scores.find((s) => s.kind === 'skill_adherence');
   const d = auto?.detail ?? {};
   return (
     <div className="small">
@@ -113,6 +114,9 @@ function ScoreDetails({ r }: { r: ResultItem }) {
       {reasoning && reasoning.outcome !== 'unscored' && (
         <JudgeBlock score={reasoning} label="Reasoning quality" />
       )}
+      {adherence && adherence.outcome !== 'unscored' && (
+        <JudgeBlock score={adherence} label="Skill adherence" />
+      )}
     </div>
   );
 }
@@ -120,11 +124,22 @@ function ScoreDetails({ r }: { r: ResultItem }) {
 function Metrics({ r }: { r: ResultItem }) {
   const m = r.metrics as Record<string, number | boolean | null>;
   const think = m.thinking_tokens as number | null | undefined;
+  const prompt = m.prompt_tokens as number | null | undefined;
+  const total =
+    typeof prompt === 'number' && typeof r.output_tokens === 'number'
+      ? prompt + r.output_tokens
+      : null;
   return (
     <div className="small muted">
       {fmtMs(r.latency_ms)} · TTFT {fmtMs(r.ttft_ms)} · {fmtNum(r.tokens_per_s)} tok/s ·{' '}
       {r.output_tokens ?? dash} tokens
       {think ? ` (${m.thinking_tokens_approx ? '~' : ''}${think} thinking)` : ''}
+      {total !== null && (
+        <>
+          {' '}
+          · {prompt} prompt + {r.output_tokens} output = <strong>{total} total tokens</strong>
+        </>
+      )}
       {r.is_cold && (
         <span className="badge warn" style={{ marginLeft: 4 }}>
           cold start

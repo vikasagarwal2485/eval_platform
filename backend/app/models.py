@@ -100,6 +100,21 @@ class Suite(Base):
     )
 
 
+class Skill(Base):
+    """A named, Markdown-instruction bundle a run can attach to every model it evaluates
+    (`add-run-skills`) - text injected into the prompt, never executed. Deliberately not a
+    sub-entity of anything else (unlike `TestCase` under `Suite`): a skill stands alone and is
+    referenced by id from a run's own config, not owned by a parent row."""
+
+    __tablename__ = "skill"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(200), unique=True)
+    description: Mapped[str] = mapped_column(Text, default="")
+    instructions: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class TestCase(Base):
     __tablename__ = "test_case"
     __test__ = False  # not a pytest class

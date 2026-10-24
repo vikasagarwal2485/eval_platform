@@ -37,3 +37,16 @@ def build_messages(system_prompt: str | None, sent_prompt: str) -> list[dict[str
         msgs.append({"role": "system", "content": system_prompt})
     msgs.append({"role": "user", "content": sent_prompt})
     return msgs
+
+
+def apply_skills(system_prompt: str | None, skills: list[dict] | None) -> str | None:
+    """Prepend attached skills' instructions to the case's own system prompt (add-run-skills,
+    design.md Decision 6). `skills` is the run's own `config["skills"]` snapshot - a list of
+    `{"id", "name", "instructions"}` dicts, in attachment order. Returns `None` when there is
+    neither a skill nor a system prompt, so an unaffected run's messages are unchanged."""
+    if not skills:
+        return system_prompt
+    blocks = [f"# Skill: {s['name']}\n\n{s['instructions']}" for s in skills]
+    if system_prompt:
+        blocks.append(system_prompt)
+    return "\n\n---\n\n".join(blocks)

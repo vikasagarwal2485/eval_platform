@@ -77,6 +77,42 @@ cases:
     comparison: numeric
     expected: "5"
     tags: [trick]
+  - category: reasoning
+    title: Derivative at a point
+    prompt: "Let f(x) = 3x^3 - 5x + 7. What is f'(2)?"
+    comparison: numeric
+    expected: "31"
+    tags: [calculus, derivatives]
+  - category: reasoning
+    title: Chain rule derivative
+    prompt: "Let f(x) = (2x + 1)^2. What is f'(3)?"
+    comparison: numeric
+    expected: "28"
+    tags: [calculus, derivatives]
+  - category: reasoning
+    title: Definite integral - linear integrand
+    prompt: "Evaluate the definite integral of 2x dx from x = 1 to x = 4."
+    comparison: numeric
+    expected: "15"
+    tags: [calculus, integrals]
+  - category: reasoning
+    title: Definite integral - power rule
+    prompt: "Evaluate the definite integral of 3x^2 dx from x = 0 to x = 2."
+    comparison: numeric
+    expected: "8"
+    tags: [calculus, integrals]
+  - category: reasoning
+    title: Heat equation solution check
+    prompt: "Consider the partial differential equation du/dt = d^2u/dx^2 (the heat equation). Is u(x,t) = sin(x) * e^(-t) a solution? Answer yes or no."
+    comparison: text
+    expected: "yes"
+    tags: [calculus, pde]
+  - category: reasoning
+    title: Heat equation non-solution check
+    prompt: "Consider the partial differential equation du/dt = d^2u/dx^2 (the heat equation). Is u(x,t) = x^2 + t a solution? Answer yes or no."
+    comparison: text
+    expected: "no"
+    tags: [calculus, pde]
   # ---------------------------------------------------------------- generation
   - category: generation
     title: Product description

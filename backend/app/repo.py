@@ -26,6 +26,7 @@ from app.models import (
     RunCase,
     Score,
     ScoringAttempt,
+    Skill,
     Suite,
     TestCase,
     TurnEvaluation,
@@ -38,6 +39,7 @@ from app.schemas import (
     CaseIn,
     EvalConfigIn,
     ModelInfo,
+    SkillIn,
     SuiteIn,
     declared_model_fallback_ref,
     declared_model_ref,
@@ -138,6 +140,59 @@ def duplicate_suite(session: Session, suite_id: int) -> Suite:
         name, n = f"{src.name} (copy {n})", n + 1
     data = SuiteIn(name=name, description=src.description, cases=[CaseIn.from_row(c) for c in src.cases])
     return create_suite(session, data)
+
+
+# ---------------------------------------------------------------- skills (add-run-skills)
+def create_skill(session: Session, data: SkillIn) -> Skill:
+    if session.scalar(select(Skill).where(Skill.name == data.name)):
+        raise Conflict(f"A skill named '{data.name}' already exists")
+    skill = Skill(name=data.name, description=data.description, instructions=data.instructions)
+    session.add(skill)
+    session.flush()
+    return skill
+
+
+def get_skill(session: Session, skill_id: int) -> Skill:
+    skill = session.get(Skill, skill_id)
+    if not skill:
+        raise NotFound(f"skill {skill_id} not found")
+    return skill
+
+
+def list_skills(session: Session) -> list[Skill]:
+    return list(session.scalars(select(Skill).order_by(Skill.name)))
+
+
+def skills_by_ids(session: Session, skill_ids: list[int]) -> list[Skill]:
+    """Every skill named by `skill_ids`, in the order given - raises `NotFound` naming the first id
+    that isn't a registered skill, so a run that names an unknown skill is refused the same way an
+    unavailable model selection already is (spec `evaluation-runs`)."""
+    found = {s.id: s for s in session.scalars(select(Skill).where(Skill.id.in_(skill_ids)))}
+    missing = [i for i in skill_ids if i not in found]
+    if missing:
+        raise NotFound(f"skill {missing[0]} not found")
+    return [found[i] for i in skill_ids]
+
+
+def update_skill(
+    session: Session, skill_id: int, *, name: str | None, description: str | None, instructions: str | None
+) -> Skill:
+    skill = get_skill(session, skill_id)
+    if name is not None and name != skill.name:
+        if session.scalar(select(Skill).where(Skill.name == name, Skill.id != skill_id)):
+            raise Conflict(f"A skill named '{name}' already exists")
+        skill.name = name
+    if description is not None:
+        skill.description = description
+    if instructions is not None:
+        skill.instructions = instructions
+    session.flush()
+    return skill
+
+
+def delete_skill(session: Session, skill_id: int) -> None:
+    session.delete(get_skill(session, skill_id))
+    session.flush()
 
 
 def add_case(session: Session, suite_id: int, case: CaseIn) -> TestCase:

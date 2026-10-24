@@ -10,7 +10,7 @@ from fastapi.staticfiles import StaticFiles
 
 import app.models  # noqa: F401  (register tables)
 from app import repo
-from app.api import agents, export, health, ingest, providers, runs, suites
+from app.api import agents, export, health, ingest, providers, runs, skills, suites
 from app.config import Settings, load_settings
 from app.core.eval_worker import EvaluationWorker
 from app.core.events import EventHub, agent_channel
@@ -86,6 +86,7 @@ def create_app(
 
     app.include_router(health.router)
     app.include_router(suites.router)
+    app.include_router(skills.router)
     app.include_router(providers.router)
     app.include_router(export.router)  # before runs: /runs/compare must not match /runs/{id}
     app.include_router(runs.router)

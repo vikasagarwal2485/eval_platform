@@ -1,6 +1,13 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useCreateRun, useHealth, useModels, useRefreshModels, useSuites } from '../api/hooks';
+import {
+  useCreateRun,
+  useHealth,
+  useModels,
+  useRefreshModels,
+  useSkills,
+  useSuites,
+} from '../api/hooks';
 import type { CaseIn, JudgeMode, RunConfig } from '../api/types';
 import { DEFAULT_RUN_CONFIG } from '../api/types';
 import AdhocForm from '../components/AdhocForm';
@@ -15,6 +22,7 @@ export default function RunSetupPage() {
   const health = useHealth();
   const models = useModels();
   const suites = useSuites();
+  const skills = useSkills();
   const refresh = useRefreshModels();
   const create = useCreateRun();
 
@@ -195,6 +203,7 @@ export default function RunSetupPage() {
           onJudgeChange={setJudge}
           models={models.data ?? []}
           selectedModels={selected}
+          skills={skills.data ?? []}
           caseCounts={caseCounts}
           totalCaseCount={caseCount}
           notice={judgeNotice}

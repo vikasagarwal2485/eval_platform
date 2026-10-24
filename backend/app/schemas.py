@@ -185,6 +185,29 @@ class SuiteDetail(SuiteOut):
     cases: list[CaseOut]
 
 
+# ---------------------------------------------------------------- skills (add-run-skills)
+class SkillIn(_BM):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=200)
+    description: str = ""
+    instructions: str = Field(min_length=1)
+
+
+class SkillUpdate(_BM):
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    description: str | None = None
+    instructions: str | None = Field(default=None, min_length=1)
+
+
+class SkillOut(_BM):
+    id: int
+    name: str
+    description: str
+    instructions: str
+    created_at: str
+
+
 # ---------------------------------------------------------------- runs
 class RunConfig(_BM):
     """Per-run settings. Defaults favour reproducibility (temperature 0, fixed seed)."""
@@ -200,6 +223,8 @@ class RunConfig(_BM):
     warmup: bool = True
     request_timeout_s: float | None = Field(default=None, gt=0, le=3600)
     judge_reasoning: bool = False  # also judge reasoning-trace quality (needs a judge model)
+    skill_ids: list[int] = []  # attached skills (add-run-skills); applies to every model/case in the run
+    judge_skill_adherence: bool = False  # also judge whether the response followed the attached skill(s)
 
 
 class RunCreate(_BM):

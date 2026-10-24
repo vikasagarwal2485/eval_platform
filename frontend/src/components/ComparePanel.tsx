@@ -29,6 +29,14 @@ function DeltaCell({ d, kind }: { d: Delta | undefined; kind: 'pct' | 'ms' | 'nu
   );
 }
 
+/** Like DeltaCell, but for a metric that's often judged on only one side (e.g. skill adherence
+ * enabled on one run but not the other) - shows the known value instead of collapsing to a dash. */
+function PartialDeltaCell({ d }: { d: Delta | null }) {
+  if (!d || (d.a === null && d.b === null)) return <>{dash}</>;
+  if (d.delta !== null) return <DeltaCell d={d} kind="pct" />;
+  return d.b !== null ? <span>→ {fmtPct(d.b, 1)}</span> : <span>{fmtPct(d.a, 1)} →</span>;
+}
+
 export default function ComparePanel({ a, b }: { a: number; b: number }) {
   const { data, isLoading, error } = useCompare(a, b);
   if (isLoading) return <Spinner label="Comparing runs" />;
@@ -42,6 +50,19 @@ export default function ComparePanel({ a, b }: { a: number; b: number }) {
         Changes from {data.a.name} to {data.b.name}, for models and cases present in both. Scores
         are in percentage points.
       </p>
+      {(data.skills.a.length > 0 || data.skills.b.length > 0) && (
+        <p className="small muted">
+          Skills: run #{data.a.id} used{' '}
+          {data.skills.a.length ? data.skills.a.map((s) => s.name).join(', ') : 'none'} · run #
+          {data.b.id} used{' '}
+          {data.skills.b.length ? data.skills.b.map((s) => s.name).join(', ') : 'none'}
+          {!data.skills.same && (
+            <span className="badge warn" style={{ marginLeft: 4 }}>
+              different skills
+            </span>
+          )}
+        </p>
+      )}
       {data.models.length === 0 && <p>No models in common between these runs.</p>}
       {data.models.length > 0 && (
         <div className="table-wrap">
@@ -55,6 +76,7 @@ export default function ComparePanel({ a, b }: { a: number; b: number }) {
                 ))}
                 <th>Median latency</th>
                 <th>Tokens/s</th>
+                {data.models.some((m) => m.skill_adherence !== null) && <th>Followed skill</th>}
               </tr>
             </thead>
             <tbody>
@@ -80,10 +102,25 @@ export default function ComparePanel({ a, b }: { a: number; b: number }) {
                   ))}
                   <td>
                     <DeltaCell d={m.performance.latency_ms} kind="ms" />
+                    {m.performance_notes.length > 0 && (
+                      <details className="small muted" style={{ marginTop: 2 }}>
+                        <summary>Why?</summary>
+                        <ul style={{ margin: '4px 0 0', paddingLeft: 18 }}>
+                          {m.performance_notes.map((n, i) => (
+                            <li key={i}>{n}</li>
+                          ))}
+                        </ul>
+                      </details>
+                    )}
                   </td>
                   <td>
                     <DeltaCell d={m.performance.tokens_per_s} kind="num" />
                   </td>
+                  {data.models.some((x) => x.skill_adherence !== null) && (
+                    <td>
+                      <PartialDeltaCell d={m.skill_adherence} />
+                    </td>
+                  )}
                 </tr>
               ))}
             </tbody>

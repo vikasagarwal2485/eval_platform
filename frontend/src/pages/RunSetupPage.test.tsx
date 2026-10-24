@@ -202,6 +202,30 @@ describe('9.3 input entry', () => {
     });
   });
 
+  it('unselects all cases of a chosen suite, then selects back just a couple', async () => {
+    const { user, calls } = setup({ 'POST /runs': { id: 1 } });
+    await user.click(await model('qwen3:8b'));
+    await user.click(await screen.findByRole('checkbox', { name: 'Starter suite' }));
+    expect(await screen.findByText('3 of 3 selected')).toBeInTheDocument();
+
+    const unselectAll = screen.getByRole('button', { name: 'Unselect all cases' });
+    const selectAll = screen.getByRole('button', { name: 'Select all cases' });
+    expect(selectAll).toBeDisabled(); // nothing excluded yet
+    await user.click(unselectAll);
+    expect(screen.getByText('0 of 3 selected')).toBeInTheDocument();
+    expect(unselectAll).toBeDisabled(); // already fully unselected
+    expect(selectAll).toBeEnabled();
+
+    await user.click(screen.getByRole('checkbox', { name: /Bat and ball/ }));
+    expect(screen.getByText('1 of 3 selected')).toBeInTheDocument();
+    await user.click(startButton());
+    await screen.findByText('LIVE PAGE');
+    expect(calls.find((x) => x.path === '/runs')!.body).toMatchObject({
+      suite_ids: [1],
+      exclude_case_ids: [10, 12], // every case except Bat and ball (id 11)
+    });
+  });
+
   it('removes an ad-hoc prompt from the run', async () => {
     const { user } = setup();
     await openAdhoc(user);
@@ -285,6 +309,90 @@ describe('9.4 run configuration', () => {
     expect(screen.getByText(/No judge selected/)).toBeInTheDocument();
     await user.click(screen.getByRole('radio', { name: 'Single judge model' }));
     expect(screen.queryByText(/No judge selected/)).toBeNull();
+  });
+});
+
+describe('attaching skills (add-run-skills)', () => {
+  const SKILL_A = {
+    id: 1,
+    name: 'step-by-step',
+    description: 'Think before answering',
+    instructions: 'x',
+  };
+  const SKILL_B = { id: 2, name: 'concise', description: '', instructions: 'y' };
+
+  it('shows a message when no skills are registered', async () => {
+    setup();
+    await model('qwen3:8b');
+    expect(screen.getByText(/No skills registered yet/)).toBeInTheDocument();
+  });
+
+  it('submits the selected skill ids with the run', async () => {
+    const { user, calls } = setup({
+      'GET /skills': [SKILL_A, SKILL_B],
+      'POST /runs': { id: 1 },
+    });
+    await user.click(await model('qwen3:8b'));
+    await user.click(await screen.findByRole('checkbox', { name: 'Starter suite' }));
+    await user.click(await screen.findByRole('checkbox', { name: /step-by-step/ }));
+    await user.click(screen.getByRole('checkbox', { name: /concise/ }));
+    await user.click(startButton());
+    await screen.findByText('LIVE PAGE');
+    const body = calls.find((x) => x.path === '/runs')!.body;
+    expect(body.config.skill_ids).toEqual([1, 2]);
+  });
+
+  it('a run with no skill selected submits an empty skill_ids list', async () => {
+    const { user, calls } = setup({
+      'GET /skills': [SKILL_A],
+      'POST /runs': { id: 1 },
+    });
+    await user.click(await model('qwen3:8b'));
+    await user.click(await screen.findByRole('checkbox', { name: 'Starter suite' }));
+    await user.click(startButton());
+    await screen.findByText('LIVE PAGE');
+    const body = calls.find((x) => x.path === '/runs')!.body;
+    expect(body.config.skill_ids).toEqual([]);
+  });
+
+  it('can unselect a skill it previously attached', async () => {
+    const { user, calls } = setup({
+      'GET /skills': [SKILL_A],
+      'POST /runs': { id: 1 },
+    });
+    await user.click(await model('qwen3:8b'));
+    await user.click(await screen.findByRole('checkbox', { name: 'Starter suite' }));
+    const checkbox = await screen.findByRole('checkbox', { name: /step-by-step/ });
+    await user.click(checkbox);
+    await user.click(checkbox);
+    await user.click(startButton());
+    await screen.findByText('LIVE PAGE');
+    expect(calls.find((x) => x.path === '/runs')!.body.config.skill_ids).toEqual([]);
+  });
+
+  it('disables "judge skill adherence" until both judging and a skill are on, then submits it', async () => {
+    const { user, calls } = setup({
+      'GET /skills': [SKILL_A],
+      'POST /runs': { id: 1 },
+    });
+    await user.click(await model('qwen3:8b'));
+    await user.click(await screen.findByRole('checkbox', { name: 'Starter suite' }));
+    const adherence = screen.getByRole('checkbox', {
+      name: /judge whether the response followed the attached skill/,
+    });
+    expect(adherence).toBeDisabled(); // no judge yet, no skill attached yet
+    expect(screen.getByText(/Attach a skill above to enable this/)).toBeInTheDocument();
+
+    await user.click(screen.getByRole('radio', { name: 'Single judge model' }));
+    await user.selectOptions(screen.getByLabelText('Judge model'), 'qwen3:8b');
+    expect(adherence).toBeDisabled(); // judging is on, but still no skill attached
+
+    await user.click(await screen.findByRole('checkbox', { name: /step-by-step/ }));
+    expect(adherence).toBeEnabled();
+    await user.click(adherence);
+    await user.click(startButton());
+    await screen.findByText('LIVE PAGE');
+    expect(calls.find((x) => x.path === '/runs')!.body.config.judge_skill_adherence).toBe(true);
   });
 });
 

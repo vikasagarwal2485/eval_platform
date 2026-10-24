@@ -26,7 +26,7 @@ function results(): ResultItem[] {
       output: 'Final answer: 5',
       thinking: 'Let x be the ball...',
       scores: [auto({ final_answer: '5', method: 'marker' })],
-      metrics: { thinking_tokens: 120, thinking_tokens_approx: true },
+      metrics: { thinking_tokens: 120, thinking_tokens_approx: true, prompt_tokens: 61 },
       latency_ms: 11200,
       output_tokens: 439,
     }),
@@ -111,6 +111,44 @@ describe('9.8 case drill-down', () => {
     expect(within(card).getAllByText('(marker)')).toHaveLength(2); // both models used the explicit marker
     expect(within(card).getByText(/439 tokens \(~120 thinking\)/)).toBeInTheDocument();
     expect(within(card).getByText('11.2 s', { exact: false })).toBeInTheDocument();
+  });
+
+  it('shows total tokens (prompt + output) per result when prompt tokens are known', () => {
+    render(<CaseDrilldown run={run} results={results()} />);
+    const card = screen.getByRole('region', { name: 'Case: Bat and ball' });
+    // alpha:1's reasoning result has prompt_tokens: 61, output_tokens: 439 -> 500 total
+    expect(within(card).getByText(/61 prompt \+ 439 output/)).toBeInTheDocument();
+    expect(within(card).getByText('500 total tokens')).toBeInTheDocument();
+  });
+
+  it('shows a skill-adherence judgement when present (add-skill-adherence-scoring)', () => {
+    const rs = [
+      result('alpha:1', 1, 'classification', 'correct', {
+        scores: [
+          auto({ predicted: 'spam', ambiguous: false }),
+          {
+            kind: 'skill_adherence',
+            value: 0.75,
+            outcome: 'judged',
+            detail: {
+              mode: 'single',
+              judges_used: 1,
+              criteria: { Adherence: { score: 4, reason: 'followed it' } },
+            },
+          },
+        ],
+      }),
+    ];
+    render(<CaseDrilldown run={run} results={rs} />);
+    const card = screen.getByRole('region', { name: 'Case: Spam check' });
+    expect(within(card).getByText(/Skill adherence: 75%/)).toBeInTheDocument();
+    expect(within(card).getByText('followed it')).toBeInTheDocument();
+  });
+
+  it('omits the total when prompt tokens are not reported', () => {
+    render(<CaseDrilldown run={run} results={results()} />);
+    const spam = screen.getByRole('region', { name: 'Case: Spam check' });
+    expect(spam.textContent).not.toContain('total tokens');
   });
 
   it('shows judge criteria with justification, self-judged flag, constraint failures, cold start and errors', () => {

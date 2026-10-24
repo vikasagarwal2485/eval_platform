@@ -26,6 +26,60 @@ def test_create_run_validation(settings, file_session_factory):
         assert c.get("/api/runs").json() == []
 
 
+# ------------------------------------------------------------------ skills (add-run-skills)
+def test_unknown_skill_id_refuses_the_run(settings, file_session_factory):
+    with new_client(settings, file_session_factory, FakeOllama(two_models())) as c:
+        r = c.post("/api/runs", json={"models": ["a:1"], "adhoc_cases": [CLS], "config": {"skill_ids": [999]}})
+        assert r.status_code == 422 and r.json()["detail"]["code"] == "skill_unavailable"
+        assert c.get("/api/runs").json() == []
+
+
+def test_run_with_no_skill_ids_behaves_identically_to_today(settings, file_session_factory):
+    fake = FakeOllama([make_tag("a:1")], make_responder())
+    with new_client(settings, file_session_factory, fake) as c:
+        run = start_run(c, ["a:1"], [CLS])
+        assert run["config"]["skill_ids"] == [] and run["config"]["skills"] == []
+        wait_for(c, run["id"])
+
+
+def test_skill_snapshot_is_frozen_against_later_edit_and_delete(settings, file_session_factory):
+    fake = FakeOllama([make_tag("a:1")], make_responder())
+    with new_client(settings, file_session_factory, fake) as c:
+        sk = c.post("/api/skills", json={"name": "s", "instructions": "Think step by step."}).json()
+        run = start_run(c, ["a:1"], [CLS], config={"skill_ids": [sk["id"]]})
+        assert run["config"]["skills"] == [{"id": sk["id"], "name": "s", "instructions": "Think step by step."}]
+        wait_for(c, run["id"])
+
+        c.patch(f"/api/skills/{sk['id']}", json={"instructions": "CHANGED."})
+        c.delete(f"/api/skills/{sk['id']}")
+
+        still = c.get(f"/api/runs/{run['id']}").json()
+        assert still["config"]["skills"] == [{"id": sk["id"], "name": "s", "instructions": "Think step by step."}]
+
+        # a new run can no longer select the deleted skill
+        r = c.post("/api/runs", json={"models": ["a:1"], "adhoc_cases": [CLS], "config": {"skill_ids": [sk["id"]]}})
+        assert r.status_code == 422 and r.json()["detail"]["code"] == "skill_unavailable"
+
+
+def test_every_request_in_a_skill_equipped_run_includes_its_instructions(settings, file_session_factory):
+    seen_system_prompts: list[str | None] = []
+
+    def responder(model, messages, options):
+        sysmsg = next((m["content"] for m in messages if m["role"] == "system"), None)
+        seen_system_prompts.append(sysmsg)
+        return make_stream("positive")
+
+    fake = FakeOllama(two_models(), responder)
+    with new_client(settings, file_session_factory, fake) as c:
+        sk = c.post("/api/skills", json={"name": "s", "instructions": "Always answer in one word."}).json()
+        run = start_run(
+            c, ["a:1", "b:1"], [CLS, REA], config={"skill_ids": [sk["id"]], "warmup": False}
+        )
+        wait_for(c, run["id"])
+    assert seen_system_prompts  # at least one chat request happened
+    assert all(p and "Always answer in one word." in p for p in seen_system_prompts)
+
+
 def test_ollama_down_returns_503(settings, file_session_factory):
     with new_client(settings, file_session_factory, FakeOllama(down=True)) as c:
         r = c.post("/api/runs", json={"models": ["a:1"], "adhoc_cases": [CLS]})

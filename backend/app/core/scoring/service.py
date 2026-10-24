@@ -11,7 +11,13 @@ from app.core.circuits import Circuits
 from app.core.scoring.base import ScoreResult
 from app.core.scoring.classification import score_classification
 from app.core.scoring.constraints import check_constraints
-from app.core.scoring.judge import DEFAULT_GENERATION_RUBRIC, REASONING_RUBRIC, JudgeCall, run_judge
+from app.core.scoring.judge import (
+    DEFAULT_GENERATION_RUBRIC,
+    REASONING_RUBRIC,
+    SKILL_ADHERENCE_RUBRIC,
+    JudgeCall,
+    run_judge,
+)
 from app.core.scoring.judging import JudgeTarget, plan_judgements, rebuild_aggregate
 from app.core.scoring.reasoning import score_reasoning
 from app.models import Result, RunCase
@@ -72,6 +78,7 @@ async def judge_run(
     judge_model: str | None,
     judge_think: Mapping[str, bool | None],
     judge_reasoning: bool,
+    judge_skill_adherence: bool = False,
     cancelled: CancelCheck = lambda: False,
     on_progress: ProgressCb = None,
     unload: UnloadCb = None,
@@ -90,6 +97,7 @@ async def judge_run(
     snaps = repo.run_snapshots(session, run)
     author_names = {s.id: s.name for s in snaps}
     results = {r.id: r for r in repo.list_results(session, run_id) if r.status == "ok"}  # failed requests: never judged
+    skills = run.config.get("skills") or []  # attached skill snapshot (add-run-skills), if any
 
     targets: list[JudgeTarget] = []
     for r in results.values():
@@ -98,6 +106,9 @@ async def judge_run(
             targets.append(JudgeTarget(r.id, r.model_snapshot_id, "judge"))
         elif case.category == "reasoning" and judge_reasoning and judge_mode != "none":
             targets.append(JudgeTarget(r.id, r.model_snapshot_id, "judge_reasoning"))
+        if skills and judge_skill_adherence and judge_mode != "none":
+            # every category, not just reasoning: a skill's instructions apply uniformly across a run
+            targets.append(JudgeTarget(r.id, r.model_snapshot_id, "skill_adherence"))
 
     if judge_mode == "none":
         for t in targets:
@@ -124,10 +135,22 @@ async def judge_run(
                 call = JudgeCall(
                     task=case.prompt, response=r.output or "", rubric=case.rubric or DEFAULT_GENERATION_RUBRIC
                 )
-            else:
+            elif task.kind == "judge_reasoning":
                 trace = f"{r.thinking}\n\n" if r.thinking else ""
                 call = JudgeCall(
                     task=case.prompt, response=f"{trace}{r.output}", rubric=REASONING_RUBRIC, kind="judge_reasoning"
+                )
+            else:  # skill_adherence
+                skill_text = "\n\n".join(f'Skill "{s["name"]}":\n{s["instructions"]}' for s in skills)
+                trace = f"{r.thinking}\n\n" if r.thinking else ""
+                call = JudgeCall(
+                    task=(
+                        f"The model was given the following skill instructions to follow:\n\n{skill_text}\n\n"
+                        f"It was then given this task:\n{case.prompt}"
+                    ),
+                    response=f"{trace}{r.output}",
+                    rubric=SKILL_ADHERENCE_RUBRIC,
+                    kind="skill_adherence",
                 )
             # cross-model planning never pairs an answer with its author; single mode may (and is then flagged)
             call.extra = {
@@ -185,6 +208,7 @@ async def rescore_run(
     judge_model: str | None,
     judge_think: Mapping[str, bool | None],
     judge_reasoning: bool = False,
+    judge_skill_adherence: bool = False,
     cancelled: CancelCheck = lambda: False,
     on_progress: ProgressCb = None,
     unload: UnloadCb = None,
@@ -208,6 +232,7 @@ async def rescore_run(
         judge_model=judge_model,
         judge_think=judge_think,
         judge_reasoning=judge_reasoning,
+        judge_skill_adherence=judge_skill_adherence,
         cancelled=cancelled,
         on_progress=on_progress,
         unload=unload,

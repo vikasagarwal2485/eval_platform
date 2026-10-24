@@ -72,6 +72,21 @@ export interface SuiteDetail extends Suite {
   cases: CaseOut[];
 }
 
+// ---------------------------------------------------------------- skills (add-run-skills)
+export interface Skill {
+  id: number;
+  name: string;
+  description: string;
+  instructions: string;
+  created_at: string;
+}
+/** What a run itself recorded at run-start - not a live registry lookup (add-run-skills). */
+export interface SkillSnapshot {
+  id: number;
+  name: string;
+  instructions: string;
+}
+
 // ---------------------------------------------------------------- runs
 export interface RunConfig {
   temperature: number;
@@ -83,6 +98,9 @@ export interface RunConfig {
   warmup: boolean;
   request_timeout_s?: number | null;
   judge_reasoning: boolean;
+  skill_ids: number[];
+  skills?: SkillSnapshot[]; // present once the run has started; the frozen content it used
+  judge_skill_adherence: boolean; // also judge whether the response followed the attached skill(s)
 }
 export const DEFAULT_RUN_CONFIG: RunConfig = {
   temperature: 0,
@@ -94,6 +112,8 @@ export const DEFAULT_RUN_CONFIG: RunConfig = {
   warmup: true,
   request_timeout_s: null,
   judge_reasoning: false,
+  skill_ids: [],
+  judge_skill_adherence: false,
 };
 
 export type JudgeMode = 'none' | 'single' | 'cross_model';
@@ -199,6 +219,11 @@ export interface ClassificationMetrics {
   >;
   confusion: { labels: string[]; rows: Record<string, Record<string, number>> } | null;
 }
+export interface SkillAdherenceStats {
+  mean_score: number | null;
+  judged: number;
+  errors: number;
+}
 export interface LeaderRow {
   model: string;
   model_id: number;
@@ -218,6 +243,9 @@ export interface LeaderRow {
   constraints: { passed: number; total: number } | null;
   self_judged: boolean;
   judges_per_answer: number | null;
+  /** did THIS model follow the attached skill(s)? (add-skill-adherence-scoring) - `null` when the run
+   * never judged skill adherence for it (no skill attached, or the judging toggle was off). */
+  skill_adherence: SkillAdherenceStats | null;
   errors: number;
 }
 export type Weights = Record<Category, number>;
@@ -227,6 +255,7 @@ export interface JudgeStat {
   errors: number;
   mean_score: number | null;
   reasoning_mean_score: number | null;
+  skill_adherence_mean_score: number | null;
 }
 export interface Judgement {
   judge_model: string;
@@ -301,6 +330,8 @@ export interface Delta {
 }
 export interface Compare {
   judging: { a: JudgeMode; b: JudgeMode; same: boolean };
+  /** skills each run attached (add-run-skills); `same` compares the two runs' skill names, not instructions */
+  skills: { a: SkillSnapshot[]; b: SkillSnapshot[]; same: boolean };
   a: { id: number; name: string; status: string };
   b: { id: number; name: string; status: string };
   models: {
@@ -309,6 +340,10 @@ export interface Compare {
     composite: Delta;
     categories: Partial<Record<Category, Delta>>;
     performance: Record<'latency_ms' | 'ttft_ms' | 'tokens_per_s', Delta>;
+    /** did this model follow the attached skill(s)? `null` when neither run judged it (add-skill-adherence-scoring) */
+    skill_adherence: Delta | null;
+    /** plausible reasons the performance numbers differ (cold starts, digest/skill/config changes) */
+    performance_notes: string[];
   }[];
   only_in_a: string[];
   only_in_b: string[];

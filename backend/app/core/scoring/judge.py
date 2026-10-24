@@ -19,6 +19,15 @@ REASONING_RUBRIC = [
     {"name": "Logical soundness", "description": "Each step follows from the previous ones and is correct"},
     {"name": "Clarity", "description": "The reasoning is easy to follow and free of contradictions"},
 ]
+SKILL_ADHERENCE_RUBRIC = [
+    {
+        "name": "Adherence",
+        "description": (
+            "The response visibly follows the attached skill's instructions - its process, structure or "
+            "constraints are evident in the response, not just the underlying task being addressed"
+        ),
+    },
+]
 
 SYSTEM_PROMPT = (
     "You are a strict, impartial evaluator. Score the RESPONSE to the TASK against each criterion "

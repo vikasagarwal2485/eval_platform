@@ -1,9 +1,12 @@
 """2.1: judging mode validation on run creation."""
 
+import json
+import re
+
 import pytest
 
 from app.core.scoring.judging import resolve_judging
-from tests.fakes import FakeOllama, make_tag
+from tests.fakes import FakeOllama, make_stream, make_tag
 from tests.helpers import CLS, GEN, make_responder, new_client, start_run, wait_for
 
 
@@ -140,3 +143,46 @@ def test_rescore_accepts_a_mode_and_rejects_cross_model_for_one_model(settings, 
         # legacy body (judge_model only) still means single
         assert c.post(f"/api/runs/{one['id']}/rescore", json={"judge_model": "judge:1"}).status_code == 202
         wait_for(c, one["id"])
+
+
+# ---------------------------------------------------------------- skill adherence on re-score
+def dynamic_judge_responder():
+    """Like `make_responder`'s judge handling, but reads criteria names from the prompt instead of
+    hardcoding Relevance/Fluency - works for any rubric (generation, reasoning, skill adherence)."""
+    base = make_responder()
+
+    def responder(model, messages, options):
+        if messages and messages[0]["role"] == "system" and "impartial evaluator" in messages[0]["content"]:
+            crit = re.search(r"CRITERIA:\n(.*?)\n\nReturn JSON", messages[1]["content"], re.S).group(1)
+            names = [ln[2:].split(":")[0] for ln in crit.splitlines() if ln.startswith("- ")]
+            return make_stream(json.dumps({"scores": {n: {"score": 4, "reason": "ok"} for n in names}}))
+        return base(model, messages, options)
+
+    return responder
+
+
+def test_rescore_with_skill_adherence_applies_the_given_mode_and_judges_adherence(settings, file_session_factory):
+    """Regression: the rescore endpoint builds its Job with several positional-looking fields -
+    `judge_skill_adherence` must land on the right field and not shift `judge_mode`."""
+    with new_client(settings, file_session_factory, FakeOllama(models3(), dynamic_judge_responder())) as c:
+        sk = c.post("/api/skills", json={"name": "s", "instructions": "Think step by step."}).json()
+        run = start_run(c, ["a:1"], [GEN], config={"skill_ids": [sk["id"]], "warmup": False})
+        wait_for(c, run["id"])
+
+        r = c.post(
+            f"/api/runs/{run['id']}/rescore",
+            json={"judge_model": "judge:1", "judge_mode": "single", "judge_skill_adherence": True},
+        )
+        assert r.status_code == 202
+        wait_for(c, run["id"])
+        summary = c.get(f"/api/runs/{run['id']}/summary").json()
+        # the rescore's own mode, not shifted/corrupted onto whatever field order the Job happened to use
+        assert summary["attempt"]["judge_mode"] == "single" and summary["attempt"]["judge_model"] == "judge:1"
+
+        results = c.get(f"/api/runs/{run['id']}/results").json()["results"]
+        sc = next(s for s in results[0]["scores"] if s["kind"] == "skill_adherence")
+        assert sc["outcome"] == "judged" and sc["value"] == pytest.approx(0.75)  # score 4/5 -> normalized
+
+        summary = c.get(f"/api/runs/{run['id']}/summary").json()
+        row = summary["leaderboard"][0]
+        assert row["skill_adherence"] == {"mean_score": pytest.approx(0.75), "judged": 1, "errors": 0}

@@ -133,6 +133,30 @@ def test_reasoning_quality_is_judged_across_models_when_enabled(settings, file_s
         r = gen_result(c, rid, "a:1", "reasoning")
         sc = next(s for s in r["scores"] if s["kind"] == "judge_reasoning")
     assert sc["detail"]["mode"] == "cross_model" and [j["judge_model"] for j in sc["detail"]["judgements"]] == ["b:1"]
+
+
+# ---------------------------------------------------------------- skill adherence (add-skill-adherence-scoring)
+def test_skill_adherence_is_judged_across_models_when_a_skill_is_attached_and_enabled(settings, file_session_factory):
+    fake = FakeOllama(tags("a:1", "b:1"), make_cross_responder())
+    with new_client(settings, file_session_factory, fake) as c:
+        sk = c.post("/api/skills", json={"name": "s", "instructions": "Think step by step."}).json()
+        rid, _ = run_cross(
+            c, ["a:1", "b:1"], cases=(CLS,), config={"skill_ids": [sk["id"]], "judge_skill_adherence": True}
+        )
+        r = gen_result(c, rid, "a:1", "classification")
+        sc = next(s for s in r["scores"] if s["kind"] == "skill_adherence")
+    assert sc["detail"]["mode"] == "cross_model" and [j["judge_model"] for j in sc["detail"]["judgements"]] == ["b:1"]
+    assert r["primary"]["outcome"] == "correct"  # correctness scoring is untouched by adherence judging
+
+
+def test_skill_adherence_has_no_effect_without_an_attached_skill(settings, file_session_factory):
+    """Enabling judge_skill_adherence on a run with no skills attached is a no-op (mirrors judge_reasoning
+    being a no-op on a run with no reasoning cases) - it never fabricates a target to judge."""
+    fake = FakeOllama(tags("a:1", "b:1"), make_cross_responder())
+    with new_client(settings, file_session_factory, fake) as c:
+        rid, _ = run_cross(c, ["a:1", "b:1"], cases=(CLS,), config={"judge_skill_adherence": True})
+        r = gen_result(c, rid, "a:1", "classification")
+    assert not any(s["kind"] == "skill_adherence" for s in r["scores"])
     assert r["primary"]["outcome"] == "correct"  # correctness scoring is untouched by judging
 
 

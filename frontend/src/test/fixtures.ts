@@ -32,6 +32,7 @@ export function row(
     judges?: number | null;
     cloud?: boolean;
     mem?: number | null;
+    skillAdherence?: { mean_score: number | null; judged: number; errors: number } | null;
   } = {},
 ): LeaderRow {
   const categories: Partial<Record<Category, CategoryScore>> = {};
@@ -66,6 +67,7 @@ export function row(
     constraints: null,
     self_judged: !!o.self,
     judges_per_answer: o.judges ?? null,
+    skill_adherence: o.skillAdherence ?? null,
     errors: 0,
   };
 }
@@ -110,6 +112,8 @@ export function runOf(models: string[], extra: Partial<Run> = {}): Run {
       think: true,
       warmup: true,
       judge_reasoning: false,
+      skill_ids: [],
+      judge_skill_adherence: false,
     },
     judge_model: 'judge:1',
     judge_mode: 'single',

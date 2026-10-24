@@ -6,6 +6,7 @@ import pytest
 
 from tests.fakes import FakeOllama, make_stream, make_tag
 from tests.helpers import CLS, GEN, REA, make_responder, new_client, start_run, two_models, wait_for
+from tests.test_judge_mode_api import dynamic_judge_responder
 
 
 def test_csv_export_columns_and_row_count(settings, file_session_factory):
@@ -104,3 +105,114 @@ def test_compare_flags_changed_model_digest(settings, file_session_factory):
         wait_for(c, r2["id"])
         d = c.get(f"/api/runs/compare?a={r1['id']}&b={r2['id']}").json()
     assert d["models"][0]["same_digest"] is False
+
+
+# ---------------------------------------------------------------- skills & reasons in comparison
+def test_compare_shows_each_runs_attached_skills(settings, file_session_factory):
+    fake = FakeOllama([make_tag("a:1")], make_responder())
+    with new_client(settings, file_session_factory, fake) as c:
+        sk = c.post("/api/skills", json={"name": "s", "instructions": "Think step by step."}).json()
+        r1 = start_run(c, ["a:1"], [CLS], config={"warmup": False})
+        wait_for(c, r1["id"])
+        r2 = start_run(c, ["a:1"], [CLS], config={"warmup": False, "skill_ids": [sk["id"]]})
+        wait_for(c, r2["id"])
+        d = c.get(f"/api/runs/compare?a={r1['id']}&b={r2['id']}").json()
+    assert d["skills"]["a"] == [] and d["skills"]["same"] is False
+    assert d["skills"]["b"] == [{"id": sk["id"], "name": "s", "instructions": "Think step by step."}]
+
+
+def test_compare_includes_skill_adherence_delta_only_when_judged(settings, file_session_factory):
+    fake = FakeOllama([make_tag("a:1"), make_tag("judge:1")], dynamic_judge_responder())
+    with new_client(settings, file_session_factory, fake) as c:
+        sk = c.post("/api/skills", json={"name": "s", "instructions": "Think step by step."}).json()
+        r1 = start_run(c, ["a:1"], [CLS], config={"warmup": False})
+        wait_for(c, r1["id"])
+        r2 = start_run(
+            c,
+            ["a:1"],
+            [CLS],
+            judge_model="judge:1",
+            config={"warmup": False, "skill_ids": [sk["id"]], "judge_skill_adherence": True},
+        )
+        wait_for(c, r2["id"])
+        d = c.get(f"/api/runs/compare?a={r1['id']}&b={r2['id']}").json()
+    model = d["models"][0]
+    assert model["skill_adherence"] is not None
+    assert model["skill_adherence"]["a"] is None  # run A never judged adherence
+    assert model["skill_adherence"]["b"] is not None
+
+
+def test_compare_no_skill_adherence_key_when_neither_run_judged_it(settings, file_session_factory):
+    fake = FakeOllama([make_tag("a:1")], make_responder())
+    with new_client(settings, file_session_factory, fake) as c:
+        r1 = start_run(c, ["a:1"], [CLS], config={"warmup": False})
+        wait_for(c, r1["id"])
+        r2 = start_run(c, ["a:1"], [CLS], config={"warmup": False})
+        wait_for(c, r2["id"])
+        d = c.get(f"/api/runs/compare?a={r1['id']}&b={r2['id']}").json()
+    assert d["models"][0]["skill_adherence"] is None
+
+
+def test_compare_performance_notes_flag_cold_start_skew(settings, file_session_factory):
+    def cold_responder(model, messages, options):
+        return make_stream("positive", load_duration_ns=400_000_000)  # 400ms -> cold
+
+    with new_client(settings, file_session_factory, FakeOllama([make_tag("a:1")], cold_responder)) as c:
+        r1 = start_run(c, ["a:1"], [CLS, CLS, CLS], config={"warmup": False})  # every request cold
+        wait_for(c, r1["id"])
+    with new_client(settings, file_session_factory, FakeOllama([make_tag("a:1")], make_responder())) as c:
+        r2 = start_run(c, ["a:1"], [CLS, CLS, CLS], config={"warmup": False})  # default responder: warm
+        wait_for(c, r2["id"])
+        d = c.get(f"/api/runs/compare?a={r1['id']}&b={r2['id']}").json()
+    notes = d["models"][0]["performance_notes"]
+    assert any("cold-start" in n for n in notes)
+
+
+def test_compare_performance_notes_flag_digest_change(settings, file_session_factory):
+    fake = FakeOllama([make_tag("a:1")], make_responder())
+    with new_client(settings, file_session_factory, fake) as c:
+        r1 = start_run(c, ["a:1"], [CLS], config={"warmup": False})
+        wait_for(c, r1["id"])
+        fake._models[0] = {**fake._models[0], "digest": "digest-NEW"}
+        r2 = start_run(c, ["a:1"], [CLS], config={"warmup": False})
+        wait_for(c, r2["id"])
+        d = c.get(f"/api/runs/compare?a={r1['id']}&b={r2['id']}").json()
+    notes = d["models"][0]["performance_notes"]
+    assert any("different build" in n.lower() or "digest" in n.lower() for n in notes)
+
+
+def test_compare_performance_notes_flag_skill_attached_in_only_one_run(settings, file_session_factory):
+    fake = FakeOllama([make_tag("a:1")], make_responder())
+    with new_client(settings, file_session_factory, fake) as c:
+        sk = c.post("/api/skills", json={"name": "step-by-step", "instructions": "x"}).json()
+        r1 = start_run(c, ["a:1"], [CLS], config={"warmup": False})
+        wait_for(c, r1["id"])
+        r2 = start_run(c, ["a:1"], [CLS], config={"warmup": False, "skill_ids": [sk["id"]]})
+        wait_for(c, r2["id"])
+        d = c.get(f"/api/runs/compare?a={r1['id']}&b={r2['id']}").json()
+    notes = d["models"][0]["performance_notes"]
+    assert any("step-by-step" in n and "Run B" in n for n in notes)
+
+
+def test_compare_performance_notes_flag_config_differences(settings, file_session_factory):
+    fake = FakeOllama([make_tag("a:1")], make_responder())
+    with new_client(settings, file_session_factory, fake) as c:
+        r1 = start_run(c, ["a:1"], [CLS], config={"warmup": False, "num_ctx": 4096, "think": False})
+        wait_for(c, r1["id"])
+        r2 = start_run(c, ["a:1"], [CLS], config={"warmup": False, "num_ctx": 8192, "think": True})
+        wait_for(c, r2["id"])
+        d = c.get(f"/api/runs/compare?a={r1['id']}&b={r2['id']}").json()
+    notes = d["models"][0]["performance_notes"]
+    assert any("context size" in n.lower() for n in notes)
+    assert any("thinking" in n.lower() for n in notes)
+
+
+def test_compare_no_notes_when_runs_are_otherwise_identical(settings, file_session_factory):
+    fake = FakeOllama([make_tag("a:1")], make_responder())
+    with new_client(settings, file_session_factory, fake) as c:
+        r1 = start_run(c, ["a:1"], [CLS], config={"warmup": False})
+        wait_for(c, r1["id"])
+        r2 = start_run(c, ["a:1"], [CLS], config={"warmup": False})
+        wait_for(c, r2["id"])
+        d = c.get(f"/api/runs/compare?a={r1['id']}&b={r2['id']}").json()
+    assert d["models"][0]["performance_notes"] == []

@@ -302,6 +302,7 @@ describe('9.9 history page', () => {
     const compare = {
       a: { id: 1, name: 'Before', status: 'completed' },
       b: { id: 2, name: 'After', status: 'completed' },
+      skills: { a: [], b: [], same: true },
       models: [
         {
           model: 'a:1',
@@ -317,6 +318,8 @@ describe('9.9 history page', () => {
             ttft_ms: { a: 300, b: 300, delta: 0 },
             tokens_per_s: { a: 40, b: 44, delta: 4 },
           },
+          skill_adherence: null,
+          performance_notes: [],
         },
       ],
       only_in_a: ['b:1'],
@@ -341,6 +344,136 @@ describe('9.9 history page', () => {
     expect(within(table).getByText('different build')).toBeInTheDocument();
     expect(screen.getByText(/Only in run #1: b:1/)).toBeInTheDocument();
     expect(screen.getByText(/Only in run #2: c:1/)).toBeInTheDocument();
+  });
+
+  it('shows which skills each run used, flagging when they differ', async () => {
+    const compare = {
+      a: { id: 1, name: 'Before', status: 'completed' },
+      b: { id: 2, name: 'After', status: 'completed' },
+      skills: {
+        a: [],
+        b: [{ id: 7, name: 'step-by-step', instructions: 'Think step by step.' }],
+        same: false,
+      },
+      models: [
+        {
+          model: 'a:1',
+          same_digest: true,
+          composite: { a: 0.5, b: 0.5, delta: 0 },
+          categories: {},
+          performance: {
+            latency_ms: { a: 1000, b: 1000, delta: 0 },
+            ttft_ms: { a: 100, b: 100, delta: 0 },
+            tokens_per_s: { a: 40, b: 40, delta: 0 },
+          },
+          skill_adherence: null,
+          performance_notes: [],
+        },
+      ],
+      only_in_a: [],
+      only_in_b: [],
+      cases: [],
+    };
+    const { user } = historySetup([runRow(2), runRow(1)], {
+      'GET /runs/compare?a=1&b=2': compare,
+    });
+    await user.click(await screen.findByRole('checkbox', { name: 'Select run 2 for comparison' }));
+    await user.click(screen.getByRole('checkbox', { name: 'Select run 1 for comparison' }));
+    await user.click(screen.getByRole('button', { name: /Compare selected \(2\/2\)/ }));
+    await screen.findByRole('table', { name: 'Model changes' });
+    expect(screen.getByText(/run #1 used none/)).toBeInTheDocument();
+    expect(screen.getByText(/run #2 used step-by-step/)).toBeInTheDocument();
+    expect(screen.getByText('different skills')).toBeInTheDocument();
+  });
+
+  it('shows a "Followed skill" column with a delta when adherence was judged', async () => {
+    const compare = {
+      a: { id: 1, name: 'Before', status: 'completed' },
+      b: { id: 2, name: 'After', status: 'completed' },
+      skills: { a: [], b: [{ id: 7, name: 's', instructions: 'x' }], same: false },
+      models: [
+        {
+          model: 'a:1',
+          same_digest: true,
+          composite: { a: 0.5, b: 0.5, delta: 0 },
+          categories: {},
+          performance: {
+            latency_ms: { a: 1000, b: 1000, delta: 0 },
+            ttft_ms: { a: 100, b: 100, delta: 0 },
+            tokens_per_s: { a: 40, b: 40, delta: 0 },
+          },
+          skill_adherence: { a: null, b: 0.8, delta: null },
+          performance_notes: [],
+        },
+        {
+          model: 'b:1',
+          same_digest: true,
+          composite: { a: 0.5, b: 0.5, delta: 0 },
+          categories: {},
+          performance: {
+            latency_ms: { a: 1000, b: 1000, delta: 0 },
+            ttft_ms: { a: 100, b: 100, delta: 0 },
+            tokens_per_s: { a: 40, b: 40, delta: 0 },
+          },
+          skill_adherence: null, // this model never judged - should show a dash, not crash
+          performance_notes: [],
+        },
+      ],
+      only_in_a: [],
+      only_in_b: [],
+      cases: [],
+    };
+    const { user } = historySetup([runRow(2), runRow(1)], {
+      'GET /runs/compare?a=1&b=2': compare,
+    });
+    await user.click(await screen.findByRole('checkbox', { name: 'Select run 2 for comparison' }));
+    await user.click(screen.getByRole('checkbox', { name: 'Select run 1 for comparison' }));
+    await user.click(screen.getByRole('button', { name: /Compare selected \(2\/2\)/ }));
+    const table = await screen.findByRole('table', { name: 'Model changes' });
+    expect(within(table).getByRole('columnheader', { name: 'Followed skill' })).toBeInTheDocument();
+    expect(within(table).getByText(/80\.0%/)).toBeInTheDocument();
+    const rows = within(table).getAllByRole('row').slice(1);
+    expect(within(rows[1]).getAllByRole('cell').pop()).toHaveTextContent('—');
+  });
+
+  it('explains likely reasons for a latency/throughput change behind a "Why?" disclosure', async () => {
+    const compare = {
+      a: { id: 1, name: 'Before', status: 'completed' },
+      b: { id: 2, name: 'After', status: 'completed' },
+      skills: { a: [], b: [], same: true },
+      models: [
+        {
+          model: 'a:1',
+          same_digest: false,
+          composite: { a: 0.5, b: 0.5, delta: 0 },
+          categories: {},
+          performance: {
+            latency_ms: { a: 1000, b: 6000, delta: 5000 },
+            ttft_ms: { a: 100, b: 100, delta: 0 },
+            tokens_per_s: { a: 40, b: 40, delta: 0 },
+          },
+          skill_adherence: null,
+          performance_notes: [
+            'Run B had a larger share of cold-start requests than Run A (0% vs 100% cold).',
+            'The two runs used different builds of this model (digest differs).',
+          ],
+        },
+      ],
+      only_in_a: [],
+      only_in_b: [],
+      cases: [],
+    };
+    const { user } = historySetup([runRow(2), runRow(1)], {
+      'GET /runs/compare?a=1&b=2': compare,
+    });
+    await user.click(await screen.findByRole('checkbox', { name: 'Select run 2 for comparison' }));
+    await user.click(screen.getByRole('checkbox', { name: 'Select run 1 for comparison' }));
+    await user.click(screen.getByRole('button', { name: /Compare selected \(2\/2\)/ }));
+    const table = await screen.findByRole('table', { name: 'Model changes' });
+    expect(within(table).getByText(/cold-start/)).not.toBeVisible(); // collapsed until opened
+    await user.click(within(table).getByText('Why?'));
+    expect(within(table).getByText(/cold-start/)).toBeVisible();
+    expect(within(table).getByText(/different builds/)).toBeVisible();
   });
 
   it('keeps at most two runs selected', async () => {

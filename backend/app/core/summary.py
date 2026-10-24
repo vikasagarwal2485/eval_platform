@@ -45,23 +45,39 @@ def judging_summary(session: Session, attempt) -> dict:
     if attempt is None:
         return {"mode": "none", "judges": []}
     stats: dict[str, dict] = {}
+    buckets = {"judge": "_gen", "judge_reasoning": "_reasoning", "skill_adherence": "_skill"}
     for j in repo.list_judgements(session, attempt.id):
         st = stats.setdefault(
             j.judge_model,
-            {"model": j.judge_model, "judged": 0, "errors": 0, "_gen": [], "_reasoning": []},
+            {"model": j.judge_model, "judged": 0, "errors": 0, "_gen": [], "_reasoning": [], "_skill": []},
         )
         if j.outcome == "judged" and j.value is not None:
             st["judged"] += 1
-            st["_reasoning" if j.kind == "judge_reasoning" else "_gen"].append(j.value)
+            st[buckets.get(j.kind, "_gen")].append(j.value)
         else:
             st["errors"] += 1
     judges = []
     for st in stats.values():
-        gen, rea = st.pop("_gen"), st.pop("_reasoning")
+        gen, rea, skill = st.pop("_gen"), st.pop("_reasoning"), st.pop("_skill")
         st["mean_score"] = sum(gen) / len(gen) if gen else None
         st["reasoning_mean_score"] = sum(rea) / len(rea) if rea else None
+        st["skill_adherence_mean_score"] = sum(skill) / len(skill) if skill else None
         judges.append(st)
     return {"mode": attempt.judge_mode, "judges": judges}
+
+
+def _skill_adherence_stats(scores: list[tuple[float | None, str]]) -> dict | None:
+    """Per-evaluated-model rollup of its own `skill_adherence` scores (add-skill-adherence-scoring):
+    "did THIS model follow the attached skill(s)", as opposed to `judging_summary`'s per-judge view of
+    how strict each judge was. `None` when the run never judged skill adherence for this model."""
+    if not scores:
+        return None
+    judged = [v for v, outcome in scores if outcome == "judged" and v is not None]
+    return {
+        "mean_score": sum(judged) / len(judged) if judged else None,
+        "judged": len(judged),
+        "errors": len(scores) - len(judged),
+    }
 
 
 def build_summary(
@@ -95,6 +111,7 @@ def build_summary(
     for snap in snaps:
         mrs = by_model.get(snap.id, [])
         items, cls_pairs, cons_pass, cons_total, self_judged, judges_per_answer = [], [], 0, 0, False, None
+        skill_adherence_scores: list[tuple[float | None, str]] = []
         for r in mrs:
             case = cases[r.run_case_id]
             sc = scores_by_result.get(r.id, {})
@@ -114,6 +131,9 @@ def build_summary(
                 self_judged = True
             if prim and prim.detail.get("judgements"):
                 judges_per_answer = max(judges_per_answer or 0, len(prim.detail["judgements"]))
+            sa = sc.get("skill_adherence")
+            if sa:
+                skill_adherence_scores.append((sa.value, sa.outcome))
         cats = category_scores(items).get(snap.id, {})
         perf_by_cat = {
             cat: perf_stats([r for r in mrs if cases[r.run_case_id].category == cat], include_cold=include_cold)
@@ -140,6 +160,7 @@ def build_summary(
                 "constraints": {"passed": cons_pass, "total": cons_total} if cons_total else None,
                 "self_judged": self_judged,
                 "judges_per_answer": judges_per_answer,
+                "skill_adherence": _skill_adherence_stats(skill_adherence_scores),
                 "errors": sum(1 for r in mrs if r.status != "ok"),
             }
         )
@@ -208,15 +229,68 @@ def _delta(a, b):
     return None if a is None or b is None else b - a
 
 
+def _cold_fraction(perf: dict) -> float:
+    total = perf["requests"]
+    return perf["cold_requests"] / total if total else 0.0
+
+
+def _performance_notes(a: dict, b: dict, cfg_a: dict, cfg_b: dict, skills_a: list, skills_b: list) -> list[str]:
+    """Plausible, human-readable reasons the two runs' latency/tokens-per-sec differ for this model -
+    not a root-cause diagnosis, just the measurement-affecting differences the platform can already see
+    between the two runs. Order: biggest/most common confound first."""
+    notes: list[str] = []
+
+    cold_a, cold_b = _cold_fraction(a["performance"]), _cold_fraction(b["performance"])
+    if abs(cold_b - cold_a) >= 0.2:  # a meaningful share of requests, not one stray retry
+        more, fewer = ("B", "A") if cold_b > cold_a else ("A", "B")
+        notes.append(
+            f"Run {more} had a larger share of cold-start requests than Run {fewer} "
+            f"({cold_a:.0%} vs {cold_b:.0%} cold) - cold requests include model load time, inflating latency."
+        )
+
+    if a["digest"] != b["digest"]:
+        notes.append(
+            "The two runs used different builds of this model (digest differs) - timing may not compare directly."
+        )
+
+    names_a, names_b = {s["name"] for s in skills_a}, {s["name"] for s in skills_b}
+    if names_a != names_b:
+        if names_a and not names_b:
+            notes.append(
+                f"Run A attached skill(s) {', '.join(sorted(names_a))} that Run B did not - a longer prompt can change latency and tokens/sec."
+            )
+        elif names_b and not names_a:
+            notes.append(
+                f"Run B attached skill(s) {', '.join(sorted(names_b))} that Run A did not - a longer prompt can change latency and tokens/sec."
+            )
+        else:
+            notes.append("The two runs attached different skills, so their prompts differ in length and content.")
+
+    for key, label in (("num_ctx", "context size"), ("max_output_tokens", "max output tokens")):
+        va, vb = cfg_a.get(key), cfg_b.get(key)
+        if va is not None and vb is not None and va != vb:
+            notes.append(f"{label.capitalize()} differs between runs ({va} vs {vb}).")
+    if cfg_a.get("think") != cfg_b.get("think"):
+        notes.append("Thinking was enabled in one run but not the other, which changes how many tokens are generated.")
+
+    return notes
+
+
 def compare_runs(session: Session, run_a, run_b, weights: dict[str, float] | None = None) -> dict:
     """Deltas (B minus A) for models and cases present in both runs."""
     sa, sb = (build_summary(session, r, weights=weights) for r in (run_a, run_b))
     rows_a = {r["model"]: r for r in sa["leaderboard"]}
     rows_b = {r["model"]: r for r in sb["leaderboard"]}
     both = [m for m in rows_a if m in rows_b]
+    cfg_a, cfg_b = run_a.config or {}, run_b.config or {}
+    skills_a, skills_b = cfg_a.get("skills") or [], cfg_b.get("skills") or []
 
     def perf(row, key, stat="median"):
         return row["performance"][key][stat]
+
+    def adherence(row):
+        stats = row.get("skill_adherence")
+        return stats["mean_score"] if stats else None
 
     models = []
     for m in both:
@@ -243,6 +317,14 @@ def compare_runs(session: Session, run_a, run_b, weights: dict[str, float] | Non
                     key: {"a": perf(a, key), "b": perf(b, key), "delta": _delta(perf(a, key), perf(b, key))}
                     for key in ("latency_ms", "ttft_ms", "tokens_per_s")
                 },
+                "skill_adherence": {
+                    "a": adherence(a),
+                    "b": adherence(b),
+                    "delta": _delta(adherence(a), adherence(b)),
+                }
+                if a.get("skill_adherence") or b.get("skill_adherence")
+                else None,
+                "performance_notes": _performance_notes(a, b, cfg_a, cfg_b, skills_a, skills_b),
             }
         )
 
@@ -261,8 +343,10 @@ def compare_runs(session: Session, run_a, run_b, weights: dict[str, float] | Non
         )
     mode_a = (sa["attempt"] or {}).get("judge_mode", "none")
     mode_b = (sb["attempt"] or {}).get("judge_mode", "none")
+    names_a, names_b = [s["name"] for s in skills_a], [s["name"] for s in skills_b]
     return {
         "judging": {"a": mode_a, "b": mode_b, "same": mode_a == mode_b},
+        "skills": {"a": skills_a, "b": skills_b, "same": set(names_a) == set(names_b)},
         "a": {"id": run_a.id, "name": run_a.name, "status": run_a.status},
         "b": {"id": run_b.id, "name": run_b.name, "status": run_b.status},
         "models": models,

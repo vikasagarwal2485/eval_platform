@@ -23,6 +23,7 @@ import type {
   Run,
   RunCreate,
   RubricCriterion,
+  Skill,
   Suite,
   SuiteDetail,
   Summary,
@@ -36,6 +37,7 @@ export const keys = {
   models: ['models'] as const,
   suites: ['suites'] as const,
   suite: (id: number) => ['suite', id] as const,
+  skills: ['skills'] as const,
   providers: ['providers'] as const,
   agents: ['agents'] as const,
   agent: (id: number) => ['agent', id] as const,
@@ -172,6 +174,7 @@ export function useRunActions(id: number) {
         judge_model: string | null;
         judge_mode?: JudgeMode;
         judge_reasoning?: boolean;
+        judge_skill_adherence?: boolean;
       }) => api.post(`/runs/${id}/rescore`, b),
       onSuccess: refresh,
     }),
@@ -241,6 +244,43 @@ export function useSuiteMutations() {
       mutationFn: (b: { case: CaseIn; suite_id?: number; new_suite_name?: string }) =>
         api.post<CaseOut>('/suites/save-adhoc', b),
       onSuccess: () => refresh(),
+    }),
+  };
+}
+
+// ---------------------------------------------------------------- skills (add-run-skills)
+export const useSkills = () =>
+  useQuery({ queryKey: keys.skills, queryFn: () => api.get<Skill[]>('/skills') });
+
+export function useSkillMutations() {
+  const qc = useQueryClient();
+  const refresh = () => qc.invalidateQueries({ queryKey: keys.skills });
+  return {
+    create: useMutation({
+      mutationFn: (b: { name: string; description?: string; instructions: string }) =>
+        api.post<Skill>('/skills', b),
+      onSuccess: refresh,
+    }),
+    update: useMutation({
+      mutationFn: ({
+        id,
+        ...b
+      }: {
+        id: number;
+        name?: string;
+        description?: string;
+        instructions?: string;
+      }) => api.patch<Skill>(`/skills/${id}`, b),
+      onSuccess: refresh,
+    }),
+    remove: useMutation({
+      mutationFn: (id: number) => api.delete(`/skills/${id}`),
+      onSuccess: refresh,
+    }),
+    importSkill: useMutation({
+      mutationFn: (b: { content: string; filename?: string; content_type?: string }) =>
+        api.post<Skill>('/skills/import', b),
+      onSuccess: refresh,
     }),
   };
 }

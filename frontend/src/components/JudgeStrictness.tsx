@@ -11,6 +11,7 @@ export default function JudgeStrictness({
 }) {
   if (!judges.length) return null;
   const hasReasoning = judges.some((j) => j.reasoning_mean_score !== null);
+  const hasSkillAdherence = judges.some((j) => j.skill_adherence_mean_score !== null);
   return (
     <section className="card" aria-labelledby="strict-h" style={{ marginTop: 16 }}>
       <h2 id="strict-h">Judge strictness</h2>
@@ -28,6 +29,7 @@ export default function JudgeStrictness({
               <th className="num">Failed</th>
               <th className="num">Average score given</th>
               {hasReasoning && <th className="num">Average reasoning score</th>}
+              {hasSkillAdherence && <th className="num">Average skill-adherence score</th>}
             </tr>
           </thead>
           <tbody>
@@ -44,6 +46,13 @@ export default function JudgeStrictness({
                 {hasReasoning && (
                   <td className="num">
                     {j.reasoning_mean_score === null ? dash : fmtPct(j.reasoning_mean_score, 1)}
+                  </td>
+                )}
+                {hasSkillAdherence && (
+                  <td className="num">
+                    {j.skill_adherence_mean_score === null
+                      ? dash
+                      : fmtPct(j.skill_adherence_mean_score, 1)}
                   </td>
                 )}
               </tr>

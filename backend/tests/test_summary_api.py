@@ -34,6 +34,7 @@ def test_leaderboard_rows_scores_counts_and_performance(settings, file_session_f
     assert set(a["performance_by_category"]) == {"classification", "reasoning", "generation"}
     assert a["classification"]["accuracy"] == 1.0
     assert a["constraints"] == {"passed": 1, "total": 1} and a["self_judged"] is True
+    assert a["skill_adherence"] is None  # no skill attached to this run
 
 
 def test_changing_weights_recomputes_composite_without_rerunning(settings, file_session_factory):

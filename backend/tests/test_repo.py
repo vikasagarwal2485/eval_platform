@@ -2,7 +2,7 @@ import pytest
 
 from app import repo
 from app.repo import CaseSource
-from app.schemas import CaseIn, ModelInfo, SuiteIn
+from app.schemas import CaseIn, ModelInfo, SkillIn, SuiteIn
 
 
 def cls_case(prompt="great!", expected="positive"):
@@ -56,6 +56,47 @@ def test_duplicate_suite_copies_cases_with_unique_names(session):
     assert d1.name == "orig (copy)" and d2.name == "orig (copy 2)"
     assert [c.prompt for c in d1.cases] == [c.prompt for c in s.cases]
     assert d1.id != s.id and d1.cases[0].id != s.cases[0].id
+
+
+# ---------------------------------------------------------------- skills (add-run-skills)
+def mk_skill(session, name="s", instructions="Think step by step."):
+    return repo.create_skill(session, SkillIn(name=name, description="d", instructions=instructions))
+
+
+def test_skill_crud(session):
+    sk = mk_skill(session)
+    assert sk.name == "s" and sk.instructions == "Think step by step."
+
+    repo.update_skill(session, sk.id, name="renamed", description="d2", instructions="New text.")
+    reloaded = repo.get_skill(session, sk.id)
+    assert (reloaded.name, reloaded.description, reloaded.instructions) == ("renamed", "d2", "New text.")
+
+    assert [s.name for s in repo.list_skills(session)] == ["renamed"]
+
+    repo.delete_skill(session, sk.id)
+    assert repo.list_skills(session) == []
+    with pytest.raises(repo.NotFound):
+        repo.get_skill(session, sk.id)
+
+
+def test_skill_name_conflict(session):
+    mk_skill(session, "a")
+    with pytest.raises(repo.Conflict):
+        mk_skill(session, "a")
+
+
+def test_skill_rename_conflict(session):
+    mk_skill(session, "a")
+    b = mk_skill(session, "b")
+    with pytest.raises(repo.Conflict):
+        repo.update_skill(session, b.id, name="a", description=None, instructions=None)
+
+
+def test_skills_by_ids_preserves_order_and_rejects_unknown(session):
+    a, b = mk_skill(session, "a"), mk_skill(session, "b")
+    assert [s.name for s in repo.skills_by_ids(session, [b.id, a.id])] == ["b", "a"]
+    with pytest.raises(repo.NotFound):
+        repo.skills_by_ids(session, [a.id, 999])
 
 
 def test_run_case_freezes_content_when_source_edited_or_deleted(session):

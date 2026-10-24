@@ -112,6 +112,17 @@ export default function ResultsPage() {
             )}
             {r.ollama_version ? ` · Ollama ${r.ollama_version}` : ''}
           </p>
+          {!!r.config.skills?.length && (
+            <p className="small muted">
+              Skills:{' '}
+              {r.config.skills.map((s, i) => (
+                <span key={s.id}>
+                  {i > 0 && ', '}
+                  <span title={s.instructions}>{s.name}</span>
+                </span>
+              ))}
+            </p>
+          )}
         </div>
         <div className="row">
           <a className="btn" href={`/api/runs/${id}/export?format=csv`} download>
