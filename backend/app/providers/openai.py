@@ -189,6 +189,7 @@ class OpenAIBackend(CloudBackend):
         finally:
             await resp.aclose()
         details = (usage or {}).get("completion_tokens_details") or (usage or {}).get("output_tokens_details") or {}
+        prompt_details = (usage or {}).get("prompt_tokens_details") or {}
         yield final_chunk(
             done_reason=finish or "stop",
             prompt_tokens=(usage or {}).get("prompt_tokens"),
@@ -201,6 +202,7 @@ class OpenAIBackend(CloudBackend):
                 "retry_wait_ms": opened.retry_wait_ms,
                 "params_applied": applied,
                 "params_ignored": ignored,
+                "cached_tokens": prompt_details.get("cached_tokens"),  # add-prompt-caching
                 "reasoning_tokens": details.get("reasoning_tokens"),
                 "finish_reason": finish,
             },

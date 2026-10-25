@@ -121,6 +121,25 @@ describe('9.8 case drill-down', () => {
     expect(within(card).getByText('500 total tokens')).toBeInTheDocument();
   });
 
+  it('shows the cached-token count when the provider reports it (add-prompt-caching)', () => {
+    const rs = [
+      result('alpha:1', 1, 'classification', 'correct', {
+        output: 'spam',
+        metrics: { cached_tokens: 1400 },
+        scores: [auto({ predicted: 'spam', ambiguous: false })],
+      }),
+    ];
+    render(<CaseDrilldown run={run} results={rs} />);
+    const card = screen.getByRole('region', { name: 'Case: Spam check' });
+    expect(within(card).getByText('1400 cached')).toBeInTheDocument();
+  });
+
+  it('omits the cached-token figure when not reported', () => {
+    render(<CaseDrilldown run={run} results={results()} />);
+    const spam = screen.getByRole('region', { name: 'Case: Spam check' });
+    expect(spam.textContent).not.toContain('cached');
+  });
+
   it('shows a skill-adherence judgement when present (add-skill-adherence-scoring)', () => {
     const rs = [
       result('alpha:1', 1, 'classification', 'correct', {

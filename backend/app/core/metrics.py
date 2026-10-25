@@ -204,6 +204,7 @@ def compute_cloud_metrics(
         "prompt_eval_ms": None,
         "eval_ms": None,
         "prompt_tokens": raw.get("prompt_eval_count"),
+        "cached_tokens": provider.get("cached_tokens"),  # add-prompt-caching: absent, never fabricated as 0
         "output_tokens": eval_count,
         "thinking_tokens": thinking_tokens,
         "thinking_tokens_approx": approx,
@@ -265,5 +266,8 @@ def perf_stats(rows: list[Any], *, include_cold: bool = False) -> dict:
         "ttft_ms": describe([r.ttft_ms for r in warm]),
         "tokens_per_s": describe([r.tokens_per_s for r in warm]),
         "output_tokens": describe([r.output_tokens for r in warm]),
+        # add-prompt-caching: absent (never 0) for local models or a provider that never reports it
+        "prompt_tokens": describe([r.metrics.get("prompt_tokens") for r in warm]),
+        "cached_tokens": describe([r.metrics.get("cached_tokens") for r in warm]),
         "cold_load_ms": describe(loads),
     }

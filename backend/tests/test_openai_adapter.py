@@ -63,6 +63,29 @@ async def test_reasoning_tokens_are_reported_exactly(server):
     assert final["eval_count"] == 250 and final["_provider"]["reasoning_tokens"] == 200
 
 
+# ---------------------------------------------------------------- cached tokens (add-prompt-caching)
+async def test_cached_prompt_tokens_are_reported_when_present(server):
+    srv, url = server
+    srv.script.append(
+        Step(
+            usage={
+                "prompt_tokens": 1500,
+                "completion_tokens": 20,
+                "prompt_tokens_details": {"cached_tokens": 1400},
+            }
+        )
+    )
+    final = (await collect(adapter(url).chat_stream(model="gpt-4o", messages=MSGS)))[-1]
+    assert final["prompt_eval_count"] == 1500 and final["_provider"]["cached_tokens"] == 1400
+
+
+async def test_cached_prompt_tokens_absent_not_zero_when_not_reported(server):
+    srv, url = server
+    srv.script.append(Step(usage={"prompt_tokens": 30, "completion_tokens": 5}))  # no prompt_tokens_details at all
+    final = (await collect(adapter(url).chat_stream(model="gpt-4o", messages=MSGS)))[-1]
+    assert final["_provider"]["cached_tokens"] is None
+
+
 async def test_reasoning_text_from_compatible_gateways_becomes_thinking():
     body = (
         "\n\n".join(

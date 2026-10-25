@@ -1,9 +1,13 @@
 import csv
 import io
 import json
+import os
+from datetime import UTC, datetime
 
 import pytest
 
+from app import repo
+from tests.fake_providers import FakeOpenAI, Step
 from tests.fakes import FakeOllama, make_stream, make_tag
 from tests.helpers import CLS, GEN, REA, make_responder, new_client, start_run, two_models, wait_for
 from tests.test_judge_mode_api import dynamic_judge_responder
@@ -205,6 +209,103 @@ def test_compare_performance_notes_flag_config_differences(settings, file_sessio
     notes = d["models"][0]["performance_notes"]
     assert any("context size" in n.lower() for n in notes)
     assert any("thinking" in n.lower() for n in notes)
+
+
+def test_compare_performance_notes_flag_cached_share_difference(settings, file_session_factory):
+    """add-prompt-caching: a meaningfully different cached-prompt-token share between two runs for
+    the same enterprise model is named as a possible reason for the latency/tokens-per-sec delta."""
+    GPT = "@oa/gpt-4o"
+    srv = FakeOpenAI()
+    url = srv.start()
+    try:
+        with file_session_factory() as s:
+            p = repo.create_provider(
+                s, kind="openai", name="oa", key_env="OA_KEY", base_url=url, ack_at=datetime.now(UTC)
+            )
+            repo.add_registered_model(s, p.id, "gpt-4o")
+            s.commit()
+        os.environ["OA_KEY"] = "test-key-123"  # tests/fake_providers.py's FakeOpenAI.expected_key
+        with new_client(settings, file_session_factory, FakeOllama([], make_responder())) as c:
+            # run A: provider explicitly reports zero tokens served from cache (a real 0%, not absent)
+            srv.script.append(
+                Step(
+                    usage={"prompt_tokens": 1500, "completion_tokens": 5, "prompt_tokens_details": {"cached_tokens": 0}}
+                )
+            )
+            r1 = start_run(c, [GPT], [CLS], config={"warmup": False})
+            wait_for(c, r1["id"])
+            # run B: almost entirely served from the provider's own cache
+            srv.script.append(
+                Step(
+                    usage={
+                        "prompt_tokens": 1500,
+                        "completion_tokens": 5,
+                        "prompt_tokens_details": {"cached_tokens": 1400},
+                    }
+                )
+            )
+            r2 = start_run(c, [GPT], [CLS], config={"warmup": False})
+            wait_for(c, r2["id"])
+            d = c.get(f"/api/runs/compare?a={r1['id']}&b={r2['id']}").json()
+    finally:
+        srv.stop()
+        os.environ.pop("OA_KEY", None)
+    notes = d["models"][0]["performance_notes"]
+    assert any("cached" in n.lower() for n in notes)
+
+
+def test_compare_no_cached_share_note_when_the_difference_is_too_small(settings, file_session_factory):
+    GPT = "@oa/gpt-4o"
+    srv = FakeOpenAI()
+    url = srv.start()
+    try:
+        with file_session_factory() as s:
+            p = repo.create_provider(
+                s, kind="openai", name="oa", key_env="OA_KEY2", base_url=url, ack_at=datetime.now(UTC)
+            )
+            repo.add_registered_model(s, p.id, "gpt-4o")
+            s.commit()
+        os.environ["OA_KEY2"] = "test-key-123"
+        with new_client(settings, file_session_factory, FakeOllama([], make_responder())) as c:
+            srv.script.append(
+                Step(
+                    usage={
+                        "prompt_tokens": 1500,
+                        "completion_tokens": 5,
+                        "prompt_tokens_details": {"cached_tokens": 150},
+                    }
+                )
+            )
+            r1 = start_run(c, [GPT], [CLS], config={"warmup": False})
+            wait_for(c, r1["id"])
+            # B's share (300/1500 = 20%) is only 10 points above A's (150/1500 = 10%) - below the threshold
+            srv.script.append(
+                Step(
+                    usage={
+                        "prompt_tokens": 1500,
+                        "completion_tokens": 5,
+                        "prompt_tokens_details": {"cached_tokens": 300},
+                    }
+                )
+            )
+            r2 = start_run(c, [GPT], [CLS], config={"warmup": False})
+            wait_for(c, r2["id"])
+            d = c.get(f"/api/runs/compare?a={r1['id']}&b={r2['id']}").json()
+    finally:
+        srv.stop()
+        os.environ.pop("OA_KEY2", None)
+    assert not any("cached" in n.lower() for n in d["models"][0]["performance_notes"])
+
+
+def test_compare_no_cached_share_note_when_data_is_missing_on_either_side(settings, file_session_factory):
+    fake = FakeOllama([make_tag("a:1")], make_responder())
+    with new_client(settings, file_session_factory, fake) as c:
+        r1 = start_run(c, ["a:1"], [CLS], config={"warmup": False})
+        wait_for(c, r1["id"])
+        r2 = start_run(c, ["a:1"], [CLS], config={"warmup": False})
+        wait_for(c, r2["id"])
+        d = c.get(f"/api/runs/compare?a={r1['id']}&b={r2['id']}").json()
+    assert not any("cached" in n.lower() for n in d["models"][0]["performance_notes"])
 
 
 def test_compare_no_notes_when_runs_are_otherwise_identical(settings, file_session_factory):

@@ -125,6 +125,7 @@ function Metrics({ r }: { r: ResultItem }) {
   const m = r.metrics as Record<string, number | boolean | null>;
   const think = m.thinking_tokens as number | null | undefined;
   const prompt = m.prompt_tokens as number | null | undefined;
+  const cached = m.cached_tokens as number | null | undefined; // add-prompt-caching
   const total =
     typeof prompt === 'number' && typeof r.output_tokens === 'number'
       ? prompt + r.output_tokens
@@ -138,6 +139,15 @@ function Metrics({ r }: { r: ResultItem }) {
         <>
           {' '}
           · {prompt} prompt + {r.output_tokens} output = <strong>{total} total tokens</strong>
+        </>
+      )}
+      {typeof cached === 'number' && (
+        <>
+          {' '}
+          ·{' '}
+          <span title="Tokens the provider served from its own prompt cache, reported in its usage response">
+            {cached} cached
+          </span>
         </>
       )}
       {r.is_cold && (

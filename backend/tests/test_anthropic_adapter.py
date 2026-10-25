@@ -84,6 +84,9 @@ async def test_cache_token_counts_are_part_of_the_input_total():
     )
     final = (await collect(adapter("http://x.test", transport=mock(body)).chat_stream(model="m", messages=MSGS)))[-1]
     assert final["prompt_eval_count"] == 115
+    # add-prompt-caching: Anthropic caching isn't requested yet (system is sent as a plain string,
+    # not cache_control content blocks) - no cached_tokens key should ever appear for this provider
+    assert "cached_tokens" not in final["_provider"]
 
 
 # ---------------------------------------------------------------- request shape and parameters

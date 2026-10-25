@@ -156,6 +156,17 @@ def test_provenance_and_parameter_records_are_carried_into_the_metrics():
     assert m["done_reason"] == "stop"
 
 
+# ---------------------------------------------------------------- cached tokens (add-prompt-caching)
+def test_cached_tokens_carried_into_the_metrics_when_the_provider_reports_them():
+    m = run([(100.1, text("x")), (100.9, final(cached_tokens=1400))]).finish()
+    assert m["cached_tokens"] == 1400
+
+
+def test_cached_tokens_absent_not_zero_when_the_provider_does_not_report_them():
+    m = run([(100.1, text("x")), (100.9, final())]).finish()
+    assert m["cached_tokens"] is None
+
+
 # ---------------------------------------------------------------- local metrics are untouched
 LOCAL_KEYS = {
     "latency_ms",

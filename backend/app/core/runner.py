@@ -187,7 +187,7 @@ class Runner:
                 # footprint: read after warm-up when there is one, else after the first request; not for cloud models
                 footprint_done = not caps.footprint
                 if cfg.warmup and caps.warmup:  # a billable warm-up request is never sent to an enterprise model
-                    await self._warmup(run_id, snap, cfg)
+                    await self._warmup(run_id, snap, cfg, run.config.get("skills"))
                     if caps.footprint:
                         await self._record_footprint(session, run_id, snap)
                         footprint_done = True
@@ -225,13 +225,18 @@ class Runner:
         except OllamaError as exc:
             log.warning("could not unload %s: %s", name, exc)
 
-    async def _warmup(self, run_id: int, snap: ModelSnapshot, cfg: RunConfig) -> None:
-        """Loads the model with the run's exact options (a different num_ctx would force a reload)."""
+    async def _warmup(self, run_id: int, snap: ModelSnapshot, cfg: RunConfig, skills: list[dict] | None = None) -> None:
+        """Loads the model with the run's exact options (a different num_ctx would force a reload).
+
+        Carries the run's attached skill(s) instructions too (add-prompt-caching), so a model-grouped
+        run's prompt-prefix cache (Ollama caches a loaded model's last-seen prompt prefix automatically)
+        is already warm before the first measured request, rather than that request silently absorbing
+        the one-time cost of first processing the skill prefix."""
         think = False if "thinking" in snap.capabilities else None
         try:
             agen = self.ollama.chat_stream(
                 model=snap.name,
-                messages=build_messages(None, WARMUP_PROMPT),
+                messages=build_messages(apply_skills(None, skills), WARMUP_PROMPT),
                 options=self._options(cfg, num_predict=16),
                 think=think,
             )

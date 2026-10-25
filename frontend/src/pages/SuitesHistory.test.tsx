@@ -456,6 +456,7 @@ describe('9.9 history page', () => {
           performance_notes: [
             'Run B had a larger share of cold-start requests than Run A (0% vs 100% cold).',
             'The two runs used different builds of this model (digest differs).',
+            "Run B's prompt was more served from the provider's own cache than Run A's (0% vs 93% cached).",
           ],
         },
       ],
@@ -474,6 +475,7 @@ describe('9.9 history page', () => {
     await user.click(within(table).getByText('Why?'));
     expect(within(table).getByText(/cold-start/)).toBeVisible();
     expect(within(table).getByText(/different builds/)).toBeVisible();
+    expect(within(table).getByText(/served from the provider's own cache/)).toBeVisible();
   });
 
   it('keeps at most two runs selected', async () => {

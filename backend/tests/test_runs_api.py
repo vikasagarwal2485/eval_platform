@@ -80,6 +80,41 @@ def test_every_request_in_a_skill_equipped_run_includes_its_instructions(setting
     assert all(p and "Always answer in one word." in p for p in seen_system_prompts)
 
 
+# ---------------------------------------------------------------- warm-up prefix (add-prompt-caching)
+def test_warmup_request_carries_the_skill_prefix(settings, file_session_factory):
+    """The warm-up request (not just the first measured case) includes the attached skill's
+    instructions, so a model-grouped run's prompt-prefix cache is already warm beforehand."""
+    calls: list[tuple[str | None, str]] = []  # (system content, user content) per chat call
+
+    def responder(model, messages, options):
+        sysmsg = next((m["content"] for m in messages if m["role"] == "system"), None)
+        calls.append((sysmsg, messages[-1]["content"]))
+        return make_stream("OK" if messages[-1]["content"].startswith("Reply with the single word") else "positive")
+
+    fake = FakeOllama([make_tag("a:1")], responder)
+    with new_client(settings, file_session_factory, fake) as c:
+        sk = c.post("/api/skills", json={"name": "s", "instructions": "Think step by step."}).json()
+        run = start_run(c, ["a:1"], [CLS], config={"skill_ids": [sk["id"]]})  # warmup defaults to True
+        wait_for(c, run["id"])
+    warmup_call = next(sys_user for sys_user in calls if sys_user[1].startswith("Reply with the single word"))
+    assert warmup_call[0] and "Think step by step." in warmup_call[0]
+    assert len(calls) == 2  # warm-up + the one real case
+
+
+def test_warmup_request_unchanged_with_no_skills_attached(settings, file_session_factory):
+    calls: list[str | None] = []
+
+    def responder(model, messages, options):
+        calls.append(next((m["content"] for m in messages if m["role"] == "system"), None))
+        return make_stream("OK" if messages[-1]["content"].startswith("Reply with the single word") else "positive")
+
+    fake = FakeOllama([make_tag("a:1")], responder)
+    with new_client(settings, file_session_factory, fake) as c:
+        run = start_run(c, ["a:1"], [CLS])  # no skills, warmup defaults to True
+        wait_for(c, run["id"])
+    assert calls == [None, None]  # warm-up and the real case both have no system message, as before
+
+
 def test_ollama_down_returns_503(settings, file_session_factory):
     with new_client(settings, file_session_factory, FakeOllama(down=True)) as c:
         r = c.post("/api/runs", json={"models": ["a:1"], "adhoc_cases": [CLS]})

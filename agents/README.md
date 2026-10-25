@@ -158,6 +158,13 @@ the backend") and the gateway running with `STORE_MODEL_IN_DB=True`.
      -d "{\"keys\": [\"$GATEWAY_KEY\"]}"
    ```
 
+## Prompt caching
+
+If your agent makes repeated calls with a long, mostly-stable prompt (a system preamble, a
+multi-turn conversation), see [`CACHING.md`](CACHING.md) for the pattern - worked from this
+platform's own `apply_skills()` - and the one correctness trap (a full-response cache quietly
+faking a timing measurement) to avoid if you're benchmarking your agent's own performance.
+
 ## Setup
 
 These agents are meant to run **anywhere** - not necessarily on the same machine or in the same Python

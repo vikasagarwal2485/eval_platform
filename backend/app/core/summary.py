@@ -234,6 +234,16 @@ def _cold_fraction(perf: dict) -> float:
     return perf["cold_requests"] / total if total else 0.0
 
 
+def _cached_share(perf: dict) -> float | None:
+    """Median cached-prompt-token share for one side (add-prompt-caching). `None` when either
+    figure is unavailable (a local model, or a provider that never reported cached tokens) -
+    never a fabricated 0%."""
+    cached, prompt = perf["cached_tokens"]["median"], perf["prompt_tokens"]["median"]
+    if cached is None or not prompt:
+        return None
+    return cached / prompt
+
+
 def _performance_notes(a: dict, b: dict, cfg_a: dict, cfg_b: dict, skills_a: list, skills_b: list) -> list[str]:
     """Plausible, human-readable reasons the two runs' latency/tokens-per-sec differ for this model -
     not a root-cause diagnosis, just the measurement-affecting differences the platform can already see
@@ -272,6 +282,15 @@ def _performance_notes(a: dict, b: dict, cfg_a: dict, cfg_b: dict, skills_a: lis
             notes.append(f"{label.capitalize()} differs between runs ({va} vs {vb}).")
     if cfg_a.get("think") != cfg_b.get("think"):
         notes.append("Thinking was enabled in one run but not the other, which changes how many tokens are generated.")
+
+    share_a, share_b = _cached_share(a["performance"]), _cached_share(b["performance"])
+    if share_a is not None and share_b is not None and abs(share_b - share_a) >= 0.2:
+        more, fewer = ("B", "A") if share_b > share_a else ("A", "B")
+        notes.append(
+            f"Run {more}'s prompt was more served from the provider's own cache than Run {fewer}'s "
+            f"({share_a:.0%} vs {share_b:.0%} cached) - a cache hit means the provider processed less "
+            f"of the prompt, which can lower latency."
+        )
 
     return notes
 
