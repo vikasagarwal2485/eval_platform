@@ -23,23 +23,16 @@ def _events(turn_id="t1"):
         {"v": 1, "event_id": "e1", "session_id": "s1", "turn_id": turn_id, "type": "turn.start", "input": "hi"},
         {
             "v": 1,
-            "event_id": "e2",
-            "session_id": "s1",
-            "turn_id": turn_id,
-            "type": "span",
-            "span_id": "sp1",
-            "kind": "llm",
-            "model": "qwen3:8b",
-            "output": "hello",
-        },
-        {
-            "v": 1,
             "event_id": "e3",
             "session_id": "s1",
             "turn_id": turn_id,
             "type": "turn.end",
             "status": "ok",
             "output": "hello",
+            # add-otel-tracing: turn.end reports these directly - no `span` event to derive them from
+            "models": ["qwen3:8b"],
+            "prompt_tokens": 20,
+            "completion_tokens": 5,
         },
     ]
 
@@ -50,12 +43,44 @@ def test_batch_accepted_and_stored(settings, file_session_factory):
         r = c.post("/api/ingest/v1/events", json=_events(), headers={"Authorization": f"Bearer {token}"})
         assert r.status_code == 200, r.text
         body = r.json()
-        assert body == {"accepted": 3, "duplicates": 0, "rejected": []}
+        assert body == {"accepted": 2, "duplicates": 0, "rejected": []}
     with file_session_factory() as session:
         turns = repo.list_turns(session, agent_id)
         assert len(turns) == 1
         assert turns[0].status == "ok"
+        assert turns[0].models == ["qwen3:8b"]
         assert repo.get_agent(session, agent_id).last_seen_at is not None
+
+
+def test_span_event_in_a_batch_is_rejected_individually_turn_start_and_end_still_accepted(
+    settings, file_session_factory
+):
+    """add-otel-tracing 5.1: the retired `span` event type is now just unrecognized - only it is
+    rejected, not the whole batch."""
+    agent_id, token = _make_agent(file_session_factory)
+    events = _events()
+    span = {
+        "v": 1,
+        "event_id": "e2",
+        "session_id": "s1",
+        "turn_id": "t1",
+        "type": "span",
+        "span_id": "sp1",
+        "kind": "llm",
+        "model": "qwen3:8b",
+        "output": "hello",
+    }
+    batch = [events[0], span, events[1]]
+    with new_client(settings, file_session_factory, FakeOllama()) as c:
+        r = c.post("/api/ingest/v1/events", json=batch, headers={"Authorization": f"Bearer {token}"})
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["accepted"] == 2
+        assert body["rejected"] == [{"index": 1, "reason": body["rejected"][0]["reason"]}]
+        assert "span" in body["rejected"][0]["reason"]
+    with file_session_factory() as session:
+        turn = repo.list_turns(session, agent_id)[0]
+        assert turn.status == "ok" and turn.output == "hello"
 
 
 def test_turn_end_in_a_later_request_than_turn_start(settings, file_session_factory):
@@ -71,7 +96,7 @@ def test_turn_end_in_a_later_request_than_turn_start(settings, file_session_fact
         assert r.status_code == 200, r.text
         r = c.post("/api/ingest/v1/events", json=events[1:], headers={"Authorization": f"Bearer {token}"})
         assert r.status_code == 200, r.text  # must not 500
-        assert r.json() == {"accepted": 2, "duplicates": 0, "rejected": []}
+        assert r.json() == {"accepted": 1, "duplicates": 0, "rejected": []}
     with file_session_factory() as session:
         turn = repo.list_turns(session, agent_id)[0]
         assert turn.status == "ok"
@@ -84,19 +109,20 @@ def test_retried_batch_is_all_duplicates(settings, file_session_factory):
     with new_client(settings, file_session_factory, FakeOllama()) as c:
         c.post("/api/ingest/v1/events", json=_events(), headers={"Authorization": f"Bearer {token}"})
         r = c.post("/api/ingest/v1/events", json=_events(), headers={"Authorization": f"Bearer {token}"})
-        assert r.json() == {"accepted": 0, "duplicates": 3, "rejected": []}
+        assert r.json() == {"accepted": 0, "duplicates": 2, "rejected": []}
 
 
 def test_partial_batch_rejection_reports_index(settings, file_session_factory):
     _, token = _make_agent(file_session_factory)
     events = _events()
     bad = dict(events[1])
-    del bad["kind"]
-    batch = [events[0], bad, events[2]]
+    bad["status"] = "not-a-valid-status"  # only "ok"/"error" are accepted
+    bad["event_id"] = "e-bad"  # a distinct id, or this "duplicate" of a rejected event is itself ambiguous
+    batch = [events[0], bad]
     with new_client(settings, file_session_factory, FakeOllama()) as c:
         r = c.post("/api/ingest/v1/events", json=batch, headers={"Authorization": f"Bearer {token}"})
         body = r.json()
-        assert body["accepted"] == 2
+        assert body["accepted"] == 1
         assert body["rejected"] == [{"index": 1, "reason": body["rejected"][0]["reason"]}]
 
 

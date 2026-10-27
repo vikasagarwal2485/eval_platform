@@ -6,7 +6,7 @@ from app.core.eval_worker import EvaluationWorker
 from app.core.model_discovery import ModelDiscovery
 from app.models import utcnow
 from app.schemas import EvalConfigIn
-from app.traces.schemas import SpanEvent, TurnEndEvent, TurnStartEvent
+from app.traces.schemas import TurnEndEvent, TurnStartEvent
 from tests.fakes import FakeOllama, make_stream, make_tag
 
 
@@ -54,22 +54,12 @@ def _closed_turn(session, agent, ext="t1", author="author:1", quiet_seconds=100)
     repo.apply_turn_start(
         session, turn, TurnStartEvent(v=1, event_id=f"{ext}s", session_id="s1", turn_id=ext, input="hi")
     )
-    repo.apply_span(
+    repo.apply_turn_end(
         session,
         turn,
-        SpanEvent(
-            v=1,
-            event_id=f"{ext}sp",
-            session_id="s1",
-            turn_id=ext,
-            span_id="sp1",
-            kind="llm",
-            model=author,
-            output="hello",
+        TurnEndEvent(
+            v=1, event_id=f"{ext}e", session_id="s1", turn_id=ext, status="ok", output="hello", models=[author]
         ),
-    )
-    repo.apply_turn_end(
-        session, turn, TurnEndEvent(v=1, event_id=f"{ext}e", session_id="s1", turn_id=ext, status="ok", output="hello")
     )
     turn.ended_at = utcnow() - __import__("datetime").timedelta(seconds=quiet_seconds)
     session.flush()
@@ -268,3 +258,39 @@ def test_evaluator_unreachable_mid_batch_keeps_earlier_judgements_and_retries_th
     assert stats.evaluated == 1
     with session_factory() as session:
         assert repo.get_evaluation(session, ev_fail_id).status == "done"
+
+
+def test_an_evaluator_that_is_also_the_turns_author_is_excluded(session_factory, settings):
+    """add-otel-tracing 5.3: eligibility (a model cannot judge a turn it appears in) still works
+    correctly now that `turn.models` comes straight from `turn.end` instead of derived `span`
+    aggregation - `_closed_turn` sets it exactly that way.
+
+    Declares a different default model ("fallback:1") than the turn actually used ("author:1"), so
+    registering "author:1" as an evaluator is allowed (it's not one of the agent's *declared*
+    models) - this isolates the *per-turn* identity check (`plan_turn_evaluators`, keyed off what
+    the turn actually reports) from the separate, earlier, *registration-time* check against
+    declared models, which would otherwise reject this agent outright before the turn exists."""
+    fake = FakeOllama([make_tag("author:1"), make_tag("judge:1")], _make_responder())
+    worker = EvaluationWorker(session_factory, _StubRouter(fake), ModelDiscovery(fake))
+    with session_factory() as session:
+        agent, _token = repo.create_agent(
+            session,
+            name="bot",
+            kind="chatbot",
+            declared_models={"default": "fallback:1"},
+            eval_config=EvalConfigIn(evaluators=["author:1", "judge:1"], quiet_period_s=5),
+            rubric=None,
+        )
+        turn = _closed_turn(session, agent, author="author:1", quiet_seconds=100)
+        session.commit()
+        ev = repo.maybe_queue_evaluation(session, agent, turn)
+        session.commit()
+        ev_id = ev.id
+
+    stats = asyncio.run(worker.tick())
+    assert stats.evaluated == 1
+    with session_factory() as session:
+        ev = repo.get_evaluation(session, ev_id)
+        assert ev.status == "done"
+        judges = {j.judge_model for j in repo.list_turn_judgements(session, ev.id)}
+        assert judges == {"judge:1"}  # author:1 excluded by identity, not fabricated as a failure

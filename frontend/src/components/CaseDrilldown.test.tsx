@@ -1,8 +1,19 @@
-import { render, screen, within } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { render as rtlRender, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import type { ReactElement } from 'react';
 import { result, runOf } from '../test/fixtures';
+import { jsonError, mockApi } from '../test/utils';
 import type { ResultItem } from '../api/types';
 import CaseDrilldown from './CaseDrilldown';
+
+// add-otel-tracing: CaseDrilldown now renders SpanTree, which calls useTrace() (useQuery) - every
+// render() call below needs a QueryClientProvider ancestor, even for a result with no trace_id
+// (react-query requires the provider regardless of whether the query is enabled).
+function render(ui: ReactElement) {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+  return rtlRender(<QueryClientProvider client={qc}>{ui}</QueryClientProvider>);
+}
 
 const run = runOf(['alpha:1', 'bravo:2']);
 const auto = (detail: Record<string, unknown>, outcome = 'correct') => ({
@@ -370,5 +381,67 @@ describe('cross-model judging in the drill-down (5.5)', () => {
       within(card).getByText(/Reasoning quality: 50% · cross-judged by 1 of 1 judge/),
     ).toBeInTheDocument();
     expect(within(card).getByText('a bit long')).toBeInTheDocument();
+  });
+});
+
+describe('add-otel-tracing: span tree', () => {
+  const TRACE_ID = 'b'.repeat(32);
+
+  it('shows the span tree for a result that has a trace_id', async () => {
+    mockApi({
+      [`GET /traces/${TRACE_ID}`]: {
+        batches: [
+          {
+            scopeSpans: [
+              {
+                spans: [
+                  {
+                    traceId: 'x',
+                    spanId: 's1',
+                    name: 'eval.generate',
+                    startTimeUnixNano: '0',
+                    endTimeUnixNano: '1000000',
+                    attributes: [],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    });
+    const rs = [result('alpha:1', 1, 'classification', 'correct', { trace_id: TRACE_ID })];
+    render(<CaseDrilldown run={run} results={rs} />);
+    const user = userEvent.setup();
+    await user.click(screen.getAllByText('Trace')[0]);
+    expect(await screen.findByText('eval.generate')).toBeInTheDocument();
+  });
+
+  it('an unreachable Tempo only affects the trace section - output/scores/metrics are unaffected', async () => {
+    mockApi({
+      [`GET /traces/${TRACE_ID}`]: jsonError(503, { code: 'tempo_unreachable', message: 'down' }),
+    });
+    const rs = [
+      result('alpha:1', 1, 'classification', 'correct', {
+        trace_id: TRACE_ID,
+        output: 'not_spam_output',
+        scores: [auto({ predicted: 'not_spam', ambiguous: false })],
+      }),
+    ];
+    render(<CaseDrilldown run={run} results={rs} />);
+    const user = userEvent.setup();
+    await user.click(screen.getAllByText('Trace')[0]);
+    expect(await screen.findByText(/tempo is unreachable/i)).toBeInTheDocument();
+    // everything else in the drill-down is still shown normally
+    expect(screen.getByText('not_spam_output')).toBeInTheDocument();
+  });
+
+  it('a result with no trace_id shows "no trace recorded" and still shows its output', async () => {
+    const rs = [result('alpha:1', 1, 'classification', 'correct', { output: 'not_spam_output' })];
+    render(<CaseDrilldown run={run} results={rs} />);
+    const user = userEvent.setup();
+    await user.click(screen.getAllByText('Trace')[0]);
+    expect(screen.getByText(/no trace recorded/i)).toBeInTheDocument();
+    expect(screen.getByText('not_spam_output')).toBeInTheDocument();
   });
 });

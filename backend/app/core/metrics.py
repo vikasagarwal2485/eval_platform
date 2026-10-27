@@ -269,5 +269,7 @@ def perf_stats(rows: list[Any], *, include_cold: bool = False) -> dict:
         # add-prompt-caching: absent (never 0) for local models or a provider that never reports it
         "prompt_tokens": describe([r.metrics.get("prompt_tokens") for r in warm]),
         "cached_tokens": describe([r.metrics.get("cached_tokens") for r in warm]),
+        # add-otel-tracing: absent (never 0) for an unpriced model
+        "cost": describe([r.metrics.get("cost") for r in warm]),
         "cold_load_ms": describe(loads),
     }

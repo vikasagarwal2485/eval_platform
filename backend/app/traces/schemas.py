@@ -1,9 +1,14 @@
 """The v1 event contract agents stream in (design D2, spec `trace-ingestion`).
 
-Three event types (`turn.start`, `span`, `turn.end`) reconstruct a conversation. Validation here is per-event and
-tolerant: an unknown *version* fails the whole batch (the platform cannot safely interpret it), but a single
-malformed event only rejects that event, reported by its index, and oversized text is truncated rather than
-rejected. Unknown extra fields are ignored so a newer SDK keeps working against an older platform.
+Two event types (`turn.start`, `turn.end`) reconstruct a conversation's evaluation-relevant summary
+(add-otel-tracing: the third type, `span`, is retired - full span/call detail now goes straight to
+Tempo via the agent's own OpenTelemetry instrumentation, never through this ingest; `turn.end`
+reports the turn's `models`, token totals, `cost` and `trace_id` directly instead of the backend
+deriving them from aggregated spans). Validation here is per-event and tolerant: an unknown
+*version* fails the whole batch (the platform cannot safely interpret it), but a single malformed
+event - including an event of the now-unrecognized `span` type - only rejects that event, reported
+by its index, and oversized text is truncated rather than rejected. Unknown extra fields are
+ignored so a newer SDK keeps working against an older platform.
 """
 
 from __future__ import annotations
@@ -60,54 +65,32 @@ class TurnStartEvent(_Event):
         return self.model_copy(update={"input": text}), cut
 
 
-class LlmUsage(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-
-    prompt_tokens: int | None = None
-    completion_tokens: int | None = None
-
-
-class SpanEvent(_Event):
-    type: Literal["span"] = "span"
-    span_id: str = Field(min_length=1, max_length=200)
-    kind: Literal["llm", "tool"]
-    started_at: str = ""
-    ended_at: str = ""
-    # llm
-    model: str | None = None
-    messages: list[dict] = Field(default_factory=list)
-    output: str = ""
-    thinking: str | None = None
-    usage: LlmUsage = Field(default_factory=LlmUsage)
-    ttft_ms: float | None = None
-    # tool
-    name: str | None = None
-    args: dict = Field(default_factory=dict)
-    result: str | None = None
-    error: str | None = None
-
-    def truncated(self) -> tuple[SpanEvent, bool]:
-        out, cut1 = _truncate(self.output)
-        res, cut2 = _truncate(self.result)
-        return self.model_copy(update={"output": out, "result": res}), (cut1 or cut2)
-
-
 class TurnEndEvent(_Event):
     type: Literal["turn.end"] = "turn.end"
     status: Literal["ok", "error"] = "ok"
     output: str = ""
     error: str | None = None
+    # add-otel-tracing: the SDK reports these directly - it already held the per-call usage it was
+    # instrumenting, and no `span` event survives for the backend to derive them from aggregating.
+    models: list[str] = Field(default_factory=list)
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    cost: float | None = None
+    trace_id: str | None = None
+    # the turn's reasoning trace (assembled by the SDK from its own calls' thinking output) - fed to
+    # judge calls alongside `output`, same role the retired `span` events' `thinking` fields played
+    thinking: str | None = None
 
     def truncated(self) -> tuple[TurnEndEvent, bool]:
-        text, cut = _truncate(self.output)
-        return self.model_copy(update={"output": text}), cut
+        out, cut1 = _truncate(self.output)
+        think, cut2 = _truncate(self.thinking)
+        return self.model_copy(update={"output": out, "thinking": think or None}), (cut1 or cut2)
 
 
-Event = Annotated[TurnStartEvent | SpanEvent | TurnEndEvent, Field(discriminator="type")]
+Event = Annotated[TurnStartEvent | TurnEndEvent, Field(discriminator="type")]
 
 _BY_TYPE: dict[str, type[_Event]] = {
     "turn.start": TurnStartEvent,
-    "span": SpanEvent,
     "turn.end": TurnEndEvent,
 }
 

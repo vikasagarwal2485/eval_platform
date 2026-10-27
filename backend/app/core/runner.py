@@ -17,12 +17,14 @@ from sqlalchemy.orm import Session, sessionmaker
 from app import repo
 from app.config import Settings
 from app.core.circuits import Circuits
+from app.core.cost import compute_cost
 from app.core.events import EventHub
 from app.core.metrics import StreamCollector
 from app.core.model_discovery import ModelDiscovery
 from app.core.scoring import service as scoring
 from app.core.scoring.thinking import split_thinking
 from app.core.templates import apply_skills, build_messages, build_prompt
+from app.core.tracing import SpanRef, traced_span
 from app.models import ModelSnapshot, Run, RunCase
 from app.ollama.client import OllamaClient, OllamaError, OllamaUnreachable
 from app.providers.backend import caps_for_kind
@@ -186,8 +188,9 @@ class Runner:
                 )
                 # footprint: read after warm-up when there is one, else after the first request; not for cloud models
                 footprint_done = not caps.footprint
+                warmup_span = None  # add-otel-tracing: carried into this model's first measured request only
                 if cfg.warmup and caps.warmup:  # a billable warm-up request is never sent to an enterprise model
-                    await self._warmup(run_id, snap, cfg, run.config.get("skills"))
+                    warmup_span = await self._warmup(run_id, snap, cfg, run.config.get("skills"))
                     if caps.footprint:
                         await self._record_footprint(session, run_id, snap)
                         footprint_done = True
@@ -195,7 +198,10 @@ class Runner:
                     for rep in range(cfg.repeats):
                         if self._cancelled(run_id):
                             raise CancelledRun()
-                        await self._one_request(session, run, attempt.id, snap, case, rep, cfg)
+                        await self._one_request(
+                            session, run, attempt.id, snap, case, rep, cfg, carry_parent=warmup_span
+                        )
+                        warmup_span = None  # only the very first request carries it
                         completed += 1
                         self.hub.publish(run_id, "progress", {"completed": completed, "total": total})
                         if not footprint_done:
@@ -225,28 +231,42 @@ class Runner:
         except OllamaError as exc:
             log.warning("could not unload %s: %s", name, exc)
 
-    async def _warmup(self, run_id: int, snap: ModelSnapshot, cfg: RunConfig, skills: list[dict] | None = None) -> None:
+    async def _warmup(
+        self, run_id: int, snap: ModelSnapshot, cfg: RunConfig, skills: list[dict] | None = None
+    ) -> SpanRef | None:
         """Loads the model with the run's exact options (a different num_ctx would force a reload).
 
         Carries the run's attached skill(s) instructions too (add-prompt-caching), so a model-grouped
         run's prompt-prefix cache (Ollama caches a loaded model's last-seen prompt prefix automatically)
         is already warm before the first measured request, rather than that request silently absorbing
-        the one-time cost of first processing the skill prefix."""
+        the one-time cost of first processing the skill prefix.
+
+        Returns this call's `SpanRef` (add-otel-tracing), or `None` when tracing is disabled - the
+        orchestration loop passes it as the model's first measured request's span `parent`, giving
+        that request's span tree a genuine warm-up-then-generate parent/child edge."""
         think = False if "thinking" in snap.capabilities else None
-        try:
-            agen = self.ollama.chat_stream(
-                model=snap.name,
-                messages=build_messages(apply_skills(None, skills), WARMUP_PROMPT),
-                options=self._options(cfg, num_predict=16),
-                think=think,
-            )
-            async for _ in agen:
-                pass
-        except OllamaUnreachable:
-            raise
-        except ModelBackendError as exc:
-            log.warning("warm-up of %s failed: %s", snap.name, exc)
-            self.hub.publish(run_id, "warning", {"model": snap.name, "message": f"warm-up failed: {exc}"})
+        # `eval.kind`/`eval.type` (not plain `kind`/`type`): dotted attribute names can't be literal
+        # keyword arguments (not valid Python identifiers), so they're passed via dict-unpacking;
+        # `eval.` matches this span's own `cost`-free but otherwise `eval.*`-style naming, same
+        # reasoning as the agent SDK's `eval.kind` (no GenAI/OTel-standard attribute fits this).
+        with traced_span(
+            "eval.warmup", model=snap.name, **{"eval.kind": "warmup", "eval.type": "case"}
+        ) as ref:
+            try:
+                agen = self.ollama.chat_stream(
+                    model=snap.name,
+                    messages=build_messages(apply_skills(None, skills), WARMUP_PROMPT),
+                    options=self._options(cfg, num_predict=16),
+                    think=think,
+                )
+                async for _ in agen:
+                    pass
+            except OllamaUnreachable:
+                raise
+            except ModelBackendError as exc:
+                log.warning("warm-up of %s failed: %s", snap.name, exc)
+                self.hub.publish(run_id, "warning", {"model": snap.name, "message": f"warm-up failed: {exc}"})
+        return ref
 
     async def _record_footprint(self, session: Session, run_id: int, snap: ModelSnapshot) -> None:
         try:
@@ -273,9 +293,21 @@ class Runner:
         }
 
     async def _one_request(
-        self, session: Session, run: Run, attempt_id: int, snap: ModelSnapshot, case: RunCase, rep: int, cfg: RunConfig
+        self,
+        session: Session,
+        run: Run,
+        attempt_id: int,
+        snap: ModelSnapshot,
+        case: RunCase,
+        rep: int,
+        cfg: RunConfig,
+        carry_parent: SpanRef | None = None,
     ) -> None:
-        """Execute, persist and score one request; raises RunAborted if Ollama became unreachable."""
+        """Execute, persist and score one request; raises RunAborted if Ollama became unreachable.
+
+        `carry_parent`: this model's warm-up span, continued here (add-otel-tracing) as a genuine
+        parent when this is its first measured request - that request's span tree then also shows
+        the warm-up phase that preceded it. `None` for every later request."""
         run_id = run.id
         self.hub.publish(
             run_id,
@@ -283,9 +315,20 @@ class Runner:
             {"model": snap.name, "case_id": case.id, "case_title": case.title or case.prompt[:60], "repeat": rep},
         )
         sent, version = build_prompt(case.category, case.prompt, case.config)
-        fields = await self._generate(run_id, snap, case, sent, cfg, run.config.get("skills"))
+        with traced_span(
+            "eval.generate",
+            parent=carry_parent,
+            model=snap.name,
+            case_id=case.id,
+            repeat=rep,
+            **{"eval.kind": "generate", "eval.type": "case"},
+        ) as ref:
+            fields = await self._generate(run_id, snap, case, sent, cfg, run.config.get("skills"))
         fatal = fields.pop("fatal", None)
         m = fields["metrics"]
+        # add-otel-tracing: priced model -> a figure; unpriced or a failed request's missing token
+        # counts -> None (never fabricated as 0), same as `compute_cost` itself guarantees.
+        m["cost"] = compute_cost(m.get("model_version") or snap.name, m.get("prompt_tokens"), m.get("output_tokens"))
         result = repo.add_result(
             session,
             run_id=run_id,
@@ -299,6 +342,7 @@ class Runner:
             ttft_ms=m.get("ttft_ms"),
             tokens_per_s=m.get("tokens_per_s"),
             output_tokens=m.get("output_tokens"),
+            trace_id=ref.trace_id if ref else None,
             **fields,
         )
         scores = scoring.score_live(session, attempt_id, case, result)

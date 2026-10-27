@@ -10,6 +10,9 @@ from pathlib import Path
 
 import httpx
 import pytest
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "agents"))
 
@@ -219,13 +222,14 @@ def _patched_agent(monkeypatch, *, classification, tool_result, reasoning_output
     monkeypatch.setattr(router_agent, "spawn_reasoning_agent", fake_spawn)
 
 
-def _run_turn(monkeypatch, **patch_kwargs):
+def _run_turn(monkeypatch, *, tracer_provider=None, **patch_kwargs):
     _patched_agent(monkeypatch, **patch_kwargs)
     received: list = []
     client = AgentClient(
         "http://platform.local",
         "tok",
         transport=httpx.MockTransport(_platform_handler(received)),
+        tracer_provider=tracer_provider,
         flush_interval_s=0.02,
     )
     final = router_agent.solve_one(
@@ -244,35 +248,59 @@ def _run_turn(monkeypatch, **patch_kwargs):
 
 
 def test_handoff_turn_has_classify_routing_llm_and_handoff_tool_spans_in_order(monkeypatch):
+    """add-otel-tracing: the three calls are now three real OTel spans, not JSON "span" events -
+    the classify/handoff tool spans use GenAI semconv's own tool-call attributes (classify's `model`
+    names the external classifier endpoint, not a generative model - still the same
+    `gen_ai.request.model` key as the routing call's own model, so one query finds either), the
+    routing call also carries `eval.kind` (its role in the turn) alongside its GenAI attributes."""
+    exp = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exp))
+
     final, received = _run_turn(
         monkeypatch,
+        tracer_provider=provider,
         classification={"ag_news": {"label": "Business"}},
         tool_result={"action": "handoff", "target_agent": "reasoning-agent"},
         reasoning_output="**Final answer:** <answer>5</answer>",
     )
+    provider.shutdown()
     assert final == "**Final answer:** <answer>5</answer>"
-    spans = [e for e in received if e["type"] == "span"]
-    assert [s["kind"] for s in spans] == ["tool", "llm", "tool"]
-    assert spans[0]["name"] == "classify"
-    assert spans[0].get("model") is None  # the classify span is never an llm span - no model field at all
-    assert spans[1]["model"] == "ollama_chat/qwen3:8b"  # the routing span's concrete model
-    assert spans[2]["name"] == "handoff_to_reasoning_agent"
-    assert spans[2]["result"] == "**Final answer:** <answer>5</answer>"
+
+    spans = [s for s in exp.get_finished_spans() if s.name != "agent.turn"]
+    spans.sort(key=lambda s: s.start_time)
+    assert [s.name for s in spans] == ["classify", "gen_ai.chat", "handoff_to_reasoning_agent"]
+    assert spans[0].attributes["gen_ai.request.model"] == "http://classifier.local"  # the classifier endpoint
+    assert spans[1].attributes["gen_ai.request.model"] == "ollama_chat/qwen3:8b"  # the routing span's concrete model
+    assert spans[1].attributes["eval.kind"] == "routing"
+    assert spans[0].attributes["gen_ai.tool.name"] == "classify"
+    assert spans[2].attributes["gen_ai.tool.call.result"] == "**Final answer:** <answer>5</answer>"
+
+    end = next(e for e in received if e["type"] == "turn.end")
+    assert end["models"] == ["ollama_chat/qwen3:8b"]  # only the routing call is an llm call
+    assert end["trace_id"] == format(spans[0].context.trace_id, "032x")  # all under one trace
 
 
 def test_short_circuit_turn_has_no_further_spans_after_the_routing_decision(monkeypatch):
+    exp = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exp))
+
     final, received = _run_turn(
         monkeypatch,
+        tracer_provider=provider,
         classification={"spam": {"label": "spam"}},
         tool_result={"action": "short_circuit", "response": "This looks like spam."},
     )
+    provider.shutdown()
     assert final == "This looks like spam."
-    spans = [e for e in received if e["type"] == "span"]
-    assert [s["kind"] for s in spans] == ["tool", "llm", "tool"]
-    assert spans[2]["name"] == "short_circuit"
-    assert spans[2]["result"] == "This looks like spam."
+
+    spans = [s for s in exp.get_finished_spans() if s.name != "agent.turn"]
+    spans.sort(key=lambda s: s.start_time)
+    assert [s.name for s in spans] == ["classify", "gen_ai.chat", "short_circuit"]
+    assert spans[2].attributes["gen_ai.tool.call.result"] == "This looks like spam."
     # never spawned the reasoning-agent subprocess or made a second LLM call for this branch
-    assert len([s for s in spans if s["kind"] == "llm"]) == 1
+    assert len([s for s in spans if s.name == "gen_ai.chat"]) == 1
 
 
 def test_an_unmapped_result_ends_the_turn_in_a_visible_error_not_a_guess(monkeypatch):
@@ -314,3 +342,55 @@ def test_the_graph_branches_only_on_the_tools_action_not_on_the_classification_c
         tool_result={"action": "short_circuit", "response": "short-circuit answer"},
     )
     assert final_short == "short-circuit answer"
+
+
+# ------------------------------------------------------------------ add-otel-tracing: --otel-endpoint
+def test_otel_endpoint_falls_back_to_the_env_var_when_the_flag_is_omitted(monkeypatch):
+    monkeypatch.setenv("EVAL_OTEL_ENDPOINT", "localhost:4317")
+    args = router_agent.build_arg_parser().parse_args(
+        [
+            "--platform-url", "http://platform.local", "--token", "tok", "--gateway-key", "gw-key",
+            "--reasoning-agent-token", "ra-token", "--reasoning-agent-gateway-key", "ra-gw-key",
+            "--problem", "x",
+        ]
+    )
+    assert args.otel_endpoint == "localhost:4317"
+
+
+def test_otel_endpoint_defaults_to_none_when_the_env_var_is_unset(monkeypatch):
+    monkeypatch.delenv("EVAL_OTEL_ENDPOINT", raising=False)
+    args = router_agent.build_arg_parser().parse_args(
+        [
+            "--platform-url", "http://platform.local", "--token", "tok", "--gateway-key", "gw-key",
+            "--reasoning-agent-token", "ra-token", "--reasoning-agent-gateway-key", "ra-gw-key",
+            "--problem", "x",
+        ]
+    )
+    assert args.otel_endpoint is None
+
+
+def test_main_wires_a_fixed_workflow_name_into_the_agent_client(monkeypatch):
+    """add-otel-tracing: this agent's turn is a real LangGraph `StateGraph`, unlike chatbot.py's
+    single call - `main()` always passes a literal `workflow_name` for it."""
+    _patched_agent(
+        monkeypatch,
+        classification={"spam": {"label": "spam"}},
+        tool_result={"action": "short_circuit", "response": "short-circuit answer"},
+    )
+    captured = {}
+
+    def fake_agent_client(*_a, **kw):
+        captured.update(kw)
+        return AgentClient(
+            "http://platform.local", "tok", transport=httpx.MockTransport(_platform_handler([])),
+            flush_interval_s=0.02,
+        )
+
+    monkeypatch.setattr(router_agent, "AgentClient", fake_agent_client)
+    router_agent.main([
+        "--platform-url", "http://platform.local", "--token", "tok", "--gateway-key", "gw-key",
+        "--routing-model-group", "explicit__routing", "--classifier-url", "http://classifier.local",
+        "--reasoning-agent-token", "ra-token", "--reasoning-agent-gateway-key", "ra-gw-key",
+        "--problem", "Apple stock surged today.",
+    ])
+    assert captured["workflow_name"] == "classifier-router-graph"

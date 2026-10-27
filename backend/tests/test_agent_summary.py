@@ -120,3 +120,16 @@ def test_needs_attention_lists_low_scores_only(session):
     attention = list_needs_attention(session, agent)
     assert len(attention) == 1
     assert attention[0]["value"] == 0.1
+
+
+def test_a_turn_with_no_trace_id_is_still_fully_sampled_evaluated_and_shown_in_attention(session):
+    """add-otel-tracing 5.4: `trace_id` is absent whenever tracing is off or unavailable - this must
+    never affect sampling, evaluation, or the attention dashboard, only a turn's own span-tree view
+    (per spec `trace-ingestion`, "A turn with no trace is still fully evaluable")."""
+    agent = _agent(session, attention_threshold=0.5)
+    turn = _turn(session, agent, "bad", value=0.1)
+    assert turn.trace_id is None  # `_turn()` never sets it - this is the omitted-trace_id case
+    summary = build_agent_summary(session, agent)
+    assert summary["turns"]["total"] == 1  # sampled/counted normally
+    attention = list_needs_attention(session, agent)
+    assert len(attention) == 1 and attention[0]["value"] == 0.1  # still surfaced normally

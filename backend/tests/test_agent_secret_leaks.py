@@ -85,23 +85,13 @@ def _ingest(client, token, ext) -> None:
         {"v": 1, "event_id": f"{ext}s", "session_id": "s1", "turn_id": ext, "type": "turn.start", "input": "hi"},
         {
             "v": 1,
-            "event_id": f"{ext}sp",
-            "session_id": "s1",
-            "turn_id": ext,
-            "type": "span",
-            "span_id": f"{ext}sp1",
-            "kind": "llm",
-            "model": "author:1",
-            "output": "hello",
-        },
-        {
-            "v": 1,
             "event_id": f"{ext}e",
             "session_id": "s1",
             "turn_id": ext,
             "type": "turn.end",
             "status": "ok",
             "output": "hello",
+            "models": ["author:1"],  # add-otel-tracing: turn.end reports this directly, no `span` event
         },
     ]
     r = client.post("/api/ingest/v1/events", json=events, headers={"Authorization": f"Bearer {token}"})

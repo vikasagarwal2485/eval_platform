@@ -89,6 +89,18 @@ async def test_cloud_results_carry_client_metrics_provenance_and_recorded_parame
     assert "is_cloud" not in local.metrics and local.metrics["load_ms"] is not None  # local unchanged
 
 
+async def test_cost_is_computed_for_a_priced_model_and_absent_not_zero_for_an_unpriced_one(h):
+    """add-otel-tracing 2.2: every Result's metrics include `cost` when the model is priced."""
+    run_id = h.add_run(["qwen3:8b", ref("oa", "gpt-4o")], [CLS], config={"warmup": False})
+    await h.run(run_id)
+    by = h.by_model(run_id)
+    (cloud,), (local,) = by[ref("oa", "gpt-4o")], by["qwen3:8b"]
+    # fake OpenAI echoes model_version "gpt-4o-2024-08-06" (a dated snapshot of the priced "gpt-4o" family) with
+    # prompt_tokens=21, completion_tokens=1 (app/data/model_pricing.yaml: 0.0025/0.01 per 1k)
+    assert cloud.metrics["cost"] == pytest.approx(21 / 1000 * 0.0025 + 1 / 1000 * 0.01)
+    assert local.metrics["cost"] is None  # qwen3:8b has no price-list entry - None, never fabricated as 0
+
+
 async def test_reasoning_flag_controls_the_think_option_for_cloud_models(h):
     run_id = h.add_run(
         [ref("oa", "o3"), ref("oa", "gpt-4o")], [CLS], config={"warmup": False, "think": True, "temperature": 0}

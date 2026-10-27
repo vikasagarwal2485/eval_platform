@@ -1,6 +1,7 @@
 """Task 7.2: the documented demonstration setup (agent on one model, evaluator on a different one) actually
-produces evaluated turns with no self-judged score - exercised with the exact event shapes the reference agents
-emit (proven byte-for-byte in test_reference_agents.py) run through the real ingest and evaluation path."""
+produces evaluated turns with no self-judged score - exercised through the real ingest and evaluation path,
+with events shaped as `trace-ingestion` currently defines them (add-otel-tracing: `turn.end` reports `models`
+directly; once task 7.1 migrates chatbot.py, test_reference_agents.py's own events take this same shape)."""
 
 import asyncio
 
@@ -9,7 +10,7 @@ from app.core.eval_worker import EvaluationWorker
 from app.core.model_discovery import ModelDiscovery
 from app.models import utcnow
 from app.schemas import EvalConfigIn
-from app.traces.schemas import SpanEvent, TurnEndEvent, TurnStartEvent
+from app.traces.schemas import TurnEndEvent, TurnStartEvent
 from tests.fakes import FakeOllama, make_stream, make_tag
 
 
@@ -66,24 +67,18 @@ def test_demo_setup_produces_an_evaluated_turn_with_no_self_judging(session_fact
         repo.apply_turn_start(
             session, turn, TurnStartEvent(v=1, event_id="e1", session_id="s1", turn_id="t1", input="hi")
         )
-        repo.apply_span(
-            session,
-            turn,
-            SpanEvent(
-                v=1,
-                event_id="e2",
-                session_id="s1",
-                turn_id="t1",
-                span_id="sp1",
-                kind="llm",
-                model="author:1",
-                output="Hello there!",
-            ),
-        )
         repo.apply_turn_end(
             session,
             turn,
-            TurnEndEvent(v=1, event_id="e3", session_id="s1", turn_id="t1", status="ok", output="Hello there!"),
+            TurnEndEvent(
+                v=1,
+                event_id="e3",
+                session_id="s1",
+                turn_id="t1",
+                status="ok",
+                output="Hello there!",
+                models=["author:1"],
+            ),
         )
         turn.ended_at = utcnow()  # quiet_period_s=0, so this is immediately ready
         session.commit()

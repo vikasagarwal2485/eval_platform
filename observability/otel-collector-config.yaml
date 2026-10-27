@@ -1,0 +1,36 @@
+# OpenTelemetry Collector config for the shared observability stack (design.md: "add-otel-tracing").
+#
+# Receives OTLP from the backend (the Runner's own spans) and from agents (OTel-SDK-instrumented,
+# add-otel-tracing's reasoning_agent.py/chatbot.py/classifier_router_agent.py), batches it, and
+# exports it to Tempo. Nothing else fans out from here yet - a later change can add more exporters
+# (e.g. a different trace backend) without touching anything that sends spans, since they only
+# ever talk to this Collector, never to Tempo directly.
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch: {}
+
+exporters:
+  otlp/tempo:
+    endpoint: tempo:4317
+    tls:
+      insecure: true # local/dev stack, same-compose-network traffic only - see README for production guidance
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+service:
+  extensions: [health_check]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlp/tempo]

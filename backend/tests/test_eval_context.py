@@ -1,7 +1,7 @@
 from app import repo
 from app.core.eval_context import BUILTIN_RUBRICS, build_context, resolve_rubric, turn_response_text
 from app.schemas import EvalConfigIn, RubricCriterionIn
-from app.traces.schemas import SpanEvent, TurnEndEvent, TurnStartEvent
+from app.traces.schemas import TurnEndEvent, TurnStartEvent
 
 
 def _agent(session, kind="chatbot", rubric=None):
@@ -64,22 +64,25 @@ def test_build_context_truncates_to_budget(session):
     assert "current" in ctx
 
 
-def test_turn_response_text_includes_thinking_for_multi_span_turns(session):
+def test_turn_response_text_includes_the_turns_reported_thinking(session):
+    """add-otel-tracing: `turn.end` reports the turn's reasoning trace directly - no more
+    assembling it from retired `span` events."""
     agent = _agent(session, kind="reasoning")
-    turn = _turn(session, agent, "t1", "solve", "42")
-    repo.apply_span(
+    sess = repo.get_or_create_agent_session(session, agent, "s1")
+    turn = repo.get_or_create_turn(session, agent, sess, "t1")
+    repo.apply_turn_start(session, turn, TurnStartEvent(v=1, event_id="a", session_id="s1", turn_id="t1", input="solve"))
+    repo.apply_turn_end(
         session,
         turn,
-        SpanEvent(
-            v=1,
-            event_id="s1",
-            session_id="s1",
-            turn_id="t1",
-            span_id="sp1",
-            kind="llm",
-            model="qwen3:8b",
-            thinking="step one, step two",
+        TurnEndEvent(
+            v=1, event_id="b", session_id="s1", turn_id="t1", status="ok", output="42", thinking="step one, step two"
         ),
     )
     text = turn_response_text(turn)
     assert "step one" in text and text.endswith("42")
+
+
+def test_turn_response_text_is_just_the_output_when_no_thinking_was_reported(session):
+    agent = _agent(session)
+    turn = _turn(session, agent, "t1", "hi", "hello")
+    assert turn_response_text(turn) == "hello"

@@ -381,6 +381,7 @@ def run_results(
                 "ttft_ms": r.ttft_ms,
                 "tokens_per_s": r.tokens_per_s,
                 "output_tokens": r.output_tokens,
+                "trace_id": r.trace_id,  # add-otel-tracing
                 "metrics": r.metrics,
                 "scores": [{"kind": s.kind, "value": s.value, "outcome": s.outcome, "detail": s.detail} for s in rs],
                 "primary": {"value": prim.value, "outcome": prim.outcome}

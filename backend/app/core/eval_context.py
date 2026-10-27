@@ -51,12 +51,12 @@ def build_context(turn: AgentTurn, prior_turns: list[AgentTurn], *, context_turn
 
 
 def turn_response_text(turn: AgentTurn) -> str:
-    """The turn's output, or its output prefixed by intermediate reasoning for multi-span turns (mirrors the
-    existing `judge_reasoning` trace-plus-answer shape)."""
-    traces = [s.thinking for s in turn.spans if s.kind == "llm" and s.thinking]
-    if not traces:
+    """The turn's output, prefixed by its reasoning trace when it reported one (mirrors the existing
+    `judge_reasoning` trace-plus-answer shape). `turn.thinking` is reported directly on `turn.end`
+    (add-otel-tracing) - no more assembling it from retired `span` events."""
+    if not turn.thinking:
         return turn.output or ""
-    return "\n\n".join(traces) + f"\n\n{turn.output or ''}"
+    return f"{turn.thinking}\n\n{turn.output or ''}"
 
 
 def build_judge_call(

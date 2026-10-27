@@ -9,6 +9,9 @@ from pathlib import Path
 
 import httpx
 import openai
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "agents"))
 
@@ -84,12 +87,15 @@ def test_chatbot_one_exchange_produces_one_turn_one_span(monkeypatch):
     chatbot.answer(client, "s1", "qwen3:8b", "http://ollama.local", chatbot.DEFAULT_SYSTEM_PROMPT, [], "hi")
     client.close(timeout_s=2.0)
 
+    # add-otel-tracing: no more "span" event type - the call's detail is now a real OTel span
+    # (test_reference_agents_tracing.py), and its summary reaches turn.end directly.
     types = [e["type"] for e in received]
     assert types.count("turn.start") == 1
-    assert types.count("span") == 1
     assert types.count("turn.end") == 1
     end = next(e for e in received if e["type"] == "turn.end")
     assert end["output"] == "Hello there!"
+    assert end["models"] == ["qwen3:8b"]
+    assert end["prompt_tokens"] == 10 and end["completion_tokens"] == 5
 
 
 def test_reasoning_agent_one_problem_produces_four_spans_under_one_turn(monkeypatch):
@@ -101,25 +107,40 @@ def test_reasoning_agent_one_problem_produces_four_spans_under_one_turn(monkeypa
 
     monkeypatch.setattr(reasoning_agent.litellm, "completion", fake_completion)
 
+    exp = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exp))
+
     received: list = []
     client = AgentClient(
         "http://platform.local",
         "tok",
         transport=httpx.MockTransport(_platform_handler(received)),
+        tracer_provider=provider,
         flush_interval_s=0.02,
     )
     final = reasoning_agent.solve_one(
         client, "s1", "ollama_chat/qwen3:8b", "http://gateway.local", None, "2+3?", reference="5"
     )
     client.close(timeout_s=2.0)
+    provider.shutdown()
 
     assert "42" in final
     turn_id = {e["turn_id"] for e in received}
     assert len(turn_id) == 1  # every event belongs to the same turn
-    spans = [e for e in received if e["type"] == "span"]
-    assert len(spans) == 4
+    # add-otel-tracing: the four calls are now four real OTel spans, not JSON "span" events
+    call_spans = [s for s in exp.get_finished_spans() if s.name == "gen_ai.chat"]
+    assert len(call_spans) == 4
+    trace_ids = {format(s.context.trace_id, "032x") for s in call_spans}
+    assert len(trace_ids) == 1  # all four under one trace
+    # `kind` is the only thing that tells the four (identically-named, identically-modeled here)
+    # spans apart - without it there's no way to see which call was classify/plan/solve/verify
+    by_start = sorted(call_spans, key=lambda s: s.start_time)
+    assert [s.attributes["eval.kind"] for s in by_start] == ["classify", "plan", "solve", "verify"]
     start = next(e for e in received if e["type"] == "turn.start")
     assert start["reference"] == "5"
+    end = next(e for e in received if e["type"] == "turn.end")
+    assert end["trace_id"] in trace_ids
 
 
 def test_reasoning_agent_default_mode_routes_classify_plan_verify_and_solve_to_different_task_model_groups(
@@ -242,32 +263,42 @@ def test_reasoning_agent_explicit_model_skips_the_gateway_for_all_four_calls(mon
     assert all("api_key" not in c for c in calls)
 
 
-def test_reasoning_agent_span_records_the_concrete_model_not_the_group_alias(monkeypatch):
-    """A span's `model` must be the real deployment that answered (`ollama_chat/qwen3:8b`), never the gateway's
-    routing alias (`reasoning-agent__reasoning`) - `plan_turn_evaluators`/`same_model`/`same_family` key off
-    this for the never-self-judge invariant, and an alias would break that check silently."""
+def test_reasoning_agent_records_the_concrete_model_not_the_group_alias(monkeypatch):
+    """`turn.end`'s `models` must list the real deployment that answered (`ollama_chat/qwen3:8b`), never the
+    gateway's routing alias (`reasoning-agent__reasoning`) - `plan_turn_evaluators`/`same_model`/`same_family`
+    key off this for the never-self-judge invariant, and an alias would break that check silently."""
 
     def fake_completion(**kwargs):
         return _FakeLiteLLMResponse("...", concrete_model="ollama_chat/qwen3:8b")
 
     monkeypatch.setattr(reasoning_agent.litellm, "completion", fake_completion)
 
+    exp = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exp))
+
     received: list = []
     client = AgentClient(
         "http://platform.local",
         "tok",
         transport=httpx.MockTransport(_platform_handler(received)),
+        tracer_provider=provider,
         flush_interval_s=0.02,
     )
     reasoning_agent.solve_one(client, "s1", None, "http://gateway.local", None, "2+3?")
     client.close(timeout_s=2.0)
+    provider.shutdown()
 
-    spans = [e for e in received if e["type"] == "span"]
-    assert len(spans) == 4
-    assert all(s["model"] == "ollama_chat/qwen3:8b" for s in spans)
-    assert reasoning_agent.REASONING_MODEL_GROUP not in {s["model"] for s in spans}
-    assert reasoning_agent.GENERATION_MODEL_GROUP not in {s["model"] for s in spans}
-    assert reasoning_agent.CLASSIFICATION_MODEL_GROUP not in {s["model"] for s in spans}
+    call_spans = [s for s in exp.get_finished_spans() if s.name == "gen_ai.chat"]
+    assert len(call_spans) == 4
+    models = {s.attributes["gen_ai.request.model"] for s in call_spans}
+    assert models == {"ollama_chat/qwen3:8b"}
+    assert reasoning_agent.REASONING_MODEL_GROUP not in models
+    assert reasoning_agent.GENERATION_MODEL_GROUP not in models
+    assert reasoning_agent.CLASSIFICATION_MODEL_GROUP not in models
+
+    end = next(e for e in received if e["type"] == "turn.end")
+    assert end["models"] == ["ollama_chat/qwen3:8b"]  # de-duplicated across all four calls
 
 
 def test_call_llm_return_shape_matches_the_pre_litellm_implementation(monkeypatch):
@@ -691,3 +722,64 @@ def test_main_skips_discovery_entirely_when_model_is_explicit(monkeypatch):
         "--model", "ollama_chat/qwen3:8b", "--problem", "2+3?",
     ])
     assert calls  # the call still happened - just never through discovery
+
+
+def test_main_wires_a_fixed_workflow_name_into_the_agent_client(monkeypatch):
+    """add-otel-tracing: reasoning_agent.py's turn is a genuine four-step pipeline, unlike
+    chatbot.py's single call - `main()` always passes a literal `workflow_name` for it."""
+    captured = {}
+
+    def fake_agent_client(*_a, **kw):
+        captured.update(kw)
+        return AgentClient(
+            "http://platform.local", "tok", transport=httpx.MockTransport(_platform_handler([])),
+            flush_interval_s=0.02,
+        )
+
+    monkeypatch.setattr(reasoning_agent, "AgentClient", fake_agent_client)
+    monkeypatch.setattr(reasoning_agent.litellm, "completion", lambda **kw: _FakeLiteLLMResponse("..."))
+    reasoning_agent.main([
+        "--platform-url", "http://platform.local", "--token", "tok",
+        "--model", "ollama_chat/qwen3:8b", "--problem", "2+3?",
+    ])
+    assert captured["workflow_name"] == "reasoning-pipeline"
+
+
+# ------------------------------------------------------------------ add-otel-tracing: --otel-endpoint
+def test_otel_endpoint_falls_back_to_the_env_var_when_the_flag_is_omitted(monkeypatch):
+    """Setting EVAL_OTEL_ENDPOINT in the shell - the same env var the platform backend itself reads -
+    must be enough on its own; the flag should never be required just to match what's already set."""
+    monkeypatch.setenv("EVAL_OTEL_ENDPOINT", "localhost:4317")
+
+    chatbot_args = chatbot.build_arg_parser().parse_args(
+        ["--platform-url", "http://platform.local", "--token", "tok"]
+    )
+    assert chatbot_args.otel_endpoint == "localhost:4317"
+
+    reasoning_args = reasoning_agent.build_arg_parser().parse_args(
+        ["--platform-url", "http://platform.local", "--token", "tok", "--problem", "2+3?"]
+    )
+    assert reasoning_args.otel_endpoint == "localhost:4317"
+
+
+def test_otel_endpoint_flag_overrides_the_env_var(monkeypatch):
+    monkeypatch.setenv("EVAL_OTEL_ENDPOINT", "localhost:4317")
+    args = reasoning_agent.build_arg_parser().parse_args(
+        [
+            "--platform-url", "http://platform.local", "--token", "tok", "--problem", "2+3?",
+            "--otel-endpoint", "collector.other.host:4317",
+        ]
+    )
+    assert args.otel_endpoint == "collector.other.host:4317"
+
+
+def test_otel_endpoint_defaults_to_none_when_neither_is_set(monkeypatch):
+    monkeypatch.delenv("EVAL_OTEL_ENDPOINT", raising=False)
+    chatbot_args = chatbot.build_arg_parser().parse_args(
+        ["--platform-url", "http://platform.local", "--token", "tok"]
+    )
+    assert chatbot_args.otel_endpoint is None
+    reasoning_args = reasoning_agent.build_arg_parser().parse_args(
+        ["--platform-url", "http://platform.local", "--token", "tok", "--problem", "2+3?"]
+    )
+    assert reasoning_args.otel_endpoint is None

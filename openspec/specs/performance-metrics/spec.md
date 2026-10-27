@@ -18,7 +18,7 @@ The system SHALL label speed figures of enterprise models as including network t
 - **THEN** speed figures are shown with the network-time label but no local-vs-cloud caveat
 
 ### Requirement: Per-request metrics
-The system SHALL record, for every request: total latency, time to first token, time to first answer token (after any thinking output), model load duration, prompt token count, output token count, thinking token count when available, prompt evaluation duration, generation duration, and generation throughput in tokens per second. For enterprise models, token counts SHALL come from the provider's reported usage and timings from client-side measurement, and the source of each figure SHALL be recorded. When an enterprise provider reports that some of a request's prompt tokens were served from its own prompt cache, the system SHALL record that cached-token count alongside the prompt token count rather than discarding it.
+The system SHALL record, for every request: total latency, time to first token, time to first answer token (after any thinking output), model load duration, prompt token count, output token count, thinking token count when available, prompt evaluation duration, generation duration, and generation throughput in tokens per second. For enterprise models, token counts SHALL come from the provider's reported usage and timings from client-side measurement, and the source of each figure SHALL be recorded. When an enterprise provider reports that some of a request's prompt tokens were served from its own prompt cache, the system SHALL record that cached-token count alongside the prompt token count rather than discarding it. The system SHALL also compute and record a cost figure for the request from its token counts and a maintained price list, when the model has a known price; an unpriced model records no cost rather than a fabricated one.
 
 #### Scenario: Metrics recorded
 - **WHEN** a request completes successfully
@@ -47,6 +47,14 @@ The system SHALL record, for every request: total latency, time to first token, 
 #### Scenario: No cache information reported
 - **WHEN** an enterprise provider's usage report does not include a cached-token count, or the request used a local Ollama model
 - **THEN** the cached-token count is stored as absent, never as zero
+
+#### Scenario: Cost is computed for a priced model
+- **WHEN** a request completes for a model with a configured price-per-token entry
+- **THEN** its cost is computed from its recorded prompt and output token counts and stored with the result
+
+#### Scenario: No cost is fabricated for an unpriced model
+- **WHEN** a request completes for a model with no configured price-list entry
+- **THEN** no cost figure is recorded for that request - it is absent, not zero
 
 ### Requirement: Cold start separated from warm performance
 The system SHALL report model load time separately from generation latency, and SHALL exclude load time and warm-up requests from warm-performance aggregates so that model swapping does not distort speed comparisons. Enterprise models have no local load phase: no load duration SHALL be recorded for them, their requests SHALL NOT be flagged cold, and no warm-up request SHALL be sent to them.

@@ -31,17 +31,19 @@ def test_turn_sends_start_and_end():
 
     client = _client(handler)
     with client.turn("s1", input="hello") as t:
-        t.llm_call(model="qwen3:8b", output="hi there")
+        t.llm_call(model="qwen3:8b", output="hi there", prompt_tokens=10, completion_tokens=3)
         t.finish("hi there")
     client.close(timeout_s=2.0)
 
     types = [e["type"] for e in received]
-    assert "turn.start" in types
-    assert "span" in types
-    assert "turn.end" in types
+    assert types == ["turn.start", "turn.end"]  # add-otel-tracing: no more "span" event type
     end = next(e for e in received if e["type"] == "turn.end")
     assert end["status"] == "ok"
     assert end["output"] == "hi there"
+    assert end["models"] == ["qwen3:8b"]
+    assert end["prompt_tokens"] == 10 and end["completion_tokens"] == 3
+    assert end["cost"] is None  # qwen3:8b has no price-list entry - never fabricated as 0
+    assert end["trace_id"] is None  # no otel_endpoint configured on this client
 
 
 def test_exception_inside_turn_is_recorded_as_error_and_reraised():

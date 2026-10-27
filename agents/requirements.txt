@@ -1,10 +1,18 @@
-# Dependencies to run the reference agents and eval_agent_sdk standalone (design D3/D12: the SDK is
-# deliberately dependency-light - httpx only - so it can run inside any agent's own process).
+# Dependencies to run the reference agents and eval_agent_sdk standalone (design D3/D12: the SDK was
+# deliberately dependency-light - httpx only - until add-otel-tracing added real OpenTelemetry spans; see
+# that change's design.md for the trade-off this was weighed against and accepted explicitly).
 #
 #   make agents-setup      # from the repo root, creates agents/.venv with these installed
 #
 # httpx: the SDK's HTTP client, and chatbot.py's own calls to its local Ollama.
 httpx>=0.27
+# opentelemetry-sdk/opentelemetry-exporter-otlp-proto-grpc: add-otel-tracing's real span emission, exported to
+# the observability stack's Collector. Pinned per that change's design.md: the GenAI semantic-convention
+# attribute names this SDK emits (gen_ai.request.model, gen_ai.usage.*) are still marked experimental
+# upstream, so a version bump here is a deliberate, reviewed change, not automatic - same policy as
+# litellm/langchain below.
+opentelemetry-sdk==1.45.1
+opentelemetry-exporter-otlp-proto-grpc==1.45.1
 # pyyaml: only needed for `reasoning_agent.py --suite <file>.yaml` (a .json suite needs no extra dependency).
 # Its absence is handled gracefully (a clear error naming this package) if you skip it.
 pyyaml>=6.0

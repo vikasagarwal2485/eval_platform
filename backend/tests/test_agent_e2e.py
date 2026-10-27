@@ -97,7 +97,7 @@ def test_full_agent_evaluation_lifecycle(settings, file_session_factory, monkeyp
         assert run.status_code == 201, run.text
         run_id = run.json()["id"]
 
-        # ---- ingest one turn, out of order (end and span arrive before start), in a single batch
+        # ---- ingest one turn, out of order (end arrives before start), in a single batch
         events = [
             {
                 "v": 1,
@@ -107,29 +107,19 @@ def test_full_agent_evaluation_lifecycle(settings, file_session_factory, monkeyp
                 "type": "turn.end",
                 "status": "ok",
                 "output": "hello",
-            },
-            {
-                "v": 1,
-                "event_id": "e2",
-                "session_id": "s1",
-                "turn_id": "t1",
-                "type": "span",
-                "span_id": "sp1",
-                "kind": "llm",
-                "model": "author:1",
-                "output": "hello",
+                "models": ["author:1"],  # add-otel-tracing: turn.end reports this directly
             },
             {"v": 1, "event_id": "e1", "session_id": "s1", "turn_id": "t1", "type": "turn.start", "input": "hi"},
         ]
         r = client.post("/api/ingest/v1/events", json=events, headers={"Authorization": f"Bearer {token}"})
         assert r.status_code == 200
-        assert r.json() == {"accepted": 3, "duplicates": 0, "rejected": []}
+        assert r.json() == {"accepted": 2, "duplicates": 0, "rejected": []}
         turn = client.get(f"/api/agents/{agent['id']}/turns").json()[0]
         assert turn["input"] == "hi" and turn["status"] == "ok" and turn["models"] == ["author:1"]
 
         # ---- replay the exact same batch: every event is now a duplicate
         r = client.post("/api/ingest/v1/events", json=events, headers={"Authorization": f"Bearer {token}"})
-        assert r.json() == {"accepted": 0, "duplicates": 3, "rejected": []}
+        assert r.json() == {"accepted": 0, "duplicates": 2, "rejected": []}
 
         # ---- while the benchmark run is still active, the turn's evaluation must not have finished
         first_look = client.get(f"/api/agents/{agent['id']}/turns/{turn['id']}").json()["latest_evaluation"]
@@ -177,23 +167,13 @@ def _turn_events(ext: str) -> list[dict]:
         {"v": 1, "event_id": f"{ext}s", "session_id": "s1", "turn_id": ext, "type": "turn.start", "input": ext},
         {
             "v": 1,
-            "event_id": f"{ext}sp",
-            "session_id": "s1",
-            "turn_id": ext,
-            "type": "span",
-            "span_id": f"{ext}sp1",
-            "kind": "llm",
-            "model": "author:1",
-            "output": "hello",
-        },
-        {
-            "v": 1,
             "event_id": f"{ext}e",
             "session_id": "s1",
             "turn_id": ext,
             "type": "turn.end",
             "status": "ok",
             "output": "hello",
+            "models": ["author:1"],  # add-otel-tracing: turn.end reports this directly, no `span` event
         },
     ]
 

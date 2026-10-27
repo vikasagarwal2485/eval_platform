@@ -117,6 +117,7 @@ def _turn_out(session: Session, turn: AgentTurn, *, detail: bool = False) -> dic
         "status": turn.status,
         "input": turn.input,
         "output": turn.output,
+        "thinking": turn.thinking,
         "reference": turn.reference,
         "error": turn.error,
         "models": turn.models,
@@ -125,6 +126,8 @@ def _turn_out(session: Session, turn: AgentTurn, *, detail: bool = False) -> dic
         "latency_ms": turn.latency_ms,
         "prompt_tokens": turn.prompt_tokens,
         "completion_tokens": turn.completion_tokens,
+        "cost": turn.cost,
+        "trace_id": turn.trace_id,
         "started_at": _iso(turn.started_at),
         "ended_at": _iso(turn.ended_at),
     }

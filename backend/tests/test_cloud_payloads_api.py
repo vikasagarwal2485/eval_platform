@@ -100,6 +100,18 @@ def test_summary_rows_and_the_mixed_flag(mixed):
     assert rows[GPT]["performance"]["cold_requests"] == 0 and rows[GPT]["performance"]["warm_requests"] == 1
 
 
+def test_cost_is_present_for_a_priced_cloud_model_and_absent_for_a_local_one(mixed):
+    """add-otel-tracing 2.3: cost in results and summary, the same way cached_tokens already is."""
+    c, rid = mixed
+    by = {r["model"]: r for r in c.get(f"/api/runs/{rid}/results").json()["results"]}
+    assert isinstance(by[GPT]["metrics"]["cost"], float) and by[GPT]["metrics"]["cost"] > 0
+    assert by["qwen3:8b"]["metrics"]["cost"] is None  # no price-list entry - never fabricated as 0
+
+    rows = {r["model"]: r for r in c.get(f"/api/runs/{rid}/summary").json()["leaderboard"]}
+    assert rows[GPT]["performance"]["cost"]["median"] == by[GPT]["metrics"]["cost"]
+    assert rows["qwen3:8b"]["performance"]["cost"]["median"] is None
+
+
 def test_csv_export_has_source_provider_version_and_ignored_parameters(mixed):
     c, rid = mixed
     r = c.get(f"/api/runs/{rid}/export?format=csv")

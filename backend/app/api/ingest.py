@@ -19,7 +19,7 @@ from app.api.deps import get_session
 from app.core.events import agent_channel
 from app.core.gateway_sync import agent_slug, custom_kind_endpoint, model_group_name
 from app.schemas import declared_model_ref
-from app.traces.schemas import SpanEvent, TurnEndEvent, TurnStartEvent, UnsupportedSchemaVersion, validate_batch
+from app.traces.schemas import TurnEndEvent, TurnStartEvent, UnsupportedSchemaVersion, validate_batch
 
 router = APIRouter(prefix="/api/ingest")
 
@@ -104,17 +104,13 @@ async def ingest_events(
             dup = repo.apply_turn_start(session, turn, event, was_truncated=was_truncated)
             if not dup:
                 hub.publish(channel, "turn_started", {"turn_id": turn.id, "input": turn.input})
-        elif isinstance(event, SpanEvent):
-            dup = repo.apply_span(session, turn, event, was_truncated=was_truncated)
-            if not dup:
-                hub.publish(channel, "span_added", {"turn_id": turn.id, "kind": event.kind, "model": event.model})
         elif isinstance(event, TurnEndEvent):
             dup = repo.apply_turn_end(session, turn, event, was_truncated=was_truncated)
             if not dup:
                 hub.publish(channel, "turn_finished", {"turn_id": turn.id, "status": turn.status})
                 if turn.status == "ok":
                     repo.maybe_queue_evaluation(session, agent, turn)
-        else:  # pragma: no cover - validate_batch only yields the three known types
+        else:  # pragma: no cover - validate_batch only yields the two known types
             dup = True
         if dup:
             duplicates += 1

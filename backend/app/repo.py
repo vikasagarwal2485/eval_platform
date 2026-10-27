@@ -15,7 +15,6 @@ from app.core.tokens import display_prefix, generate_token, hash_token, verify_t
 from app.models import (
     Agent,
     AgentSession,
-    AgentSpan,
     AgentTurn,
     Judgement,
     ModelSnapshot,
@@ -860,45 +859,12 @@ def apply_turn_start(session: Session, turn: AgentTurn, event, *, was_truncated:
     return duplicate
 
 
-def apply_span(session: Session, turn: AgentTurn, event, *, was_truncated: bool = False) -> bool:
-    """Returns True if a span with this id was already recorded on this turn (a duplicate)."""
-    existing = session.scalar(
-        select(AgentSpan).where(AgentSpan.turn_id == turn.id, AgentSpan.external_id == event.span_id)
-    )
-    if existing:
-        return True
-    started, ended = _parse_event_ts(event.started_at), _parse_event_ts(event.ended_at)
-    span = AgentSpan(
-        turn_id=turn.id,
-        external_id=event.span_id,
-        kind=event.kind,
-        model=event.model,
-        name=event.name,
-        input={"messages": event.messages, "args": event.args},
-        output=event.output or event.result or "",
-        thinking=event.thinking,
-        error=event.error,
-        started_at=started,
-        ended_at=ended,
-        latency_ms=(ended - started).total_seconds() * 1000 if started and ended else None,
-        ttft_ms=event.ttft_ms,
-        prompt_tokens=event.usage.prompt_tokens if event.usage else None,
-        completion_tokens=event.usage.completion_tokens if event.usage else None,
-    )
-    turn.spans.append(span)  # not session.add: keeps the already-loaded `turn.spans` collection in sync
-    turn.truncated = turn.truncated or was_truncated
-    if event.kind == "llm":
-        if event.model:
-            if event.model not in (turn.models or []):
-                turn.models = [*(turn.models or []), event.model]
-        else:
-            turn.models_unknown = True
-    session.flush()
-    return False
-
-
 def apply_turn_end(session: Session, turn: AgentTurn, event, *, was_truncated: bool = False) -> bool:
-    """Returns True if the turn was already closed (a duplicate, safely ignored)."""
+    """Returns True if the turn was already closed (a duplicate, safely ignored).
+
+    add-otel-tracing: `models`, token totals, `cost` and `trace_id` come straight from the event -
+    the SDK already held the per-call usage it was instrumenting - rather than being derived here
+    by aggregating `AgentSpan` rows (that event type, `span`, is retired)."""
     duplicate = turn.status != "open"
     if not duplicate:
         turn.status = event.status
@@ -914,8 +880,12 @@ def apply_turn_end(session: Session, turn: AgentTurn, event, *, was_truncated: b
             # raises `TypeError: can't subtract offset-naive and offset-aware datetimes` here and the whole
             # batch 500s, silently dropping the span and turn.end (design.md D-context `_aware`).
             turn.latency_ms = max((_aware(turn.ended_at) - _aware(turn.started_at)).total_seconds() * 1000, 0.0)
-        turn.prompt_tokens = sum(s.prompt_tokens or 0 for s in turn.spans) or None
-        turn.completion_tokens = sum(s.completion_tokens or 0 for s in turn.spans) or None
+        turn.models = event.models or []
+        turn.prompt_tokens = event.prompt_tokens
+        turn.completion_tokens = event.completion_tokens
+        turn.cost = event.cost
+        turn.trace_id = event.trace_id
+        turn.thinking = event.thinking
     session.flush()
     return duplicate
 

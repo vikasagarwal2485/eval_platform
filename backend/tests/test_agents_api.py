@@ -21,23 +21,13 @@ def _turn_events(ext="t1", author="author:1"):
         {"v": 1, "event_id": f"{ext}s", "session_id": "s1", "turn_id": ext, "type": "turn.start", "input": "hi"},
         {
             "v": 1,
-            "event_id": f"{ext}sp",
-            "session_id": "s1",
-            "turn_id": ext,
-            "type": "span",
-            "span_id": f"{ext}sp1",
-            "kind": "llm",
-            "model": author,
-            "output": "hello",
-        },
-        {
-            "v": 1,
             "event_id": f"{ext}e",
             "session_id": "s1",
             "turn_id": ext,
             "type": "turn.end",
             "status": "ok",
             "output": "hello",
+            "models": [author],  # add-otel-tracing: turn.end reports this directly, no `span` event
         },
     ]
 
@@ -391,7 +381,8 @@ def test_list_and_get_turn(settings, file_session_factory):
         assert len(r.json()) == 1
         turn_id = r.json()[0]["id"]
         detail = c.get(f"/api/agents/{agent['id']}/turns/{turn_id}").json()
-        assert detail["spans"][0]["model"] == "author:1"
+        assert detail["models"] == ["author:1"]  # add-otel-tracing: reported by turn.end, no spans list anymore
+        assert detail["spans"] == []
         assert "evaluations" in detail
 
 
@@ -473,7 +464,8 @@ def test_ingest_publishes_the_turn_lifecycle_to_the_agent_channel(settings, file
         agent = _create_agent(c)
         _ingest(c, agent["token"], _turn_events("t1"))
         buffered = c.app.state.hub._streams[agent_channel(agent["id"])].events
-        assert [e.type for e in buffered] == ["turn_started", "span_added", "turn_finished"]
+        # add-otel-tracing: no more "span_added" event - the `span` event type is retired
+        assert [e.type for e in buffered] == ["turn_started", "turn_finished"]
 
 
 # ------------------------------------------------------------------ add-gateway-model-sync (4.2-4.4)

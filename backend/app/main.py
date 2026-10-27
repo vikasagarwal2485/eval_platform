@@ -10,18 +10,20 @@ from fastapi.staticfiles import StaticFiles
 
 import app.models  # noqa: F401  (register tables)
 from app import repo
-from app.api import agents, export, health, ingest, providers, runs, skills, suites
+from app.api import agents, export, health, ingest, providers, runs, skills, suites, traces
 from app.config import Settings, load_settings
 from app.core.eval_worker import EvaluationWorker
 from app.core.events import EventHub, agent_channel
 from app.core.model_discovery import ModelDiscovery
 from app.core.runner import Runner
 from app.core.suite_io import seed_starter_suite
+from app.core.tracing import setup_tracing
 from app.db import make_engine, make_session_factory
 from app.migrate import upgrade_to_head
 from app.ollama.client import HttpOllamaClient, OllamaClient
 from app.providers.backend import ModelRouter
 from app.providers.factories import make_factories
+from app.tempo.client import TempoClient
 
 
 def create_app(
@@ -29,8 +31,10 @@ def create_app(
     ollama: OllamaClient | None = None,
     session_factory=None,
     provider_transport=None,
+    tempo_transport=None,
 ) -> FastAPI:
     settings = settings or load_settings()
+    setup_tracing(settings)  # add-otel-tracing: a graceful no-op when settings.otel_endpoint is unset
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -40,6 +44,8 @@ def create_app(
         await app.state.eval_worker.stop()
         await app.state.runner.stop()
         await app.state.router.aclose()  # closes enterprise backends and the Ollama client
+        if app.state.tempo is not None:
+            await app.state.tempo.aclose()
 
     app = FastAPI(title="Model Eval Platform", lifespan=lifespan)
     app.state.settings = settings
@@ -60,6 +66,11 @@ def create_app(
         app.state.ollama, session_factory, factories=make_factories(settings, provider_transport)
     )
     app.state.runner = Runner(session_factory, app.state.router, app.state.discovery, app.state.hub, settings)
+    # add-otel-tracing: None (unset tempo_base_url) is a supported, graceful "not configured" state -
+    # the /api/traces/{trace_id} endpoint reports it clearly rather than every call site checking it.
+    app.state.tempo = (
+        TempoClient(settings.tempo_base_url, transport=tempo_transport) if settings.tempo_base_url else None
+    )
 
     async def _publish_eval_event(agent_id: int, type_: str, data: dict) -> None:
         app.state.hub.publish(agent_channel(agent_id), type_, data)
@@ -92,6 +103,7 @@ def create_app(
     app.include_router(runs.router)
     app.include_router(ingest.router)
     app.include_router(agents.router)
+    app.include_router(traces.router)
     _mount_frontend(app, settings)
     return app
 

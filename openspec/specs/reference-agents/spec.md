@@ -7,11 +7,17 @@ Ships three runnable example agents that exercise the full ingest-to-evaluation 
 ## Requirements
 
 ### Requirement: A reference chatbot agent is provided
-The system SHALL ship a runnable chatbot agent that answers user messages using a configurable local model, sends each exchange as one turn with one LLM span to the platform using the agent SDK, and works against the same test infrastructure the platform's own tests use.
+The system SHALL ship a runnable chatbot agent that answers user messages using a configurable local model, sends each exchange as one turn with one LLM span to the platform using the agent SDK, and works against the same test infrastructure the platform's own tests use. That span SHALL be a real OpenTelemetry span (`trace-observability`), not a custom ingest event, so the exchange is viewable as a trace in Tempo/Grafana and in the platform's own frontend, in addition to appearing in that agent's conversation view.
 
 #### Scenario: Chatbot turn is ingested
 - **WHEN** the reference chatbot answers a user message
 - **THEN** a turn with one LLM span, its input and output, is streamed to the platform and appears in that agent's conversation view
+
+#### Scenario: The chatbot's span is a real OpenTelemetry span
+- **WHEN** the reference chatbot answers a user message
+- **THEN** the resulting span is emitted via OpenTelemetry (not the platform's custom span-event
+  type) and is visible as a trace in the platform's own frontend and in Grafana, correlated to the
+  turn by its `trace_id`
 
 ### Requirement: A reference multi-step reasoning agent is provided
 The system SHALL ship a runnable reasoning agent that answers a problem through more than one LLM
@@ -23,7 +29,10 @@ different models. When a fallback model group is configured for a call's task, t
 name it on the underlying request so a failed primary deployment does not fail the turn when a
 working fallback is available. The agent SHALL learn its own task-scoped model group names by
 discovering its registration from the platform at startup, rather than requiring an operator to
-know and pass them by hand, unless an explicit override is given or discovery itself fails.
+know and pass them by hand, unless an explicit override is given or discovery itself fails. Each
+of this agent's spans SHALL be a real OpenTelemetry span using the OpenTelemetry GenAI semantic
+conventions for the model, token usage and (when known) cost it recorded, rather than the
+platform's custom span-event type.
 
 #### Scenario: Reasoning turn has multiple spans
 - **WHEN** the reference reasoning agent answers one problem using several internal LLM calls
@@ -88,6 +97,13 @@ know and pass them by hand, unless an explicit override is given or discovery it
 - **THEN** the planning, solving and verification calls continue to use their existing
   reasoning-scoped and generation-scoped groups unchanged
 
+#### Scenario: All four calls produce real OpenTelemetry spans under one trace
+- **WHEN** the reference reasoning agent answers one problem through its classify, plan, solve and
+  verify calls
+- **THEN** all four spans are emitted via OpenTelemetry under the turn's single trace, each
+  carrying its own model, token usage and cost attributes, viewable as one connected trace in
+  Tempo/Grafana and in the platform's own frontend
+
 ### Requirement: The reference agents demonstrate evaluation by a different model
 The reference agents' documented setup SHALL configure at least one evaluator that is not the model the agent uses, so that running them produces evaluated turns without any self-judged score.
 
@@ -105,7 +121,9 @@ off to a different, independently registered reference agent or finishes the tur
 no further model call. Every real LLM call this agent makes SHALL be routed through the shared LLM
 gateway (`agent-llm-gateway`) by a task-scoped model group name the agent discovers for itself,
 exactly like the platform's other reference agents; this agent SHALL NOT call any LLM provider
-directly under any circumstance.
+directly under any circumstance. Its model-call and tool-call spans SHALL be real OpenTelemetry
+spans, the model-call span using the OpenTelemetry GenAI semantic conventions, exactly like the
+platform's other reference agents.
 
 #### Scenario: A turn classifies before it routes
 - **WHEN** the reference classifier-routed agent begins answering a problem
@@ -159,6 +177,12 @@ directly under any circumstance.
 - **WHEN** the agent calls the external classification service
 - **THEN** that call is explicitly not subject to the "every LLM call goes through the gateway"
   requirement, because the classification service is not a generative model call
+
+#### Scenario: The external classification call is still traced
+- **WHEN** the agent calls the external, non-LLM classification service
+- **THEN** that call is recorded as a real OpenTelemetry `tool`-kind span under the turn's trace,
+  even though it is not subject to the gateway-only constraint and carries no GenAI model
+  attributes
 
 ### Requirement: A routing-mapping tool resolves classification results to a target action
 The system SHALL ship a standalone tool, reachable over a tool-calling protocol, that resolves a

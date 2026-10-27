@@ -27,6 +27,7 @@ import type {
   Suite,
   SuiteDetail,
   Summary,
+  TempoTrace,
   Weights,
 } from './types';
 
@@ -52,6 +53,7 @@ export const keys = {
     ['summary', id, w ?? '', !!cold, attempt ?? null] as const,
   results: (id: number, attempt?: number | null) => ['results', id, attempt ?? null] as const,
   compare: (a: number, b: number) => ['compare', a, b] as const,
+  trace: (traceId: string) => ['trace', traceId] as const,
 };
 
 export function weightsParam(w?: Weights | null): string | undefined {
@@ -490,3 +492,14 @@ export function useReevaluateAgent(agentId: number) {
     onSuccess: refresh,
   });
 }
+
+// ---------------------------------------------------------------- add-otel-tracing: span-tree drill-down
+// `enabled` lets a caller fetch only once the user actually opens the trace section (e.g. a <details> disclosure),
+// rather than fetching every visible result/turn's trace up front - most never get opened.
+export const useTrace = (traceId: string | null, enabled = true) =>
+  useQuery({
+    queryKey: keys.trace(traceId ?? ''),
+    queryFn: () => api.get<TempoTrace>(`/traces/${traceId}`),
+    enabled: traceId !== null && enabled,
+    retry: false, // a 404/502/503 here is a normal, expected outcome, not a transient failure to retry
+  });

@@ -3,7 +3,7 @@ from datetime import timedelta
 from app import repo
 from app.models import utcnow
 from app.schemas import EvalConfigIn
-from app.traces.schemas import SpanEvent, TurnEndEvent, TurnStartEvent
+from app.traces.schemas import TurnEndEvent, TurnStartEvent
 
 
 def _agent(session, **eval_kwargs):
@@ -28,20 +28,6 @@ def _start(**over):
     return TurnStartEvent.model_validate({**base, **over})
 
 
-def _span(**over):
-    base = {
-        "v": 1,
-        "event_id": "e2",
-        "session_id": "s1",
-        "turn_id": "t1",
-        "span_id": "sp1",
-        "kind": "llm",
-        "model": "qwen3:8b",
-        "output": "hello",
-    }
-    return SpanEvent.model_validate({**base, **over})
-
-
 def _end(**over):
     base = {"v": 1, "event_id": "e3", "session_id": "s1", "turn_id": "t1", "status": "ok", "output": "hello"}
     return TurnEndEvent.model_validate({**base, **over})
@@ -57,17 +43,22 @@ def test_session_and_turn_are_idempotent(session):
     assert t1.id == t2.id
 
 
-def test_turn_reconstructed_from_start_span_end(session):
+def test_turn_reconstructed_from_start_and_end(session):
+    """add-otel-tracing: `turn.end` reports models/tokens/cost/trace_id directly - no `span` event
+    for the backend to derive them from."""
     agent = _agent(session)
     turn = _turn(session, agent)
     repo.apply_turn_start(session, turn, _start())
-    repo.apply_span(session, turn, _span())
-    repo.apply_turn_end(session, turn, _end())
+    repo.apply_turn_end(
+        session, turn, _end(models=["qwen3:8b"], prompt_tokens=20, completion_tokens=5, cost=0.001, trace_id="a" * 32)
+    )
     assert turn.input == "hi"
     assert turn.output == "hello"
     assert turn.status == "ok"
     assert turn.models == ["qwen3:8b"]
-    assert len(turn.spans) == 1
+    assert turn.prompt_tokens == 20 and turn.completion_tokens == 5
+    assert turn.cost == 0.001
+    assert turn.trace_id == "a" * 32
 
 
 def test_replay_causes_no_duplication(session):
@@ -75,11 +66,8 @@ def test_replay_causes_no_duplication(session):
     turn = _turn(session, agent)
     assert repo.apply_turn_start(session, turn, _start()) is False
     assert repo.apply_turn_start(session, turn, _start()) is True  # duplicate
-    assert repo.apply_span(session, turn, _span()) is False
-    assert repo.apply_span(session, turn, _span()) is True  # duplicate
     assert repo.apply_turn_end(session, turn, _end()) is False
     assert repo.apply_turn_end(session, turn, _end()) is True  # duplicate
-    assert len(turn.spans) == 1
 
 
 def test_turn_end_before_start_creates_and_closes_the_turn(session):
@@ -108,7 +96,6 @@ def test_turn_end_arriving_in_a_separate_request_from_turn_start(session_factory
     # a brand new session, as a separate HTTP request would get via `Depends(get_session)`
     with session_factory() as s2:
         turn = repo.get_turn(s2, turn_id)
-        repo.apply_span(s2, turn, _span())
         repo.apply_turn_end(s2, turn, _end())  # must not raise TypeError (naive vs aware datetimes)
         s2.commit()
 
@@ -119,12 +106,14 @@ def test_turn_end_arriving_in_a_separate_request_from_turn_start(session_factory
         assert turn.latency_ms is not None and turn.latency_ms >= 0
 
 
-def test_llm_span_without_model_flags_unknown(session):
+def test_turn_end_with_no_models_reported_leaves_models_empty_and_unknown_false(session):
+    """add-otel-tracing: no more per-span `models_unknown` derivation - an empty `models` list is
+    itself the "don't assume safe to judge" signal eligibility already treats the same way."""
     agent = _agent(session)
     turn = _turn(session, agent)
-    repo.apply_span(session, turn, _span(model=None, span_id="sp2"))
-    assert turn.models_unknown is True
+    repo.apply_turn_end(session, turn, _end())  # omits `models` entirely
     assert turn.models == []
+    assert turn.models_unknown is False
 
 
 def test_abandoned_sweep_marks_stale_open_turns(session):

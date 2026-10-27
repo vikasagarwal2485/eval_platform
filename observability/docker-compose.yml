@@ -1,0 +1,48 @@
+# Self-contained observability stack: OpenTelemetry Collector + Grafana Tempo + Grafana.
+# Separate from the main backend's own deploy, the same way gateway/ is separate (design.md:
+# "add-otel-tracing", decision 1) - start/stop this independently; nothing here is required for
+# the main backend, the Runner, or agent ingest to run. Only the trace-tree view in the platform's
+# own frontend (and, if you want it, Grafana itself) depends on this being up.
+#
+# Usage: from this directory, `docker compose up -d`. See README.md for ports, health checks, and
+# how the backend/agents are expected to point at the Collector.
+
+services:
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
+    ports:
+      - "4317:4317" # OTLP gRPC - what the backend's and agents' OTel SDKs export to
+      - "4318:4318" # OTLP HTTP
+      - "13133:13133" # health_check extension
+    depends_on:
+      - tempo
+
+  tempo:
+    image: grafana/tempo:latest
+    command: ["-config.file=/etc/tempo.yaml"]
+    volumes:
+      - ./tempo.yaml:/etc/tempo.yaml:ro
+      - tempo-data:/var/tempo
+    ports:
+      - "3200:3200" # Tempo's own HTTP query API - what the backend's Tempo-query client calls
+
+  grafana:
+    image: grafana/grafana:latest
+    environment:
+      # Local/dev convenience only - see README's "Production notes" before exposing this stack
+      # beyond your own machine.
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+    ports:
+      - "3000:3000"
+    depends_on:
+      - tempo
+
+volumes:
+  tempo-data:

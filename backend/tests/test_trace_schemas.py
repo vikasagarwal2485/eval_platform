@@ -13,6 +13,8 @@ def _turn_start(**over):
 
 
 def _span(**over):
+    """add-otel-tracing: this event type is retired - now just an unrecognized event, same as any
+    other unknown `type` (per spec `trace-ingestion`, "Malformed events are rejected individually")."""
     base = {
         "v": 1,
         "event_id": "e2",
@@ -33,8 +35,8 @@ def _turn_end(**over):
 
 
 def test_valid_batch_all_accepted():
-    result = validate_batch([_turn_start(), _span(), _turn_end()])
-    assert len(result.accepted) == 3
+    result = validate_batch([_turn_start(), _turn_end()])
+    assert len(result.accepted) == 2
     assert result.rejected == []
 
 
@@ -50,10 +52,10 @@ def test_unsupported_version_rejects_whole_batch():
 
 
 def test_one_malformed_event_does_not_fail_the_batch():
-    bad = _span()
-    del bad["kind"]  # required field missing
-    result = validate_batch([_turn_start(), bad, _turn_end()])
-    assert len(result.accepted) == 2
+    bad = _turn_end()
+    bad["status"] = "not-a-valid-status"  # only "ok"/"error" are accepted
+    result = validate_batch([_turn_start(), bad])
+    assert len(result.accepted) == 1
     assert len(result.rejected) == 1
     assert result.rejected[0].index == 1
 
@@ -73,6 +75,46 @@ def test_unknown_event_type_is_rejected_individually():
     )
     assert len(result.accepted) == 1
     assert len(result.rejected) == 1
+
+
+def test_span_event_only_that_event_is_rejected_turn_start_and_end_still_accepted():
+    """add-otel-tracing 5.1: the retired `span` type is now just an unrecognized event type - only
+    it is rejected, the surrounding turn.start/turn.end events in the same batch are unaffected."""
+    result = validate_batch([_turn_start(), _span(), _turn_end()])
+    assert [e.type for e in result.accepted] == ["turn.start", "turn.end"]
+    assert len(result.rejected) == 1
+    assert result.rejected[0].index == 1
+    assert "span" in result.rejected[0].reason
+
+
+def test_turn_end_reports_models_tokens_cost_and_trace_id_directly():
+    """add-otel-tracing: no more deriving these from aggregated span events."""
+    result = validate_batch(
+        [
+            _turn_end(
+                models=["@oa/gpt-4o", "qwen3:8b"],
+                prompt_tokens=120,
+                completion_tokens=45,
+                cost=0.0025,
+                trace_id="a" * 32,
+            )
+        ]
+    )
+    (event,) = result.accepted
+    assert event.models == ["@oa/gpt-4o", "qwen3:8b"]
+    assert event.prompt_tokens == 120
+    assert event.completion_tokens == 45
+    assert event.cost == 0.0025
+    assert event.trace_id == "a" * 32
+
+
+def test_turn_end_new_fields_default_to_empty_or_none_when_omitted():
+    (event,) = validate_batch([_turn_end()]).accepted
+    assert event.models == []
+    assert event.prompt_tokens is None
+    assert event.completion_tokens is None
+    assert event.cost is None
+    assert event.trace_id is None
 
 
 def test_batch_too_large_is_rejected():

@@ -92,11 +92,42 @@ def test_compare_two_runs_overlapping_and_disjoint_models(settings, file_session
     assert a["categories"]["reasoning"] == {"a": 0.0, "b": 1.0, "delta": 1.0}
     assert a["categories"]["classification"]["delta"] == 0.0
     assert a["composite"]["delta"] == pytest.approx(0.5)
-    assert set(a["performance"]) == {"latency_ms", "ttft_ms", "tokens_per_s"}
+    # add-otel-tracing 2.3: cost joins the compare-dict's performance keys (both local here, so None)
+    assert set(a["performance"]) == {"latency_ms", "ttft_ms", "tokens_per_s", "cost"}
+    assert a["performance"]["cost"] == {"a": None, "b": None, "delta": None}
     reasoning = next(x for x in d["cases"] if x["category"] == "reasoning")
     assert (reasoning["model"], reasoning["a"], reasoning["b"], reasoning["delta"]) == ("a:1", 0.0, 1.0, 1.0)
     assert len(d["cases"]) == 2  # cases matched by category+prompt
     assert bad_weights.status_code == 422 and missing.status_code == 404
+
+
+def test_compare_two_runs_shows_a_computed_cost_delta_for_a_priced_cloud_model(settings, file_session_factory, monkeypatch):
+    """add-otel-tracing 2.3: cost in compare's per-model performance block, same mechanism as latency/tps."""
+    monkeypatch.setenv("OA_KEY", "test-key-123")
+    oa = FakeOpenAI()
+    oa_url = oa.start()
+    gpt = "@oa/gpt-4o"
+    try:
+        with file_session_factory() as s:
+            p = repo.create_provider(
+                s, kind="openai", name="oa", key_env="OA_KEY", base_url=oa_url, ack_at=datetime.now(UTC)
+            )
+            repo.add_registered_model(s, p.id, "gpt-4o")
+            s.commit()
+        with new_client(settings, file_session_factory, FakeOllama([], make_responder())) as c:
+            cfg = {"warmup": False}
+            oa.answer = "one two"
+            r1 = start_run(c, [gpt], [CLS], config=cfg)
+            wait_for(c, r1["id"])
+            oa.answer = "one two three four"  # more completion tokens -> a higher cost second run
+            r2 = start_run(c, [gpt], [CLS], config=cfg)
+            wait_for(c, r2["id"])
+            d = c.get(f"/api/runs/compare?a={r1['id']}&b={r2['id']}").json()
+    finally:
+        oa.stop()
+    cost = d["models"][0]["performance"]["cost"]
+    assert cost["a"] is not None and cost["b"] is not None and cost["b"] > cost["a"]
+    assert cost["delta"] == pytest.approx(cost["b"] - cost["a"])
 
 
 def test_compare_flags_changed_model_digest(settings, file_session_factory):

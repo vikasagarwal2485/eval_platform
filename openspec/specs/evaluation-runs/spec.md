@@ -157,3 +157,23 @@ editing or deleting a skill afterward never changes what a past run shows it use
   suite with no skill attached
 - **THEN** the existing run-vs-run comparison shows both runs' quality, latency and tokens-per-sec
   side by side, using the comparison tooling that already exists for comparing any two runs
+
+### Requirement: Each request is traced as it executes
+The system SHALL emit an OpenTelemetry trace for each request the Runner sends, with a span for
+each phase it actually performs (warm-up when sent, generation, judging when applicable), and
+SHALL record that trace's id on the request's own `Result` row.
+
+#### Scenario: A measured request's phases are traced
+- **WHEN** a run executes a request for a case
+- **THEN** a trace is emitted covering that request's phases, and the resulting `Result` records
+  the trace's id
+
+#### Scenario: Tracing failure never fails the run
+- **WHEN** the observability stack is unreachable while a run is executing
+- **THEN** the run's requests still execute, score and complete normally, and the affected
+  `Result` rows simply have no `trace_id`
+
+#### Scenario: A warm-up request's span is distinguishable from a measured request's
+- **WHEN** a model's warm-up request is sent before its measured requests
+- **THEN** it is traced as its own distinct span, never conflated with a measured request's own
+  trace

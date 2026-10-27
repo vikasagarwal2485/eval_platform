@@ -334,7 +334,7 @@ def compare_runs(session: Session, run_a, run_b, weights: dict[str, float] | Non
                 },
                 "performance": {
                     key: {"a": perf(a, key), "b": perf(b, key), "delta": _delta(perf(a, key), perf(b, key))}
-                    for key in ("latency_ms", "ttft_ms", "tokens_per_s")
+                    for key in ("latency_ms", "ttft_ms", "tokens_per_s", "cost")
                 },
                 "skill_adherence": {
                     "a": adherence(a),

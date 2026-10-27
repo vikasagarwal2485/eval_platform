@@ -1,0 +1,27 @@
+# Grafana Tempo config for the shared observability stack (design.md: "add-otel-tracing").
+#
+# Single-binary mode with local-disk storage - this stack is a local/dev-scale deployment (one
+# instance, one machine), matching this project's existing "single-machine scale" design stance
+# elsewhere (cross-model-judging's per-judge stats, performance-metrics' aggregates: computed over
+# stored rows, no separate pre-aggregation cluster). Swap `storage.trace.backend` for S3/GCS and
+# move to microservices mode only if this stack needs to scale beyond one machine.
+
+server:
+  http_listen_port: 3200
+
+distributor:
+  receivers:
+    otlp:
+      protocols:
+        grpc:
+          endpoint: 0.0.0.0:4317
+        http:
+          endpoint: 0.0.0.0:4318
+
+storage:
+  trace:
+    backend: local
+    local:
+      path: /var/tempo/traces
+    wal:
+      path: /var/tempo/wal

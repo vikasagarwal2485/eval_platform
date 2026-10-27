@@ -27,6 +27,14 @@ class Settings:
     # or logged, the same discipline KeyProvider already applies to every other credential this platform holds.
     gateway_url: str | None = None
     gateway_sync_timeout_s: float = 5.0
+    # add-otel-tracing: OTLP gRPC endpoint for the Runner's own spans (e.g. "http://localhost:4317",
+    # the observability stack's otel-collector). None disables tracing entirely - a graceful no-op,
+    # the same "unset = off" convention as gateway_url above.
+    otel_endpoint: str | None = None
+    # add-otel-tracing: Tempo's own query API (e.g. "http://localhost:3200"), used only by the
+    # backend's own `/api/traces/{trace_id}` proxy - the browser never talks to Tempo directly.
+    # None disables the trace-tree view entirely (a graceful "not configured", never an error).
+    tempo_base_url: str | None = None
 
     @property
     def db_url(self) -> str:
@@ -54,4 +62,6 @@ def load_settings(env: dict | None = None) -> Settings:
         frontend_dist=Path(env.get("EVAL_FRONTEND_DIST", str(defaults.frontend_dist))),
         gateway_url=env.get("EVAL_GATEWAY_URL", defaults.gateway_url) or None,
         gateway_sync_timeout_s=float(env.get("EVAL_GATEWAY_SYNC_TIMEOUT_S", defaults.gateway_sync_timeout_s)),
+        otel_endpoint=env.get("EVAL_OTEL_ENDPOINT", defaults.otel_endpoint) or None,
+        tempo_base_url=env.get("EVAL_TEMPO_BASE_URL", defaults.tempo_base_url) or None,
     )

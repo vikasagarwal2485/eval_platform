@@ -1,0 +1,34 @@
+# Maintained price list for cost calculation (add-otel-tracing design.md decision 7).
+#
+# Keyed by the model identifier a provider actually reports for a request - not this platform's
+# `@provider/model` reference, and not an Azure deployment's own alias (an operator can name a
+# deployment anything, e.g. "my-gpt-4o"; the underlying model it actually runs is what's priced
+# here). `compute_cost()` tries an exact key match first, then the longest price-list key the
+# model id starts with, so a dated snapshot like "gpt-4o-2024-08-06" matches the "gpt-4o" family
+# entry below without a separate line per snapshot date.
+#
+# Local Ollama models have no entry and no cost - `compute_cost()` returns None for them, same as
+# for any other model not listed here. None is never fabricated as 0.
+#
+# IMPORTANT: these are indicative USD list prices per the author's best recollection, not fetched
+# from any provider's live pricing page. Providers change prices without notice. Verify against
+# the provider's current published pricing before relying on this for real spend tracking, and
+# update the entry (or remove it, which makes that model's cost None again rather than wrong)
+# when it drifts.
+
+models:
+  gpt-4o:
+    input_per_1k: 0.0025
+    output_per_1k: 0.01
+  gpt-4o-mini:
+    input_per_1k: 0.00015
+    output_per_1k: 0.0006
+  o3-mini:
+    input_per_1k: 0.0011
+    output_per_1k: 0.0044
+  claude-3-5-haiku:
+    input_per_1k: 0.0008
+    output_per_1k: 0.004
+  claude-sonnet:
+    input_per_1k: 0.003
+    output_per_1k: 0.015

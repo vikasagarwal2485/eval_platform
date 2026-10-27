@@ -12,6 +12,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import time
 import uuid
@@ -20,7 +21,7 @@ from pathlib import Path
 import httpx
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from eval_agent_sdk import AgentClient  # noqa: E402
+from eval_agent_sdk import AgentClient, whoami  # noqa: E402
 
 DEFAULT_SYSTEM_PROMPT = "You are a helpful, concise assistant."
 
@@ -89,12 +90,38 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--platform-url", required=True, help="Base URL of the eval platform")
     p.add_argument("--token", required=True, help="This agent's ingest token")
     p.add_argument("--system-prompt", default=DEFAULT_SYSTEM_PROMPT)
+    # add-otel-tracing: unset (the default, or EVAL_OTEL_ENDPOINT also unset) is a graceful no-op -
+    # this agent's turns are still fully evaluated, just with no span tree to view. Point it at the
+    # observability stack's Collector (e.g. http://localhost:4317) to see this agent's calls in
+    # Tempo/Grafana. Falls back to EVAL_OTEL_ENDPOINT - the same env var the platform backend itself
+    # reads - so setting it once in a shell configures both without needing this flag repeated.
+    p.add_argument(
+        "--otel-endpoint",
+        default=os.environ.get("EVAL_OTEL_ENDPOINT"),
+        help="OTLP gRPC endpoint for real tracing, e.g. localhost:4317 (default: $EVAL_OTEL_ENDPOINT)",
+    )
     return p
+
+
+def _discover_agent_name(platform_url: str, token: str) -> str | None:
+    """This agent's own registered name (add-otel-tracing: used for `gen_ai.agent.name` on each turn's
+    root span), via the same `whoami()` endpoint discovery already uses elsewhere. Best-effort: a
+    failure here never blocks startup, and the agent just has no `gen_ai.agent.name` for this run."""
+    try:
+        return whoami(platform_url, token).get("name")
+    except httpx.HTTPError:
+        return None
 
 
 def main(argv: list[str] | None = None) -> None:
     args = build_arg_parser().parse_args(argv)
-    client = AgentClient(args.platform_url, args.token)
+    client = AgentClient(
+        args.platform_url,
+        args.token,
+        otel_endpoint=args.otel_endpoint,
+        service_name="chatbot",
+        agent_name=_discover_agent_name(args.platform_url, args.token),
+    )
     try:
         run_repl(client, args.model, args.ollama_url, args.system_prompt)
     finally:

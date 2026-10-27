@@ -204,6 +204,9 @@ class Result(Base):
     # full raw Ollama counters and client timings
     metrics: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    # add-otel-tracing: this request's OTel trace id (32 lowercase hex chars), or None - never fabricated -
+    # when tracing is unconfigured, unreachable, or failed; fetched live from Tempo, never stored locally
+    trace_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
 
 class ScoringAttempt(Base):
@@ -315,6 +318,10 @@ class AgentTurn(Base):
     latency_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
     prompt_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     completion_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # add-otel-tracing: all three reported directly by `turn.end`, never derived or fabricated here
+    cost: Mapped[float | None] = mapped_column(Float, nullable=True)
+    trace_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    thinking: Mapped[str | None] = mapped_column(Text, nullable=True)  # the turn's own reasoning trace
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     agent: Mapped[Agent] = relationship(back_populates="turns")

@@ -59,6 +59,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import sys
 import time
 import uuid
@@ -174,10 +175,14 @@ def call_llm(
     }
 
 
-def _span(t, requested_model: str, output: str, usage: dict) -> None:
+def _span(t, requested_model: str, output: str, usage: dict, *, kind: str) -> None:
+    """`kind` (add-otel-tracing) names this call's role (classify/plan/solve/verify) - every call shares
+    the same span name ("gen_ai.chat"), so without it there is no way to tell which of the turn's four
+    calls a given span was for, especially when `--model` makes all four use the same literal model."""
     t.llm_call(
         model=usage.get("model") or requested_model, output=output,
         prompt_tokens=usage.get("prompt_tokens"), completion_tokens=usage.get("completion_tokens"),
+        kind=kind,
     )
 
 
@@ -224,27 +229,27 @@ def solve_one(
             effective_gateway_url, gateway_key, classification_model, CLASSIFY_PROMPT.format(problem=problem),
             fallback_group=classification_fallback,
         )
-        _span(t, classification_model, _classification, classify_usage)
+        _span(t, classification_model, _classification, classify_usage, kind="classify")
 
         plan, plan_usage = call_llm(
             effective_gateway_url, gateway_key, reasoning_model, PLAN_PROMPT.format(problem=problem),
             fallback_group=reasoning_fallback,
         )
-        _span(t, reasoning_model, plan, plan_usage)
+        _span(t, reasoning_model, plan, plan_usage, kind="plan")
 
         solution, solve_usage = call_llm(
             effective_gateway_url, gateway_key, generation_model,
             SOLVE_PROMPT.format(problem=problem, plan=plan),
             fallback_group=generation_fallback,
         )
-        _span(t, generation_model, solution, solve_usage)
+        _span(t, generation_model, solution, solve_usage, kind="solve")
 
         final, verify_usage = call_llm(
             effective_gateway_url, gateway_key, reasoning_model,
             VERIFY_PROMPT.format(problem=problem, solution=solution),
             fallback_group=reasoning_fallback,
         )
-        _span(t, reasoning_model, final, verify_usage)
+        _span(t, reasoning_model, final, verify_usage, kind="verify")
 
         t.finish(final)
     return final
@@ -389,6 +394,17 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--platform-url", required=True)
     p.add_argument("--token", required=True)
+    # add-otel-tracing: unset (the default, or EVAL_OTEL_ENDPOINT also unset) is a graceful no-op -
+    # this agent's turns are still fully evaluated, just with no span tree to view. Point it at the
+    # observability stack's Collector (e.g. http://localhost:4317) to see all four calls under one
+    # trace in Tempo/Grafana. Falls back to EVAL_OTEL_ENDPOINT - the same env var the platform
+    # backend itself reads - so setting it once in a shell configures both without needing this
+    # flag repeated.
+    p.add_argument(
+        "--otel-endpoint",
+        default=os.environ.get("EVAL_OTEL_ENDPOINT"),
+        help="OTLP gRPC endpoint for real tracing, e.g. localhost:4317 (default: $EVAL_OTEL_ENDPOINT)",
+    )
     g = p.add_mutually_exclusive_group(required=True)
     g.add_argument("--problem", help="A single problem to solve")
     g.add_argument("--suite", type=Path, help="A suite file (.json/.yaml) whose reasoning cases to replay")
@@ -437,6 +453,18 @@ def _resolve_model_groups(
     return reasoning_group, generation_group, classification_group
 
 
+def _discover_agent_name(platform_url: str, token: str) -> str | None:
+    """This agent's own registered name (add-otel-tracing: used for `gen_ai.agent.name` on each turn's
+    root span) - a separate, best-effort `whoami()` call (never blocks startup on failure), kept apart
+    from `_resolve_model_groups()`'s own discovery call above so that function's tested return shape
+    (exactly the three group names) stays unchanged. Not called at all in `--model` mode - that mode's
+    whole point is zero platform discovery calls (see `main()`), which this must respect too."""
+    try:
+        return whoami(platform_url, token).get("name")
+    except httpx.HTTPError:
+        return None
+
+
 def main(argv: list[str] | None = None) -> None:
     args = build_arg_parser().parse_args(argv)
     if args.model:
@@ -445,12 +473,23 @@ def main(argv: list[str] | None = None) -> None:
         reasoning_group, generation_group, classification_group = (
             REASONING_MODEL_GROUP, GENERATION_MODEL_GROUP, CLASSIFICATION_MODEL_GROUP,
         )
+        agent_name = None
     else:
         reasoning_group, generation_group, classification_group = _resolve_model_groups(
             args.platform_url, args.token, args.reasoning_model_group, args.generation_model_group,
             args.classification_model_group,
         )
-    client = AgentClient(args.platform_url, args.token)
+        agent_name = _discover_agent_name(args.platform_url, args.token)
+    client = AgentClient(
+        args.platform_url,
+        args.token,
+        otel_endpoint=args.otel_endpoint,
+        service_name="reasoning-agent",
+        agent_name=agent_name,
+        # A fixed, four-step pipeline (classify -> plan -> solve -> verify) run for every turn -
+        # genuinely a workflow, unlike chatbot.py's single call.
+        workflow_name="reasoning-pipeline",
+    )
     try:
         if args.suite:
             run_suite(

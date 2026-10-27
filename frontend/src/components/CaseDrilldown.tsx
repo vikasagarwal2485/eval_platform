@@ -3,6 +3,7 @@ import type { Category, Judgement, ResultItem, Run, RunCase, ScoreRow } from '..
 import { CATEGORIES } from '../api/types';
 import { dash, fmtMs, fmtNum, fmtPct } from '../lib/format';
 import ModelChip from './ModelChip';
+import SpanTree from './SpanTree';
 import { CategoryBadge, Empty, OutcomeBadge } from './ui';
 
 const FAILURES = ['wrong', 'unparseable', 'error'];
@@ -197,6 +198,7 @@ function ModelResult({ r, multi }: { r: ResultItem; multi: boolean }) {
       )}
       <ScoreDetails r={r} />
       <Metrics r={r} />
+      <SpanTree traceId={r.trace_id} />
     </div>
   );
 }

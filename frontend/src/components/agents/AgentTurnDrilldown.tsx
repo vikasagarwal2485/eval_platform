@@ -2,6 +2,7 @@ import { useState } from 'react';
 import type { AgentEvaluation, AgentJudgement, AgentTurnDetail } from '../../api/types';
 import { useEvaluateTurn } from '../../api/hooks';
 import { fmtDate, fmtMs, fmtPct } from '../../lib/format';
+import SpanTree from '../SpanTree';
 import { OutcomeBadge } from '../ui';
 
 function CriteriaList({
@@ -107,26 +108,31 @@ export default function AgentTurnDrilldown({
         </div>
       )}
 
-      <details>
-        <summary>Spans ({turn.spans.length})</summary>
-        {turn.spans.map((s) => (
-          <div key={s.id} className="small" style={{ marginBottom: 8 }}>
-            <div className="row">
-              <span className="badge">{s.kind}</span>
-              {s.model && <code>{s.model}</code>}
-              {s.name && <code>{s.name}</code>}
-              <span className="muted">{fmtMs(s.latency_ms)}</span>
+      <SpanTree traceId={turn.trace_id} />
+      {!turn.trace_id && turn.spans.length > 0 && (
+        // A turn from before this capability existed: no trace_id, but its calls were still recorded
+        // locally at the time (the retired `span` event type) - shown as a fallback, not lost.
+        <details>
+          <summary>Spans ({turn.spans.length}) · recorded before live tracing</summary>
+          {turn.spans.map((s) => (
+            <div key={s.id} className="small" style={{ marginBottom: 8 }}>
+              <div className="row">
+                <span className="badge">{s.kind}</span>
+                {s.model && <code>{s.model}</code>}
+                {s.name && <code>{s.name}</code>}
+                <span className="muted">{fmtMs(s.latency_ms)}</span>
+              </div>
+              {s.thinking && (
+                <details>
+                  <summary>Reasoning</summary>
+                  <pre className="output">{s.thinking}</pre>
+                </details>
+              )}
+              <pre className="output">{s.output || s.error || '(no output)'}</pre>
             </div>
-            {s.thinking && (
-              <details>
-                <summary>Reasoning</summary>
-                <pre className="output">{s.thinking}</pre>
-              </details>
-            )}
-            <pre className="output">{s.output || s.error || '(no output)'}</pre>
-          </div>
-        ))}
-      </details>
+          ))}
+        </details>
+      )}
 
       <h2 style={{ margin: '12px 0 4px', fontSize: '1rem' }}>Evaluation</h2>
       {evaluations.length === 0 && <div className="muted">Not evaluated yet.</div>}

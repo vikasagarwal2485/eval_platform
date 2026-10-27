@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping
+from contextlib import nullcontext
 
 from sqlalchemy.orm import Session
 
@@ -20,6 +21,7 @@ from app.core.scoring.judge import (
 )
 from app.core.scoring.judging import JudgeTarget, plan_judgements, rebuild_aggregate
 from app.core.scoring.reasoning import score_reasoning
+from app.core.tracing import traced_span
 from app.models import Result, RunCase
 from app.ollama.client import OllamaClient
 
@@ -168,15 +170,36 @@ async def judge_run(
                     [],
                 )
             else:
-                score, jm = await run_judge(
-                    client,
-                    task.judge_model,
-                    call,
-                    think=judge_think.get(task.judge_model),
-                    on_error=(lambda exc, m=task.judge_model: circuits.record(m, exc))
-                    if circuits is not None
-                    else None,
+                # add-otel-tracing: continues the result's own trace (from its generation phase) when it
+                # has one, so a result's full span tree shows the judging that happened against it, even
+                # though that happens later, in a separate stage. No trace_id (tracing was off during
+                # generation, or this result predates tracing) - never start an unrelated orphan trace here.
+                # `model` (not `judge_model`) matches the attribute name eval.warmup/eval.generate use for
+                # the model a span is about, so a Tempo/Grafana query can filter on one attribute name
+                # regardless of phase; `eval.type="judge"` groups this with judge_reasoning/skill_adherence
+                # against warmup/generate's `eval.type="case"`, `eval.kind` keeps the finer-grained
+                # distinction (`task.kind` here is this module's own judge-task-kind field, e.g.
+                # "judge"/"judge_reasoning"/"skill_adherence" - unrelated to the OTel attribute name).
+                judge_span = (
+                    traced_span(
+                        "eval.judge",
+                        trace_id=r.trace_id,
+                        model=task.judge_model,
+                        **{"eval.kind": task.kind, "eval.type": "judge"},
+                    )
+                    if r.trace_id
+                    else nullcontext()
                 )
+                with judge_span:
+                    score, jm = await run_judge(
+                        client,
+                        task.judge_model,
+                        call,
+                        think=judge_think.get(task.judge_model),
+                        on_error=(lambda exc, m=task.judge_model: circuits.record(m, exc))
+                        if circuits is not None
+                        else None,
+                    )
             score.detail["judge_metrics"] = jm  # kept apart from the evaluated model's own metrics
             repo.add_judgement(
                 session,

@@ -212,6 +212,7 @@ export function result(
     ttft_ms: 300,
     tokens_per_s: 45.2,
     output_tokens: 50,
+    trace_id: null,
     metrics: {},
     scores: [],
     primary: { value: outcome === 'correct' ? 1 : 0, outcome },

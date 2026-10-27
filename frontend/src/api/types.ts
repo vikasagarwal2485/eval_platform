@@ -307,6 +307,7 @@ export interface ResultItem {
   ttft_ms: number | null;
   tokens_per_s: number | null;
   output_tokens: number | null;
+  trace_id: string | null; // add-otel-tracing
   metrics: Record<string, number | boolean | null | Record<string, unknown>>;
   source: ModelSource;
   provider: string | null;
@@ -592,6 +593,8 @@ export interface AgentTurn {
   latency_ms: number | null;
   prompt_tokens: number | null;
   completion_tokens: number | null;
+  cost: number | null; // add-otel-tracing
+  trace_id: string | null; // add-otel-tracing
   started_at: string | null;
   ended_at: string | null;
   latest_evaluation: { status: EvaluationStatus; value: number | null } | null;
@@ -629,4 +632,41 @@ export interface AttentionItem {
   input: string;
   output: string;
   ended_at: string | null;
+}
+
+// ------------------------------------------------------------------ add-otel-tracing: GET /api/traces/{trace_id}
+// Tempo's own JSON shape for a trace (OTLP proto-JSON encoding) - passed through by the backend's proxy
+// unmodified. `traceId`/`spanId`/`parentSpanId` are base64, not hex; `*TimeUnixNano` are decimal-string epoch
+// nanoseconds (too large for a JS `number` without precision loss - parsed as `BigInt` in `lib/trace.ts`).
+export interface TempoAttributeValue {
+  stringValue?: string;
+  intValue?: string | number;
+  doubleValue?: number;
+  boolValue?: boolean;
+}
+export interface TempoAttribute {
+  key: string;
+  value: TempoAttributeValue;
+}
+export interface TempoRawSpan {
+  traceId: string;
+  spanId: string;
+  parentSpanId?: string;
+  name: string;
+  kind?: string;
+  startTimeUnixNano: string;
+  endTimeUnixNano: string;
+  attributes?: TempoAttribute[];
+  status?: { code?: string; message?: string };
+}
+export interface TempoScopeSpans {
+  scope?: { name?: string };
+  spans: TempoRawSpan[];
+}
+export interface TempoResourceSpans {
+  resource?: { attributes?: TempoAttribute[] };
+  scopeSpans: TempoScopeSpans[];
+}
+export interface TempoTrace {
+  batches: TempoResourceSpans[];
 }

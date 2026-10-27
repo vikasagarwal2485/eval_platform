@@ -61,6 +61,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -210,34 +211,34 @@ def spawn_reasoning_agent(
     reasoning_agent_token: str,
     gateway_url: str,
     reasoning_agent_gateway_key: str,
+    otel_endpoint: str | None = None,
     timeout: float = 600.0,
 ) -> str:
     """Spawns `reasoning_agent.py` as its own subprocess (design.md Decision 8), with its own
     platform/gateway credentials - it registers its own, separate turn under its own agent identity, fully
-    gateway-routed exactly as already proven; this orchestrator's own turn never attributes its spans. Its
-    `--problem` mode prints exactly the final answer to stdout and nothing else on success (its own
-    `run_once()`), so the whole captured, stripped stdout is that answer."""
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "reasoning_agent",
-            "--platform-url",
-            platform_url,
-            "--token",
-            reasoning_agent_token,
-            "--gateway-url",
-            gateway_url,
-            "--gateway-key",
-            reasoning_agent_gateway_key,
-            "--problem",
-            problem,
-        ],
-        cwd=str(AGENTS_DIR),
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-    )
+    gateway-routed exactly as already proven; this orchestrator's own turn never attributes its spans or
+    trace (add-otel-tracing: a separate process means a genuinely separate `AgentClient`/trace too, not
+    merely a separate platform turn - there is no shared trace context to pass across a subprocess
+    boundary, nor any need to). Its `--problem` mode prints exactly the final answer to stdout and nothing
+    else on success (its own `run_once()`), so the whole captured, stripped stdout is that answer."""
+    cmd = [
+        sys.executable,
+        "-m",
+        "reasoning_agent",
+        "--platform-url",
+        platform_url,
+        "--token",
+        reasoning_agent_token,
+        "--gateway-url",
+        gateway_url,
+        "--gateway-key",
+        reasoning_agent_gateway_key,
+        "--problem",
+        problem,
+    ]
+    if otel_endpoint:
+        cmd += ["--otel-endpoint", otel_endpoint]
+    result = subprocess.run(cmd, cwd=str(AGENTS_DIR), capture_output=True, text=True, timeout=timeout)
     if result.returncode != 0:
         raise RuntimeError(f"reasoning_agent exited with {result.returncode}: {result.stderr.strip()}")
     return result.stdout.strip()
@@ -253,6 +254,7 @@ class RouterState(TypedDict, total=False):
     reasoning_agent_token: str
     gateway_url: str
     reasoning_agent_gateway_key: str
+    reasoning_agent_otel_endpoint: str | None
     classification: dict
     decision: dict
     final_answer: str
@@ -260,7 +262,14 @@ class RouterState(TypedDict, total=False):
 
 def _classify_node(state: RouterState) -> dict:
     classification = classify(state["classifier_url"], state["problem"])
-    state["turn"].tool_call(name="classify", args={"text": state["problem"]}, result=json.dumps(classification))
+    # `model` (add-otel-tracing): the classifier is a model/service of its own (a `custom`-kind provider,
+    # not a generative one - design.md Context) - naming the endpoint that answered here, the same way an
+    # `llm_call()` names its model, makes it visible which service this tool call actually went to.
+    state["turn"].tool_call(
+        name="classify", args={"text": state["problem"]}, result=json.dumps(classification),
+        model=state["classifier_url"],
+        description="Multi-task text classifier resolving the problem to per-task labels/probabilities",
+    )
     return {"classification": classification}
 
 
@@ -274,6 +283,7 @@ def _route_node(state: RouterState) -> dict:
         output=json.dumps(decision),
         prompt_tokens=usage.get("prompt_tokens"),
         completion_tokens=usage.get("completion_tokens"),
+        kind="routing",
     )
     return {"decision": decision}
 
@@ -285,12 +295,16 @@ def _after_route(state: RouterState) -> str:
 
 def _short_circuit_node(state: RouterState) -> dict:
     final = state["decision"].get("response", "")
-    state["turn"].tool_call(name="short_circuit", args=state["decision"], result=final)
+    state["turn"].tool_call(
+        name="short_circuit", args=state["decision"], result=final,
+        description="Answers directly from the routing decision, without handing off to another agent",
+    )
     return {"final_answer": final}
 
 
 def _handoff_node(state: RouterState) -> dict:
     decision = state["decision"]
+    description = "Spawns the reference reasoning agent as a subprocess and returns its final answer"
     try:
         final = spawn_reasoning_agent(
             state["problem"],
@@ -298,11 +312,14 @@ def _handoff_node(state: RouterState) -> dict:
             reasoning_agent_token=state["reasoning_agent_token"],
             gateway_url=state["gateway_url"],
             reasoning_agent_gateway_key=state["reasoning_agent_gateway_key"],
+            otel_endpoint=state.get("reasoning_agent_otel_endpoint"),
         )
     except Exception as exc:
-        state["turn"].tool_call(name="handoff_to_reasoning_agent", args=decision, error=str(exc))
+        state["turn"].tool_call(
+            name="handoff_to_reasoning_agent", args=decision, error=str(exc), description=description
+        )
         raise
-    state["turn"].tool_call(name="handoff_to_reasoning_agent", args=decision, result=final)
+    state["turn"].tool_call(name="handoff_to_reasoning_agent", args=decision, result=final, description=description)
     return {"final_answer": final}
 
 
@@ -342,6 +359,7 @@ def solve_one(
     platform_url: str,
     reasoning_agent_token: str,
     reasoning_agent_gateway_key: str,
+    reasoning_agent_otel_endpoint: str | None = None,
     reference: str | None = None,
 ) -> str:
     graph = build_graph()
@@ -357,6 +375,7 @@ def solve_one(
                 "reasoning_agent_token": reasoning_agent_token,
                 "gateway_url": gateway_url,
                 "reasoning_agent_gateway_key": reasoning_agent_gateway_key,
+                "reasoning_agent_otel_endpoint": reasoning_agent_otel_endpoint,
             }
         )
         final = result["final_answer"]
@@ -426,6 +445,19 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--reasoning-agent-gateway-key", required=True, help="The reasoning-agent's own gateway virtual key."
     )
+    # add-otel-tracing: unset (the default, or EVAL_OTEL_ENDPOINT also unset) is a graceful no-op.
+    # Also forwarded to the spawned reasoning-agent subprocess on a handoff, so both agents' spans
+    # land under their own separate traces in the same Collector/Tempo - point it at e.g.
+    # http://localhost:4317. Falls back to EVAL_OTEL_ENDPOINT - the same env var the platform
+    # backend itself reads - so setting it once in a shell configures both without needing this
+    # flag repeated (the spawned subprocess also inherits this process's environment, so it would
+    # pick up EVAL_OTEL_ENDPOINT on its own too - the explicit forward below still matters when
+    # --otel-endpoint was passed as a flag rather than via the environment).
+    p.add_argument(
+        "--otel-endpoint",
+        default=os.environ.get("EVAL_OTEL_ENDPOINT"),
+        help="OTLP gRPC endpoint for real tracing, e.g. localhost:4317 (default: $EVAL_OTEL_ENDPOINT)",
+    )
     p.add_argument("--problem", required=True, help="A single problem to answer.")
     return p
 
@@ -442,6 +474,7 @@ def run_once(
     platform_url: str,
     reasoning_agent_token: str,
     reasoning_agent_gateway_key: str,
+    reasoning_agent_otel_endpoint: str | None = None,
 ) -> None:
     import uuid
 
@@ -459,6 +492,7 @@ def run_once(
             platform_url=platform_url,
             reasoning_agent_token=reasoning_agent_token,
             reasoning_agent_gateway_key=reasoning_agent_gateway_key,
+            reasoning_agent_otel_endpoint=reasoning_agent_otel_endpoint,
         )
     except (openai.OpenAIError, httpx.HTTPError, RoutingToolNotCalled, NoRouteMatched, RuntimeError) as exc:
         # Covers: a gateway/LLM failure (never silently retried direct against a provider, bypassing the
@@ -468,12 +502,32 @@ def run_once(
     print(final)
 
 
+def _discover_agent_name(platform_url: str, token: str) -> str | None:
+    """This agent's own registered name (add-otel-tracing: used for `gen_ai.agent.name` on each turn's
+    root span) - a separate, best-effort `whoami()` call (never blocks startup on failure), kept apart
+    from `_resolve_routing_group_and_classifier_url()`'s own discovery call above so that function's
+    tested return shape (exactly the group name and classifier URL) stays unchanged."""
+    try:
+        return whoami(platform_url, token).get("name")
+    except httpx.HTTPError:
+        return None
+
+
 def main(argv: list[str] | None = None) -> None:
     args = build_arg_parser().parse_args(argv)
     routing_group, classifier_url = _resolve_routing_group_and_classifier_url(
         args.platform_url, args.token, args.routing_model_group, args.classifier_url
     )
-    client = AgentClient(args.platform_url, args.token)
+    client = AgentClient(
+        args.platform_url,
+        args.token,
+        otel_endpoint=args.otel_endpoint,
+        service_name="classifier-router-agent",
+        agent_name=_discover_agent_name(args.platform_url, args.token),
+        # A real LangGraph `StateGraph` (classify -> route -> short_circuit/handoff) run for every
+        # turn - a genuine workflow/graph, unlike chatbot.py's single call.
+        workflow_name="classifier-router-graph",
+    )
     try:
         run_once(
             client,
@@ -486,6 +540,7 @@ def main(argv: list[str] | None = None) -> None:
             platform_url=args.platform_url,
             reasoning_agent_token=args.reasoning_agent_token,
             reasoning_agent_gateway_key=args.reasoning_agent_gateway_key,
+            reasoning_agent_otel_endpoint=args.otel_endpoint,
         )
     finally:
         client.close()

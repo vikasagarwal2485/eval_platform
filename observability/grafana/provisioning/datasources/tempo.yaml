@@ -1,0 +1,11 @@
+# Provisions Tempo as Grafana's trace data source automatically on startup - no manual "Add data
+# source" click-through needed (design.md: "add-otel-tracing").
+apiVersion: 1
+
+datasources:
+  - name: Tempo
+    type: tempo
+    access: proxy
+    url: http://tempo:3200
+    isDefault: true
+    editable: false
