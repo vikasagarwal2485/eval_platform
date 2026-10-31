@@ -91,6 +91,12 @@ export default function AgentTurnDrilldown({
         <span className="muted small">{fmtMs(turn.latency_ms)}</span>
       </div>
 
+      {turn.system_prompt && (
+        <details className="small" style={{ marginBottom: 4 }}>
+          <summary>System prompt</summary>
+          <pre className="output">{turn.system_prompt}</pre>
+        </details>
+      )}
       <div className="small">
         <strong>Input</strong>
         <pre className="output">{turn.input || '(empty)'}</pre>

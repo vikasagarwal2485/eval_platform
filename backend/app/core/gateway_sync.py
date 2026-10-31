@@ -177,6 +177,93 @@ def _delete_group(client: httpx.Client, group_name: str) -> SyncResult:
         return SyncResult("error", f"gateway request failed: {exc}")
 
 
+def agent_gateway_group_names(session: Session, agent: Agent) -> list[str]:
+    """Every gateway model group `agent` currently has (or would have) a deployment for - primary
+    plus fallback, for every declared task type that resolves to a gateway-routable provider
+    (skipping `custom`-kind tasks, which have no gateway group at all). Used to scope a minted
+    virtual key to exactly this set (`add-agent-playground`, design.md: "scoped to exactly that
+    agent's own currently-synced model groups")."""
+    slug = agent_slug(agent.name)
+    names: list[str] = []
+    for task_type, entry in (agent.declared_models or {}).items():
+        ref = declared_model_ref(entry)
+        if custom_kind_endpoint(session, ref) is not None:
+            continue
+        names.append(model_group_name(slug, task_type))
+        if declared_model_fallback_ref(entry) is not None:
+            names.append(fallback_group_name(slug, task_type))
+    return names
+
+
+@dataclass(frozen=True)
+class MintResult:
+    status: str  # "ok" | "error" | "skipped"
+    key: str | None = None
+    detail: str | None = None
+
+    def as_dict(self) -> dict[str, Any]:
+        out: dict[str, Any] = {"status": self.status}
+        if self.detail:
+            out["detail"] = self.detail
+        return out
+
+
+def _delete_existing_key_by_alias(gateway_url: str, admin_key: str, alias: str, timeout: float) -> None:
+    """Best-effort: clears any previously-minted key under `alias` before a (re-)mint - litellm's
+    `/key/generate` rejects a `key_alias` that's already in use ("Unique key aliases across all keys
+    are required"), which every re-mint after the first would otherwise hit (found live: re-enabling
+    playground, or a declared-model change, for an agent that already had a key minted). Swallows any
+    failure (including "no such alias", which `/key/delete` itself treats as a no-op, not an error) -
+    this is purely clearing the way for the generate call below, whose own result is what actually
+    matters; never raises, mirroring every other call in this module."""
+    try:
+        httpx.post(
+            f"{gateway_url.rstrip('/')}/key/delete",
+            json={"key_aliases": [alias]},
+            headers={"Authorization": f"Bearer {admin_key}"},
+            timeout=timeout,
+        )
+    except httpx.HTTPError as exc:
+        logger.warning("could not pre-delete gateway key alias %r before re-minting: %s", alias, exc)
+
+
+def mint_virtual_key(session: Session, agent: Agent, settings: Settings) -> MintResult:
+    """Mints a gateway virtual key scoped to `agent`'s current gateway-routable groups
+    (`agent_gateway_group_names`) - the automation `gateway/README.md` previously documented as a
+    manual `curl .../key/generate` an operator ran by hand (`add-agent-playground`). `"skipped"`
+    (not an error) when the gateway isn't configured, mirroring `sync_agent_model_groups`'s own
+    convention; never raises.
+
+    Every call site names this "re-minting" (enable, rotate, a declared-model change), implying a
+    previous key under this agent's alias is replaced - but a bare `/key/generate` doesn't replace
+    anything by itself, and litellm enforces globally unique `key_alias` values, so the *second* call
+    for the same agent name always failed with a 400 until this pre-delete was added."""
+    if not settings.gateway_url:
+        return MintResult("skipped", detail="no gateway configured (EVAL_GATEWAY_URL unset)")
+    admin_key = os.environ.get("EVAL_GATEWAY_ADMIN_KEY")
+    if not admin_key:
+        return MintResult("skipped", detail="no gateway admin credential configured")
+
+    alias = agent_slug(agent.name)
+    _delete_existing_key_by_alias(settings.gateway_url, admin_key, alias, settings.gateway_sync_timeout_s)
+
+    groups = agent_gateway_group_names(session, agent)
+    try:
+        resp = httpx.post(
+            f"{settings.gateway_url.rstrip('/')}/key/generate",
+            json={"models": groups, "key_alias": alias},
+            headers={"Authorization": f"Bearer {admin_key}"},
+            timeout=settings.gateway_sync_timeout_s,
+        )
+        resp.raise_for_status()
+        key = resp.json().get("key")
+        if not key:
+            return MintResult("error", detail="gateway response had no 'key' field")
+        return MintResult("ok", key=key)
+    except httpx.HTTPError as exc:
+        return MintResult("error", detail=f"gateway request failed: {exc}")
+
+
 def sync_agent_model_groups(
     session: Session,
     agent: Agent,

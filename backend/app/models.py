@@ -4,7 +4,19 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    LargeBinary,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
@@ -251,7 +263,10 @@ class Judgement(Base):
 
 # ------------------------------------------------------------------ live agent evaluation (design D4)
 class Agent(Base):
-    """A registered deployed agent. Holds only a hash of its ingest token, never the token (mirrors Provider/D4)."""
+    """A registered deployed agent. Holds only a hash of its ingest token, never the token (mirrors
+    Provider/D4) - except when `playground_eligible`, where `playground_ingest_token_enc`/
+    `playground_gateway_key_enc` hold an encrypted, reversible copy for the spawn code path to use
+    (add-agent-playground, design.md D2); every other agent's credential handling is unchanged."""
 
     __tablename__ = "agent"
 
@@ -273,6 +288,27 @@ class Agent(Base):
     provider_acks: Mapped[dict] = mapped_column(JSON, default=dict)  # provider name -> ack timestamp (iso)
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    # add-agent-playground: opting an agent into being spawned (as its real catalog script) from the
+    # platform's own UI, rather than only run by an operator from a terminal. `flavor` names the
+    # `agents/catalog.yaml` entry this agent's script matches (e.g. "chatbot", "reasoning", "router") -
+    # validated at opt-in time to share this agent's own `kind`. Deliberately NOT read anywhere outside
+    # the spawn code path (see design.md D2) - a scoped, reversible-storage exception to the hash-only
+    # convention every other credential in this file follows, made only because spawning a subprocess
+    # requires handing it a *usable* secret, which a hash can never provide back.
+    playground_eligible: Mapped[bool] = mapped_column(Boolean, default=False)
+    flavor: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    playground_ingest_token_enc: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    playground_gateway_key_enc: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    # `router`-kind only: the OTHER registered agents (by their unique, user-facing names - never an
+    # internal id an operator never sees or types) this router may hand off to. A list, not a single
+    # name, and of unrestricted kind: the *platform* places no limit on how many hand-off targets a
+    # router-kind agent can declare or what kind they are, even though today's one reference router
+    # script (`classifier_router_agent.py`) only ever resolves at most one target of each kind it
+    # actually knows how to spawn (`agents/catalog.yaml`'s `router` flavor's `handoff_kinds:
+    # [reasoning, chatbot]` - a script limitation enforced at spawn time, not a registry one).
+    # Required (non-empty) whenever `kind == "router"`; must be empty for every other kind.
+    handoff_agent_names: Mapped[list] = mapped_column(JSON, default=list)
 
     sessions: Mapped[list[AgentSession]] = relationship(back_populates="agent", cascade="all, delete-orphan")
     turns: Mapped[list[AgentTurn]] = relationship(back_populates="agent", cascade="all, delete-orphan")
@@ -307,6 +343,10 @@ class AgentTurn(Base):
     input: Mapped[str] = mapped_column(Text, default="")
     output: Mapped[str] = mapped_column(Text, default="")
     reference: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # The system prompt actually in effect for this turn (post skill-composition), reported directly
+    # by `turn.start` - `None` for a pre-existing turn (recorded before this field existed) or an
+    # agent that genuinely sends no system message (add-agent-playground).
+    system_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
     # open (turn.start seen, no turn.end yet) | ok | error | abandoned
     status: Mapped[str] = mapped_column(String(20), default="open", index=True)
     models: Mapped[list] = mapped_column(JSON, default=list)  # distinct model refs used by this turn's llm spans

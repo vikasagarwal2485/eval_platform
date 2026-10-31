@@ -35,6 +35,17 @@ class Settings:
     # backend's own `/api/traces/{trace_id}` proxy - the browser never talks to Tempo directly.
     # None disables the trace-tree view entirely (a graceful "not configured", never an error).
     tempo_base_url: str | None = None
+    # add-agent-playground: symmetric key for `app.core.secrets` (Fernet), encrypting a
+    # playground-eligible agent's stored spawn credentials (design.md D2). None disables the whole
+    # playground-eligibility feature - marking an agent eligible is rejected with a clear error
+    # naming this variable, the same "unset = off" convention as gateway_url/otel_endpoint above,
+    # rather than storing something that could never be decrypted back.
+    playground_secret_key: str | None = None
+    # add-agent-playground: this backend's own address, as a spawned agent subprocess's `--platform-url`
+    # (the one the spawning operator would type by hand) - only meaningful because the backend, not an
+    # operator, is the one assembling that command line now. Defaults to the same address this repo's
+    # own docs use for a locally-run dev server.
+    platform_self_url: str = "http://127.0.0.1:8000"
 
     @property
     def db_url(self) -> str:
@@ -64,4 +75,6 @@ def load_settings(env: dict | None = None) -> Settings:
         gateway_sync_timeout_s=float(env.get("EVAL_GATEWAY_SYNC_TIMEOUT_S", defaults.gateway_sync_timeout_s)),
         otel_endpoint=env.get("EVAL_OTEL_ENDPOINT", defaults.otel_endpoint) or None,
         tempo_base_url=env.get("EVAL_TEMPO_BASE_URL", defaults.tempo_base_url) or None,
+        playground_secret_key=env.get("EVAL_SECRET_KEY", defaults.playground_secret_key) or None,
+        platform_self_url=env.get("EVAL_PLATFORM_SELF_URL", defaults.platform_self_url),
     )

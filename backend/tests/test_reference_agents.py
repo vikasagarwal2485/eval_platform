@@ -9,6 +9,7 @@ from pathlib import Path
 
 import httpx
 import openai
+import pytest
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
@@ -96,6 +97,34 @@ def test_chatbot_one_exchange_produces_one_turn_one_span(monkeypatch):
     assert end["output"] == "Hello there!"
     assert end["models"] == ["qwen3:8b"]
     assert end["prompt_tokens"] == 10 and end["completion_tokens"] == 5
+
+
+def test_chatbot_turn_start_carries_the_system_prompt_in_effect(monkeypatch):
+    monkeypatch.setattr(chatbot.httpx, "post", lambda url, json=None, timeout=None: _FakeOllamaResponse("hi"))
+    received: list = []
+    client = AgentClient(
+        "http://platform.local", "tok", transport=httpx.MockTransport(_platform_handler(received)),
+        flush_interval_s=0.02,
+    )
+    chatbot.answer(client, "s1", "qwen3:8b", "http://ollama.local", "be terse", [], "hi")
+    client.close(timeout_s=2.0)
+
+    start = next(e for e in received if e["type"] == "turn.start")
+    assert start["system_prompt"] == "be terse"
+
+
+def test_chatbot_turn_start_omits_system_prompt_when_empty(monkeypatch):
+    monkeypatch.setattr(chatbot.httpx, "post", lambda url, json=None, timeout=None: _FakeOllamaResponse("hi"))
+    received: list = []
+    client = AgentClient(
+        "http://platform.local", "tok", transport=httpx.MockTransport(_platform_handler(received)),
+        flush_interval_s=0.02,
+    )
+    chatbot.answer(client, "s1", "qwen3:8b", "http://ollama.local", "", [], "hi")
+    client.close(timeout_s=2.0)
+
+    start = next(e for e in received if e["type"] == "turn.start")
+    assert start["system_prompt"] is None
 
 
 def test_reasoning_agent_one_problem_produces_four_spans_under_one_turn(monkeypatch):
@@ -301,6 +330,119 @@ def test_reasoning_agent_records_the_concrete_model_not_the_group_alias(monkeypa
     assert end["models"] == ["ollama_chat/qwen3:8b"]  # de-duplicated across all four calls
 
 
+def test_call_llm_sends_a_system_message_when_given(monkeypatch):
+    captured = {}
+
+    def fake_completion(**kwargs):
+        captured.update(kwargs)
+        return _FakeLiteLLMResponse("ok")
+
+    monkeypatch.setattr(reasoning_agent.litellm, "completion", fake_completion)
+    reasoning_agent.call_llm(None, None, "qwen3:8b", "solve this", system_prompt="be terse")
+    assert captured["messages"][0] == {"role": "system", "content": "be terse"}
+    assert captured["messages"][1] == {"role": "user", "content": "solve this"}
+
+
+def test_call_llm_omits_system_message_by_default(monkeypatch):
+    captured = {}
+
+    def fake_completion(**kwargs):
+        captured.update(kwargs)
+        return _FakeLiteLLMResponse("ok")
+
+    monkeypatch.setattr(reasoning_agent.litellm, "completion", fake_completion)
+    reasoning_agent.call_llm(None, None, "qwen3:8b", "solve this")
+    assert captured["messages"] == [{"role": "user", "content": "solve this"}]
+
+
+def test_solve_one_applies_system_prompt_to_plan_solve_verify_not_classify(monkeypatch):
+    seen_system_messages = []
+
+    def fake_completion(**kwargs):
+        system = next((m["content"] for m in kwargs["messages"] if m["role"] == "system"), None)
+        seen_system_messages.append(system)
+        return _FakeLiteLLMResponse("answer")
+
+    monkeypatch.setattr(reasoning_agent.litellm, "completion", fake_completion)
+    client = AgentClient(
+        "http://platform.local", "tok", transport=httpx.MockTransport(_platform_handler([])), flush_interval_s=0.02,
+    )
+    reasoning_agent.solve_one(
+        client, "s1", None, "http://gateway.local", None, "2+3?", system_prompt="be terse",
+    )
+    client.close(timeout_s=2.0)
+    # classify, plan, solve, verify, in that order
+    assert seen_system_messages == [None, "be terse", "be terse", "be terse"]
+
+
+def test_reasoning_agent_turn_start_carries_the_system_prompt(monkeypatch):
+    monkeypatch.setattr(reasoning_agent.litellm, "completion", lambda **kwargs: _FakeLiteLLMResponse("answer"))
+    received: list = []
+    client = AgentClient(
+        "http://platform.local", "tok", transport=httpx.MockTransport(_platform_handler(received)),
+        flush_interval_s=0.02,
+    )
+    reasoning_agent.solve_one(client, "s1", None, "http://gateway.local", None, "2+3?", system_prompt="be terse")
+    client.close(timeout_s=2.0)
+
+    start = next(e for e in received if e["type"] == "turn.start")
+    assert start["system_prompt"] == "be terse"
+
+
+def test_reasoning_agent_turn_start_omits_system_prompt_by_default(monkeypatch):
+    monkeypatch.setattr(reasoning_agent.litellm, "completion", lambda **kwargs: _FakeLiteLLMResponse("answer"))
+    received: list = []
+    client = AgentClient(
+        "http://platform.local", "tok", transport=httpx.MockTransport(_platform_handler(received)),
+        flush_interval_s=0.02,
+    )
+    reasoning_agent.solve_one(client, "s1", None, "http://gateway.local", None, "2+3?")
+    client.close(timeout_s=2.0)
+
+    start = next(e for e in received if e["type"] == "turn.start")
+    assert start["system_prompt"] is None
+
+
+def test_reasoning_agent_compose_system_prompt_prepends_skills_in_order():
+    assert reasoning_agent.compose_system_prompt("base", ["A", "B"]) == "A\n\nB\n\nbase"
+
+
+def test_reasoning_agent_compose_system_prompt_with_nothing_returns_none():
+    assert reasoning_agent.compose_system_prompt(None, []) is None
+
+
+def test_reasoning_agent_fetch_skill_returns_instructions(monkeypatch):
+    def fake_get(url, headers=None, timeout=None):
+        return httpx.Response(200, json={"instructions": "Think."}, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(reasoning_agent.httpx, "get", fake_get)
+    assert reasoning_agent._fetch_skill("http://platform.local", "tok", "step-by-step") == "Think."
+
+
+def test_cli_exposes_system_prompt_and_skill_flags():
+    args = reasoning_agent.build_arg_parser().parse_args(
+        ["--platform-url", "http://x", "--token", "t", "--problem", "p",
+         "--system-prompt", "be terse", "--skill", "a", "--skill", "b"]
+    )
+    assert args.system_prompt == "be terse"
+    assert args.skills == ["a", "b"]
+
+
+def test_cli_task_is_an_alias_for_problem():
+    args = reasoning_agent.build_arg_parser().parse_args(
+        ["--platform-url", "http://x", "--token", "t", "--task", "a one-shot task"]
+    )
+    assert args.problem == "a one-shot task"
+
+
+def test_cli_system_prompt_and_skill_default_to_none_and_empty():
+    args = reasoning_agent.build_arg_parser().parse_args(
+        ["--platform-url", "http://x", "--token", "t", "--problem", "p"]
+    )
+    assert args.system_prompt is None
+    assert args.skills == []
+
+
 def test_call_llm_return_shape_matches_the_pre_litellm_implementation(monkeypatch):
     """task 2.1: call_llm() keeps call_ollama()'s `(content, usage)` return shape - usage is a dict carrying
     latency_ms/prompt_tokens/completion_tokens (now plus `model`, read by `_span`)."""
@@ -317,6 +459,49 @@ def test_call_llm_return_shape_matches_the_pre_litellm_implementation(monkeypatc
     assert usage["completion_tokens"] == 5
     assert usage["model"] == "ollama_chat/qwen3:8b"
     assert isinstance(usage["latency_ms"], float)
+    assert usage["thinking"] is None  # no reasoning_content on this fake response
+
+
+def test_call_llm_extracts_reasoning_content_as_thinking(monkeypatch):
+    """add-agent-playground: litellm's Ollama transformation remaps Ollama's own `message.thinking`
+    to `message.reasoning_content` on the response object - verified directly against the installed
+    litellm package (llms/ollama/chat/transformation.py)."""
+
+    def fake_completion(**kwargs):
+        resp = _FakeLiteLLMResponse("hello", concrete_model="ollama_chat/qwen3:8b")
+        resp.choices[0].message.reasoning_content = "let me think..."
+        return resp
+
+    monkeypatch.setattr(reasoning_agent.litellm, "completion", fake_completion)
+    _, usage = reasoning_agent.call_llm("http://gateway.local", None, "reasoning-agent__reasoning", "hi")
+    assert usage["thinking"] == "let me think..."
+
+
+def test_solve_one_forwards_thinking_to_plan_solve_verify_but_not_classify(monkeypatch):
+    def fake_completion(**kwargs):
+        resp = _FakeLiteLLMResponse("answer")
+        resp.choices[0].message.reasoning_content = "thinking about it"
+        return resp
+
+    monkeypatch.setattr(reasoning_agent.litellm, "completion", fake_completion)
+    captured_thinking = {}
+    real_span = reasoning_agent._span
+
+    def spy_span(t, model, output, usage, *, kind, thinking=None):
+        captured_thinking[kind] = thinking
+        real_span(t, model, output, usage, kind=kind, thinking=thinking)
+
+    monkeypatch.setattr(reasoning_agent, "_span", spy_span)
+    client = AgentClient(
+        "http://platform.local", "tok", transport=httpx.MockTransport(_platform_handler([])), flush_interval_s=0.02,
+    )
+    reasoning_agent.solve_one(client, "s1", None, "http://gateway.local", None, "2+3?")
+    client.close(timeout_s=2.0)
+
+    assert captured_thinking["classify"] is None
+    assert captured_thinking["plan"] == "thinking about it"
+    assert captured_thinking["solve"] == "thinking about it"
+    assert captured_thinking["verify"] == "thinking about it"
 
 
 def test_chatbot_repl_survives_a_failed_call_and_keeps_taking_input(monkeypatch, capsys):
@@ -348,6 +533,69 @@ def test_chatbot_repl_survives_a_failed_call_and_keeps_taking_input(monkeypatch,
     ok_end = next(e for e in ends if e["status"] == "ok")
     assert ok_end["output"] == "Hello there!"
     assert "error calling" in capsys.readouterr().out
+
+
+def test_compose_system_prompt_prepends_skills_in_order():
+    assert chatbot.compose_system_prompt("base", ["skill A", "skill B"]) == "skill A\n\nskill B\n\nbase"
+
+
+def test_compose_system_prompt_with_no_skills_is_unchanged():
+    assert chatbot.compose_system_prompt("base", []) == "base"
+
+
+def test_fetch_skill_returns_instructions(monkeypatch):
+    def fake_get(url, headers=None, timeout=None):
+        assert url == "http://platform.local/api/ingest/v1/skills/step-by-step"
+        assert headers == {"Authorization": "Bearer tok"}
+        return httpx.Response(
+            200,
+            json={"name": "step-by-step", "description": "d", "instructions": "Think."},
+            request=httpx.Request("GET", url),
+        )
+
+    monkeypatch.setattr(chatbot.httpx, "get", fake_get)
+    assert chatbot._fetch_skill("http://platform.local", "tok", "step-by-step") == "Think."
+
+
+def test_fetch_skill_unknown_name_raises_system_exit(monkeypatch):
+    def fake_get(url, headers=None, timeout=None):
+        return httpx.Response(404, json={"detail": {"message": "not found"}}, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(chatbot.httpx, "get", fake_get)
+    with pytest.raises(SystemExit) as exc_info:
+        chatbot._fetch_skill("http://platform.local", "tok", "nope")
+    assert "nope" in str(exc_info.value)
+
+
+def test_run_task_answers_once_and_returns_output(monkeypatch):
+    monkeypatch.setattr(chatbot.httpx, "post", lambda url, json=None, timeout=None: _FakeOllamaResponse("hi there"))
+    received: list = []
+    client = AgentClient(
+        "http://platform.local", "tok", transport=httpx.MockTransport(_platform_handler(received)),
+        flush_interval_s=0.02,
+    )
+    out = chatbot.run_task(client, "qwen3:8b", "http://ollama.local", chatbot.DEFAULT_SYSTEM_PROMPT, "hello?")
+    client.close(timeout_s=2.0)
+    assert out == "hi there"
+    ends = [e for e in received if e["type"] == "turn.end"]
+    assert len(ends) == 1 and ends[0]["output"] == "hi there"
+
+
+def test_cli_exposes_skill_and_task_flags():
+    args = chatbot.build_arg_parser().parse_args(
+        [
+            "--platform-url", "http://x", "--token", "t",
+            "--skill", "a", "--skill", "b", "--task", "hello",
+        ]
+    )
+    assert args.skills == ["a", "b"]
+    assert args.task == "hello"
+
+
+def test_cli_skill_and_task_default_to_empty_and_none():
+    args = chatbot.build_arg_parser().parse_args(["--platform-url", "http://x", "--token", "t"])
+    assert args.skills == []
+    assert args.task is None
 
 
 def test_reasoning_agent_suite_mode_continues_past_a_connection_failure(tmp_path, monkeypatch):

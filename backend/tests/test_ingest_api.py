@@ -52,6 +52,35 @@ def test_batch_accepted_and_stored(settings, file_session_factory):
         assert repo.get_agent(session, agent_id).last_seen_at is not None
 
 
+def test_turn_start_system_prompt_is_stored_and_returned(settings, file_session_factory):
+    """add-agent-playground: the system prompt actually in effect for a turn (post skill-composition),
+    reported directly by `turn.start`, round-trips through storage and the turn API."""
+    agent_id, token = _make_agent(file_session_factory)
+    events = [
+        {
+            "v": 1, "event_id": "e1", "session_id": "s1", "turn_id": "t1", "type": "turn.start",
+            "input": "2+2?", "system_prompt": "Step A instructions\n\nbe terse",
+        },
+        {
+            "v": 1, "event_id": "e2", "session_id": "s1", "turn_id": "t1", "type": "turn.end",
+            "status": "ok", "output": "4", "models": ["qwen3:8b"],
+        },
+    ]
+    with new_client(settings, file_session_factory, FakeOllama()) as c:
+        r = c.post("/api/ingest/v1/events", json=events, headers={"Authorization": f"Bearer {token}"})
+        assert r.status_code == 200, r.text
+        turns = c.get(f"/api/agents/{agent_id}/turns").json()
+        assert turns[0]["system_prompt"] == "Step A instructions\n\nbe terse"
+
+
+def test_turn_start_without_system_prompt_leaves_it_absent(settings, file_session_factory):
+    agent_id, token = _make_agent(file_session_factory)
+    with new_client(settings, file_session_factory, FakeOllama()) as c:
+        c.post("/api/ingest/v1/events", json=_events(), headers={"Authorization": f"Bearer {token}"})
+        turns = c.get(f"/api/agents/{agent_id}/turns").json()
+        assert turns[0]["system_prompt"] is None
+
+
 def test_span_event_in_a_batch_is_rejected_individually_turn_start_and_end_still_accepted(
     settings, file_session_factory
 ):
@@ -296,6 +325,33 @@ def test_whoami_never_returns_a_secret(settings, file_session_factory):
         assert token not in serialized
         for forbidden in ("token", "token_hash", "token_prefix", "api_key", "gateway"):
             assert forbidden not in body
+
+
+# ------------------------------------------------------------------ add-agent-playground: GET /v1/skills/{name}
+def test_skill_fetch_returns_name_description_instructions(settings, file_session_factory):
+    from app.schemas import SkillIn
+
+    _agent_id, token = _make_agent(file_session_factory)
+    with file_session_factory() as session:
+        repo.create_skill(session, SkillIn(name="step-by-step", description="desc", instructions="Think step by step."))
+        session.commit()
+    with new_client(settings, file_session_factory, FakeOllama()) as c:
+        r = c.get("/api/ingest/v1/skills/step-by-step", headers={"Authorization": f"Bearer {token}"})
+        assert r.status_code == 200
+        assert r.json() == {"name": "step-by-step", "description": "desc", "instructions": "Think step by step."}
+
+
+def test_skill_fetch_unknown_name_is_404(settings, file_session_factory):
+    _agent_id, token = _make_agent(file_session_factory)
+    with new_client(settings, file_session_factory, FakeOllama()) as c:
+        r = c.get("/api/ingest/v1/skills/does-not-exist", headers={"Authorization": f"Bearer {token}"})
+        assert r.status_code == 404
+
+
+def test_skill_fetch_unauthorized_without_valid_token(settings, file_session_factory):
+    with new_client(settings, file_session_factory, FakeOllama()) as c:
+        r = c.get("/api/ingest/v1/skills/anything", headers={"Authorization": "Bearer nope"})
+        assert r.status_code == 401
 
 
 def test_unsampled_turn_is_not_queued_for_evaluation(settings, file_session_factory):

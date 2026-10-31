@@ -1,8 +1,9 @@
 import { useState } from 'react';
 import { ApiError } from '../../api/client';
-import { useAgentMutations, useModels } from '../../api/hooks';
+import { useAgentMutations, useAgents, useModels } from '../../api/hooks';
 import type {
   Agent,
+  AgentKind,
   DeclaredModels,
   GatewaySyncResult,
   ModelInfo,
@@ -227,11 +228,14 @@ function RubricEditor({
 
 export default function AgentSettingsPanel({ agent }: { agent: Agent }) {
   const { data: models, isLoading, error: modelsError } = useModels();
+  const { data: allAgents } = useAgents();
   const { update, pause, resume, rotateToken, remove } = useAgentMutations(agent.id);
 
+  const [kind, setKind] = useState<AgentKind>(agent.kind);
   const [declaredModelRows, setDeclaredModelRows] = useState<DeclaredModelRow[]>(
     toRows(agent.declared_models),
   );
+  const [handoffAgentNames, setHandoffAgentNames] = useState<string[]>(agent.handoff_agent_names);
   const [evaluators, setEvaluators] = useState(agent.eval_config.evaluators);
   const [sampleRate, setSampleRate] = useState(agent.eval_config.sample_rate);
   const [quietPeriod, setQuietPeriod] = useState(agent.eval_config.quiet_period_s);
@@ -253,6 +257,7 @@ export default function AgentSettingsPanel({ agent }: { agent: Agent }) {
   const save = () => {
     update.mutate(
       {
+        kind,
         declared_models: rowsToDeclaredModels(declaredModelRows),
         eval_config: {
           evaluators,
@@ -264,6 +269,11 @@ export default function AgentSettingsPanel({ agent }: { agent: Agent }) {
         rubric: useCustomRubric ? rubric.filter((c) => c.name.trim()) : null,
         clear_rubric: !useCustomRubric,
         provider_acks: pendingAcks,
+        // Driven by the *edited* kind, not agent.kind: handoff_agent_names is only meaningful for a
+        // router, so changing kind away from it must clear the now-invalid list in the same
+        // request - [] unambiguously means "cleared" (no separate clear_* flag needed, unlike the
+        // single-name field this replaced).
+        handoff_agent_names: kind === 'router' ? handoffAgentNames : [],
       },
       { onSuccess: (a) => setGatewaySync(a.gateway_sync) },
     );
@@ -291,7 +301,27 @@ export default function AgentSettingsPanel({ agent }: { agent: Agent }) {
       <section className="card">
         <div className="card-head">
           <h2>Agent</h2>
-          <span className="badge">{agent.kind}</span>
+        </div>
+        <div className="field">
+          <label htmlFor="agent-kind">Kind</label>
+          <select
+            id="agent-kind"
+            value={kind}
+            onChange={(e) => setKind(e.target.value as AgentKind)}
+            style={{ maxWidth: 220 }}
+          >
+            <option value="chatbot">Chatbot</option>
+            <option value="reasoning">Reasoning</option>
+            <option value="router">Router</option>
+          </select>
+          {kind !== agent.kind && (
+            <p className="small muted">
+              Changing kind also changes the built-in rubric used when no custom rubric is set, and
+              is rejected if this agent is playground-eligible under a flavor that no longer
+              matches, or is another router&apos;s hand-off target (and the new kind isn&apos;t
+              &quot;reasoning&quot;).
+            </p>
+          )}
         </div>
         <DeclaredModelsEditor
           rows={declaredModelRows}
@@ -300,8 +330,52 @@ export default function AgentSettingsPanel({ agent }: { agent: Agent }) {
           loading={isLoading}
           acknowledgedProviders={[...agent.provider_acks, ...pendingAcks]}
         />
+        {kind === 'router' && (
+          <div className="field">
+            <span>Hand-off agents</span>
+            <p className="small muted" style={{ marginTop: 0 }}>
+              One or more separate, independently registered agents this router may hand problems
+              off to - any kind (its own registered kind is purely descriptive; nothing in the
+              spawn mechanism depends on it). At least one is required for a router-kind agent; the
+              platform places no limit on how many, though today&apos;s reference router script
+              only ever uses the first.
+            </p>
+            <div className="stack" role="group" aria-label="Hand-off agents" style={{ gap: 4 }}>
+              {(allAgents ?? [])
+                .filter((a) => a.id !== agent.id)
+                .map((a) => (
+                  <label key={a.id} className="check">
+                    <input
+                      type="checkbox"
+                      checked={handoffAgentNames.includes(a.name)}
+                      onChange={(e) =>
+                        setHandoffAgentNames(
+                          e.target.checked
+                            ? [...handoffAgentNames, a.name]
+                            : handoffAgentNames.filter((n) => n !== a.name),
+                        )
+                      }
+                    />
+                    <span>
+                      {a.name} <span className="muted small">({a.kind})</span>
+                    </span>
+                  </label>
+                ))}
+              {(allAgents ?? []).filter((a) => a.id !== agent.id).length === 0 && (
+                <p className="small muted">No other agents are registered yet - register one first.</p>
+              )}
+            </div>
+            {handoffAgentNames.length === 0 && (
+              <p className="small field-error">At least one hand-off agent is required.</p>
+            )}
+          </div>
+        )}
         <div className="row">
-          <button type="button" onClick={save} disabled={update.isPending}>
+          <button
+            type="button"
+            onClick={save}
+            disabled={update.isPending || (kind === 'router' && handoffAgentNames.length === 0)}
+          >
             {update.isPending ? 'Saving…' : 'Save settings'}
           </button>
         </div>
@@ -416,14 +490,16 @@ export default function AgentSettingsPanel({ agent }: { agent: Agent }) {
               checked={useCustomRubric}
               onChange={(e) => setUseCustomRubric(e.target.checked)}
             />
-            <span>
-              Use a custom rubric (otherwise the built-in rubric for {agent.kind} is used)
-            </span>
+            <span>Use a custom rubric (otherwise the built-in rubric for {kind} is used)</span>
           </label>
           {useCustomRubric && <RubricEditor rubric={rubric} onChange={setRubric} />}
         </div>
 
-        <button type="button" onClick={save} disabled={update.isPending}>
+        <button
+          type="button"
+          onClick={save}
+          disabled={update.isPending || (kind === 'router' && handoffAgentNames.length === 0)}
+        >
           {update.isPending ? 'Saving…' : 'Save settings'}
         </button>
       </section>
@@ -435,14 +511,21 @@ export default function AgentSettingsPanel({ agent }: { agent: Agent }) {
           once, at creation or rotation).
         </p>
         <pre className="output">
-          {agent.kind === 'reasoning'
-            ? `python -m agents.reasoning_agent --gateway-key <virtual-key> \\\n  --platform-url <this platform's URL> --token <TOKEN> --problem "..."`
-            : (() => {
-                const first = Object.values(agent.declared_models)[0];
-                const model = first ? (typeof first === 'string' ? first : first.model) : '<model>';
-                return `python -m agents.chatbot --model ${model} \\\n  --platform-url <this platform's URL> --token <TOKEN>`;
-              })()}
+          {agent.kind === 'reasoning' &&
+            `python -m agents.reasoning_agent --gateway-key <virtual-key> \\\n  --platform-url <this platform's URL> --token <TOKEN> --problem "..."`}
+          {agent.kind === 'router' &&
+            `python -m agents.classifier_router_agent --gateway-key <virtual-key> \\\n  --reasoning-agent-token <token> --reasoning-agent-gateway-key <key> \\\n  --platform-url <this platform's URL> --token <TOKEN> --problem "..."`}
+          {agent.kind === 'chatbot' &&
+            (() => {
+              const first = Object.values(agent.declared_models)[0];
+              const model = first ? (typeof first === 'string' ? first : first.model) : '<model>';
+              return `python -m agents.chatbot --model ${model} \\\n  --platform-url <this platform's URL> --token <TOKEN>`;
+            })()}
         </pre>
+        <p className="small muted">
+          Prefer not to run this by hand? Enable this agent for the{' '}
+          <strong>Playground</strong> tab above to spawn it from the browser instead.
+        </p>
       </section>
     </div>
   );

@@ -11,12 +11,14 @@ import RunSetupPage from './pages/RunSetupPage';
 import SkillsPage from './pages/SkillsPage';
 import SuitesPage from './pages/SuitesPage';
 
-const RUN_EVALUATION_PATHS = ['/', '/suites', '/skills', '/history'];
+const RUN_EVALUATION_PATHS = ['/', '/suites', '/history'];
 
-/** Shared by Run Evaluation setup, Suites, Skills and History - they're one section of sub-tabs
- * under the single "Run Evaluation setup" top-level nav item, rather than separate top-level
- * items. Skills (add-run-skills) joins Suites here rather than becoming its own top-level item,
- * since both are registries that feed into the same Run setup page. */
+/** Shared by Run Evaluation setup, Suites and History - they're one section of sub-tabs under the
+ * single "Run Evaluation setup" top-level nav item, rather than separate top-level items. Skills
+ * (add-run-skills) is its own top-level item instead, next to Models and Agents
+ * (add-agent-playground) - it's no longer scoped to benchmark runs alone, a registered skill is
+ * now equally attachable to a live agent's Playground spawn, so it doesn't belong nested under
+ * "Run Evaluation setup" specifically. */
 function RunEvaluationLayout() {
   return (
     <>
@@ -25,7 +27,6 @@ function RunEvaluationLayout() {
           Setup
         </NavLink>
         <NavLink to="/suites">Suites</NavLink>
-        <NavLink to="/skills">Skills</NavLink>
         <NavLink to="/history">History</NavLink>
       </nav>
       <Outlet />
@@ -48,6 +49,7 @@ export default function App() {
             Run Evaluation setup
           </Link>
           <NavLink to="/providers">Models</NavLink>
+          <NavLink to="/skills">Skills</NavLink>
           <NavLink to="/agents">Agents</NavLink>
         </nav>
         <span className="spacer" />
@@ -58,12 +60,12 @@ export default function App() {
             <Route element={<RunEvaluationLayout />}>
               <Route path="/" element={<RunSetupPage />} />
               <Route path="/suites" element={<SuitesPage />} />
-              <Route path="/skills" element={<SkillsPage />} />
               <Route path="/history" element={<HistoryPage />} />
             </Route>
             <Route path="/runs/:id/live" element={<RunLivePage />} />
             <Route path="/runs/:id" element={<ResultsPage />} />
             <Route path="/providers" element={<ProvidersPage />} />
+            <Route path="/skills" element={<SkillsPage />} />
             <Route path="/agents" element={<AgentsPage />} />
             <Route path="/agents/:id" element={<AgentPage />} />
             <Route path="*" element={<NotFound />} />

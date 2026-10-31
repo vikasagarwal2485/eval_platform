@@ -12,12 +12,22 @@ from sqlalchemy.orm import Session
 
 from app import repo
 from app.api.deps import get_session
+from app.core import agent_catalog
 from app.core.agent_export import export_rows, to_csv
 from app.core.agent_summary import build_agent_summary, list_needs_attention
 from app.core.events import agent_channel
-from app.core.gateway_sync import sync_agent_model_groups
+from app.core.gateway_sync import mint_virtual_key, sync_agent_model_groups
+from app.core.playground_spawn import AgentBusy, SpawnError, spawn_agent
+from app.core.secrets import encrypt
 from app.models import Agent, AgentSpan, AgentTurn, TurnEvaluation, TurnJudgement, utcnow
-from app.schemas import AgentCreate, AgentSettingsUpdate, BulkReevaluateRequest, EvaluateTurnRequest
+from app.schemas import (
+    AgentCreate,
+    AgentSettingsUpdate,
+    BulkReevaluateRequest,
+    EvaluateTurnRequest,
+    PlaygroundEnableIn,
+    PlaygroundSpawnIn,
+)
 
 router = APIRouter(prefix="/api/agents")
 
@@ -65,6 +75,12 @@ def _agent_out(agent: Agent) -> dict:
         "provider_acks": sorted((agent.provider_acks or {}).keys()),
         "last_seen_at": _iso(agent.last_seen_at),
         "created_at": _iso(agent.created_at),
+        # add-agent-playground: never the encrypted bytes themselves - only whether each credential
+        # is configured, mirroring token_prefix's own "enough to confirm, never enough to use" shape.
+        "playground_eligible": agent.playground_eligible,
+        "flavor": agent.flavor,
+        "playground_gateway_key_configured": agent.playground_gateway_key_enc is not None,
+        "handoff_agent_names": agent.handoff_agent_names,
     }
 
 
@@ -119,6 +135,7 @@ def _turn_out(session: Session, turn: AgentTurn, *, detail: bool = False) -> dic
         "output": turn.output,
         "thinking": turn.thinking,
         "reference": turn.reference,
+        "system_prompt": turn.system_prompt,
         "error": turn.error,
         "models": turn.models,
         "models_unknown": turn.models_unknown,
@@ -170,6 +187,7 @@ def create_agent(body: AgentCreate, request: Request, session: Session = Depends
             eval_config=body.eval_config,
             rubric=[c.model_dump() for c in body.rubric] if body.rubric else None,
             provider_acks=body.provider_acks,
+            handoff_agent_names=body.handoff_agent_names,
         )
     except repo.Conflict as exc:
         raise HTTPException(409, str(exc)) from None
@@ -190,6 +208,22 @@ def list_agents(session: Session = Depends(get_session)):
     return [_agent_out(a) for a in repo.list_agents(session)]
 
 
+# ------------------------------------------------------------------ agent flavor catalog (add-agent-playground)
+# Registered before "/{agent_id}" so "/catalog" is matched as this literal route, not as an agent_id value.
+@router.get("/catalog")
+def list_agent_catalog():
+    return [
+        {
+            "id": f.id,
+            "kind": f.kind,
+            "description": f.description,
+            "task_slots": f.task_slots,
+            "accepts": f.accepts,
+        }
+        for f in agent_catalog.load_catalog().values()
+    ]
+
+
 @router.get("/{agent_id}")
 def get_agent(agent_id: int, session: Session = Depends(get_session)):
     return _agent_out(repo.get_agent(session, agent_id))
@@ -208,9 +242,21 @@ def update_agent(agent_id: int, body: AgentSettingsUpdate, request: Request, ses
     if body.declared_models is not None:
         # Only re-sync when this update actually touched declared_models - every other settings field (sample
         # rate, rubric, ...) has nothing for the gateway to know about.
+        settings = request.app.state.settings
         out["gateway_sync"] = sync_agent_model_groups(
-            session, agent, request.app.state.settings, previous_declared_models=previous_declared_models
+            session, agent, settings, previous_declared_models=previous_declared_models
         )
+        if agent.playground_eligible and settings.playground_secret_key:
+            # A declared-model change can change which gateway groups this agent has (add/remove/rename a
+            # task) - re-mint the stored virtual key so it always matches the agent's *current* groups,
+            # never a stale scope from before this change (spec gateway-model-sync: "A changed declared
+            # model re-mints the key before the next spawn is accepted").
+            mint_result = mint_virtual_key(session, agent, settings)
+            if mint_result.key:
+                repo.set_playground_credentials(
+                    session, agent_id, gateway_key_enc=encrypt(mint_result.key, secret_key=settings.playground_secret_key)
+                )
+            out["gateway_key_mint"] = mint_result.as_dict()
     return out
 
 
@@ -235,6 +281,106 @@ def rotate_token(agent_id: int, session: Session = Depends(get_session)):
 @router.delete("/{agent_id}", status_code=204)
 def delete_agent(agent_id: int, session: Session = Depends(get_session)):
     repo.delete_agent(session, agent_id)
+
+
+# ------------------------------------------------------------------ playground eligibility (spec agent-playground)
+def _mint_and_store_playground_credentials(
+    session: Session, agent: Agent, raw_token: str, settings
+) -> dict:
+    """Encrypts `raw_token`, mints a gateway virtual key scoped to `agent`'s current groups, encrypts
+    it too when minting succeeded, and persists whatever was obtained - shared by enable/rotate
+    below. Returns the mint attempt's own result (as a dict) for the caller's response; a mint
+    failure never blocks the enable/rotate request itself (spec: 'a minting failure is reported, not
+    silently swallowed' - reported, not fatal, mirroring `sync_agent_model_groups`'s own
+    never-blocks convention)."""
+    token_enc = encrypt(raw_token, secret_key=settings.playground_secret_key)
+    mint_result = mint_virtual_key(session, agent, settings)
+    key_enc = encrypt(mint_result.key, secret_key=settings.playground_secret_key) if mint_result.key else None
+    repo.set_playground_credentials(session, agent.id, ingest_token_enc=token_enc, gateway_key_enc=key_enc)
+    return mint_result.as_dict()
+
+
+@router.post("/{agent_id}/playground/enable")
+def enable_playground(
+    agent_id: int, body: PlaygroundEnableIn, request: Request, session: Session = Depends(get_session)
+):
+    settings = request.app.state.settings
+    agent = repo.get_agent(session, agent_id)
+    flavor = agent_catalog.get_flavor(body.flavor)
+    if flavor is None:
+        return _err(422, "unknown_flavor", f"No catalog flavor named '{body.flavor}' exists.")
+    if flavor.kind != agent.kind:
+        return _err(
+            422,
+            "flavor_kind_mismatch",
+            f"Flavor '{body.flavor}' is kind '{flavor.kind}', but this agent is kind '{agent.kind}'.",
+        )
+    if not settings.playground_secret_key:
+        return _err(
+            422,
+            "playground_secrets_disabled",
+            "EVAL_SECRET_KEY is not configured; playground credential storage is off.",
+        )
+
+    agent, raw_token = repo.enable_agent_playground(session, agent_id, flavor=body.flavor)
+    mint_status = _mint_and_store_playground_credentials(session, agent, raw_token, settings)
+    out = _agent_out(repo.get_agent(session, agent_id))
+    out["token"] = raw_token  # shown once, exactly like registration/rotation
+    out["gateway_key_mint"] = mint_status
+    return out
+
+
+@router.post("/{agent_id}/playground/disable")
+def disable_playground(agent_id: int, session: Session = Depends(get_session)):
+    return _agent_out(repo.disable_agent_playground(session, agent_id))
+
+
+@router.post("/{agent_id}/playground/rotate")
+def rotate_playground_credentials(agent_id: int, request: Request, session: Session = Depends(get_session)):
+    settings = request.app.state.settings
+    agent = repo.get_agent(session, agent_id)
+    if not agent.playground_eligible:
+        return _err(409, "not_playground_eligible", "This agent is not playground-eligible.")
+    if not settings.playground_secret_key:
+        return _err(
+            422,
+            "playground_secrets_disabled",
+            "EVAL_SECRET_KEY is not configured; playground credential storage is off.",
+        )
+
+    agent, raw_token = repo.enable_agent_playground(session, agent_id, flavor=agent.flavor)
+    mint_status = _mint_and_store_playground_credentials(session, agent, raw_token, settings)
+    out = _agent_out(repo.get_agent(session, agent_id))
+    out["token"] = raw_token
+    out["gateway_key_mint"] = mint_status
+    return out
+
+
+@router.post("/{agent_id}/playground/spawn")
+async def spawn_playground_agent(
+    agent_id: int, body: PlaygroundSpawnIn, request: Request, session: Session = Depends(get_session)
+):
+    """Launches this agent's real catalog script as a one-shot subprocess (spec `agent-playground`:
+    'Spawning runs the agent's actual catalog script as a one-shot process'). The resulting turn
+    reaches the platform through the ordinary ingest path, exactly like a terminal-run instance -
+    this response describes only whether the *process* itself ran, not that turn's content; watch
+    this agent's existing live-event feed or conversation history for that."""
+    settings = request.app.state.settings
+    agent = repo.get_agent(session, agent_id)
+    try:
+        result = await spawn_agent(
+            session, agent, settings, system_prompt=body.system_prompt, skills=body.skills, task=body.task
+        )
+    except AgentBusy as exc:
+        return _err(409, "agent_busy", str(exc))
+    except SpawnError as exc:
+        return _err(422, "spawn_failed", str(exc))
+    out = {"status": result.status}
+    if result.returncode is not None:
+        out["returncode"] = result.returncode
+    if result.stderr:
+        out["stderr"] = result.stderr
+    return out
 
 
 # ------------------------------------------------------------------ turns and conversations (spec agent-monitoring)

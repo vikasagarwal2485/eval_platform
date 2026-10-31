@@ -2,9 +2,21 @@
 #
 # An ordered list of rules - first match wins. Each rule names a classifier `task` (one of the keys the
 # context-classifier service's `/classify` response's `results` object has, e.g. `ag_news`, `spam`) and the
-# `label` that task must report to match (or `"*"` to match any label under that task). `action` is one of:
+# `label` that task must report to match (or `"*"` to match any label under that task). A rule MAY also name
+# a `min_confidence` (0-1): when the task's reported `confidence` is below it, the label match doesn't count
+# and resolution keeps checking the remaining rules - found live, a bare label match isn't enough on its own
+# (a classifier's binary `spam`/`ham` call can land barely above its 0.5 decision boundary - e.g. 0.54 - for
+# an entirely ordinary problem the *other* loaded task classified with real confidence - e.g. `ag_news` at
+# 0.79 - and the unconditional rule below used to short-circuit it anyway, discarding a legitimate problem
+# with zero chance to answer it). `action` is one of:
 #   - short_circuit: the orchestrator finishes the turn immediately with `response`, no further model call
-#   - handoff: the orchestrator hands the problem to `target_agent` (a separately registered reference agent)
+#   - handoff: the orchestrator hands the problem to `target_agent` (a separately registered reference agent),
+#     spawning whichever of its own configured hand-off targets is registered with kind `target_kind` -
+#     `"reasoning"` (the default when `target_kind` is omitted, for backward compatibility with rules written
+#     before `add-chatbot-handoff`) or `"chatbot"`. `target_agent` itself is only ever a static display label
+#     for this rule set's own documentation/tracing - the orchestrator always discovers the real target
+#     agent's registered name itself at hand-off time (`classifier_router_agent.py`'s `_discover_agent_name`);
+#     it is never used to pick which script actually runs.
 #
 # Edit this file to add, reorder, or change rules - no change to server.py or the router agent is needed
 # (design.md Decision 7 / spec `reference-agents`: "The mapping can be extended without touching the
@@ -13,16 +25,41 @@
 # A classifier result matching no rule here falls through to `default`, which the server always reports as
 # an error rather than guessing a route (spec `reference-agents`: "An unmapped classification result does not
 # guess a target").
+#
+# The split below (`add-chatbot-handoff`) demonstrates all three branches over the only two tasks this
+# classifier loads (`ag_news`/`spam` - `add-classifier-router-agent`'s design.md): spam is short-circuited;
+# the more conversational `ag_news` topics (Sports/World) are handed to a lightweight chatbot target; the
+# remaining topics (Business/Sci-Tech, matched by the trailing "*") keep the original behavior, handed to a
+# reasoning target. This is a demonstration split, not a claim that an `ag_news` topic label is a reliable
+# signal of how much reasoning a given problem actually needs - swap in whatever rule set fits a real
+# deployment's own classifier tasks and labels.
 
 rules:
   - task: spam
     label: spam
+    # Short-circuiting is the most consequential action this rule set has - it discards the problem
+    # outright, with no model ever seeing it and no chance to answer - so it deserves the highest
+    # confidence bar in this file, well above the classifier's own 0.5 binary decision boundary.
+    min_confidence: 0.8
     action: short_circuit
     response: "This message looks like spam and was not forwarded to any agent."
 
   - task: ag_news
+    label: Sports
+    action: handoff
+    target_kind: chatbot
+    target_agent: chatbot-agent
+
+  - task: ag_news
+    label: World
+    action: handoff
+    target_kind: chatbot
+    target_agent: chatbot-agent
+
+  - task: ag_news
     label: "*"
     action: handoff
+    target_kind: reasoning
     target_agent: reasoning-agent
 
 default:

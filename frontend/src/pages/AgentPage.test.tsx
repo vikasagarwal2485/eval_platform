@@ -1,4 +1,4 @@
-import { act, screen, within } from '@testing-library/react';
+import { act, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { FakeEventSource } from '../test/fakeEventSource';
 import { jsonError, mockApi, renderApp } from '../test/utils';
@@ -34,6 +34,10 @@ const AGENT = {
   provider_acks: [],
   last_seen_at: null,
   created_at: '2026-01-01T00:00:00Z',
+  playground_eligible: false,
+  flavor: null,
+  playground_gateway_key_configured: false,
+  handoff_agent_names: [],
 };
 
 const MODELS = [
@@ -212,6 +216,48 @@ describe('live tab', () => {
     expect(await screen.findByText('hi there')).toBeInTheDocument();
     expect(screen.getByText(/evaluated 80%/)).toBeInTheDocument();
   });
+
+  it('refreshes the header liveness badge when a turn starts (add-agent-playground)', async () => {
+    let fetchCount = 0;
+    setup({
+      'GET /agents/1': () => {
+        fetchCount += 1;
+        // AGENT has no liveness field of its own - defaults come from AgentPage.test.tsx's setup()
+        // merging it over baseRoutes; simulate the server recomputing liveness as "live" once this
+        // agent's last_seen_at moves forward (touch_agent_liveness), which only a real ingest event
+        // - here, the spawn's own turn.start - would actually cause.
+        return fetchCount === 1 ? { ...AGENT, liveness: 'offline' } : { ...AGENT, liveness: 'live' };
+      },
+    });
+    expect(await screen.findByRole('heading', { level: 1 })).toHaveTextContent('offline');
+
+    const es = FakeEventSource.instances[0];
+    act(() => es.open());
+    act(() => es.emit('turn_started', { turn_id: 6, input: 'a brand new task' }));
+
+    await waitFor(() =>
+      expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('live'),
+    );
+  });
+
+  it('shows a new turn as soon as it starts, not only once it finishes (add-agent-playground)', async () => {
+    let fetchCount = 0;
+    const NEW_TURN = { ...TURN, id: 6, input: 'a brand new task', status: 'open', latest_evaluation: null };
+    setup({
+      'GET /agents/1/turns': () => {
+        fetchCount += 1;
+        return fetchCount === 1 ? [TURN] : [TURN, NEW_TURN];
+      },
+    });
+    expect(await screen.findByText('hi there')).toBeInTheDocument();
+    expect(screen.queryByText('a brand new task')).not.toBeInTheDocument();
+
+    const es = FakeEventSource.instances[0];
+    act(() => es.open());
+    act(() => es.emit('turn_started', { turn_id: 6, input: 'a brand new task' }));
+
+    expect(await screen.findByText('a brand new task')).toBeInTheDocument();
+  });
 });
 
 describe('conversations tab', () => {
@@ -270,6 +316,48 @@ describe('settings tab', () => {
     expect(within(group).getByText("one of this agent's own models")).toBeInTheDocument();
   });
 
+  it('edits the agent kind and clears handoff_agent_names when moving away from router (add-agent-playground)', async () => {
+    const { user, calls } = setup({
+      'PATCH /agents/1': { ...AGENT, kind: 'reasoning' },
+    });
+    await user.click(await screen.findByRole('tab', { name: 'Settings' }));
+    const kindSelect = (await screen.findByLabelText('Kind')) as HTMLSelectElement;
+    expect(kindSelect.value).toBe('chatbot');
+    await user.selectOptions(kindSelect, 'reasoning');
+    await user.click(screen.getAllByRole('button', { name: 'Save settings' })[0]);
+
+    const patchCall = await vi.waitFor(() => {
+      const found = calls.find((c) => c.method === 'PATCH' && c.path === '/agents/1');
+      if (!found) throw new Error('no PATCH yet');
+      return found;
+    });
+    expect(patchCall.body.kind).toBe('reasoning');
+    expect(patchCall.body.handoff_agent_names).toEqual([]);
+  });
+
+  it('shows the hand-off agents picker once "Router" is selected, even before saving', async () => {
+    const { user } = setup();
+    await user.click(await screen.findByRole('tab', { name: 'Settings' }));
+    expect(screen.queryByRole('group', { name: 'Hand-off agents' })).not.toBeInTheDocument();
+    const kindSelect = await screen.findByLabelText('Kind');
+    await user.selectOptions(kindSelect, 'router');
+    expect(await screen.findByRole('group', { name: 'Hand-off agents' })).toBeInTheDocument();
+  });
+
+  it('requires at least one hand-off agent before a router-kind agent can be saved', async () => {
+    const { user } = setup({
+      'GET /agents': [AGENT, { ...AGENT, id: 2, name: 'reasoner', kind: 'reasoning' }],
+    });
+    await user.click(await screen.findByRole('tab', { name: 'Settings' }));
+    const kindSelect = await screen.findByLabelText('Kind');
+    await user.selectOptions(kindSelect, 'router');
+    const group = await screen.findByRole('group', { name: 'Hand-off agents' });
+    const saveButtons = screen.getAllByRole('button', { name: 'Save settings' });
+    expect(saveButtons[0]).toBeDisabled();
+    await user.click(within(group).getByLabelText('reasoner', { exact: false }));
+    expect(saveButtons[0]).toBeEnabled();
+  });
+
   it('offers a closed dropdown of task types and preserves an existing non-standard key as "(custom)"', async () => {
     const { user } = setup({
       'GET /agents/1': { ...AGENT, declared_models: { legacy_task: 'author:1' } },
@@ -278,12 +366,13 @@ describe('settings tab', () => {
     const taskSelect = (await screen.findByLabelText(
       'Task type for declared model 1',
     )) as HTMLSelectElement;
-    expect(taskSelect.value).toBe('legacy_task'); // not silently reset to one of the 4 standard options
+    expect(taskSelect.value).toBe('legacy_task'); // not silently reset to one of the standard options
     expect(Array.from(taskSelect.options).map((o) => o.value)).toEqual([
       '',
       'reasoning',
       'generation',
       'classification',
+      'routing',
       'default',
       'legacy_task',
     ]);

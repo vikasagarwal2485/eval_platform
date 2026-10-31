@@ -199,6 +199,18 @@ exists, treat the key as you would any other long-lived credential: pass it to t
 only via its own environment, never commit it, and re-mint (`/key/generate` again) and discard the
 old value to rotate - LiteLLM does not currently expose an in-place rotate-this-key endpoint, so
 rotation is "mint a new key, retire the old one," matching this file's own test key hygiene.
+**LiteLLM enforces globally unique `key_alias` values**, so a bare second `/key/generate` for the
+same alias is rejected with `400 Key with alias '...' already exists` - delete the old key by
+alias first (safe even if nothing is minted under it yet):
+
+```bash
+curl -s http://localhost:4000/key/delete \
+  -H "Authorization: Bearer $LITELLM_MASTER_KEY" -H "Content-Type: application/json" \
+  -d '{"key_aliases": ["reasoning-agent"]}'
+```
+(the backend's own automated minting, `backend/app/core/gateway_sync.py`'s `mint_virtual_key()`,
+does this `/key/delete` itself before every `/key/generate` for a playground-eligible agent - found
+live when a re-mint for an already-minted agent 400'd with exactly this error.)
 
 ## Fallback groups (`add-declared-model-fallback`)
 

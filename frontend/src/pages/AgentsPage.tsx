@@ -25,6 +25,7 @@ function AgentCard({ agent }: { agent: Agent }) {
         <h2 style={{ margin: 0, fontSize: '1.05rem' }}>{agent.name}</h2>
         <span className="badge">{agent.kind}</span>
         <LivenessBadge agent={agent} />
+        {agent.playground_eligible && <span className="badge info">playground</span>}
       </div>
       <div className="small muted">
         {Object.entries(agent.declared_models).map(([taskType, entry]) => (
@@ -202,11 +203,15 @@ function CreateAgentForm() {
   const [kind, setKind] = useState<AgentKind>('chatbot');
   const [declaredModels, setDeclaredModels] =
     useState<DeclaredModelRow[]>(EMPTY_DECLARED_MODEL_ROWS);
+  const [handoffAgentNames, setHandoffAgentNames] = useState<string[]>([]);
   const [token, setToken] = useState<string | null>(null);
   const [gatewaySync, setGatewaySync] = useState<GatewaySyncResult | undefined>(undefined);
   const [pendingAcks, setPendingAcks] = useState<string[]>([]);
   const create = useCreateAgent();
   const { data: models, isLoading: modelsLoading } = useModels();
+  const { data: allAgents } = useAgents();
+  // A hand-off target's own kind is purely descriptive - any kind is a valid hand-off agent.
+  const handoffCandidates = allAgents ?? [];
 
   const ackNeeded =
     create.error instanceof ApiError && create.error.code === 'ack_required'
@@ -220,6 +225,9 @@ function CreateAgentForm() {
         kind,
         declared_models: rowsToDeclaredModels(declaredModels),
         provider_acks: pendingAcks,
+        // Point 1: mandatory for a router-kind registration - a router with none configured could
+        // never hand anything off. Meaningless (and left empty) for any other kind.
+        handoff_agent_names: kind === 'router' ? handoffAgentNames : [],
       },
       {
         onSuccess: (a) => {
@@ -245,7 +253,9 @@ function CreateAgentForm() {
             setPendingAcks([]);
             setOpen(false);
             setName('');
+            setKind('chatbot');
             setDeclaredModels(EMPTY_DECLARED_MODEL_ROWS);
+            setHandoffAgentNames([]);
           }}
         >
           Done
@@ -293,8 +303,44 @@ function CreateAgentForm() {
         <select id="agent-kind" value={kind} onChange={(e) => setKind(e.target.value as AgentKind)}>
           <option value="chatbot">Chatbot</option>
           <option value="reasoning">Reasoning</option>
+          <option value="router">Router</option>
         </select>
       </div>
+      {kind === 'router' && (
+        <div className="field">
+          <span>Hand-off agents</span>
+          <p className="small muted" style={{ marginTop: 0 }}>
+            One or more separate, independently registered agents this router may hand problems off
+            to - any kind - at least one is required.
+          </p>
+          <div className="stack" role="group" aria-label="Hand-off agents" style={{ gap: 4 }}>
+            {handoffCandidates.map((a) => (
+              <label key={a.id} className="check">
+                <input
+                  type="checkbox"
+                  checked={handoffAgentNames.includes(a.name)}
+                  onChange={(e) =>
+                    setHandoffAgentNames(
+                      e.target.checked
+                        ? [...handoffAgentNames, a.name]
+                        : handoffAgentNames.filter((n) => n !== a.name),
+                    )
+                  }
+                />
+                <span>
+                  {a.name} <span className="muted small">({a.kind})</span>
+                </span>
+              </label>
+            ))}
+            {handoffCandidates.length === 0 && (
+              <p className="small muted">No other agents are registered yet - register one first.</p>
+            )}
+          </div>
+          {handoffAgentNames.length === 0 && (
+            <p className="small field-error">At least one hand-off agent is required.</p>
+          )}
+        </div>
+      )}
       <DeclaredModelsFields
         rows={declaredModels}
         onChange={setDeclaredModels}
@@ -303,7 +349,10 @@ function CreateAgentForm() {
         acknowledgedProviders={pendingAcks}
       />
       <div className="row">
-        <button type="submit" disabled={create.isPending}>
+        <button
+          type="submit"
+          disabled={create.isPending || (kind === 'router' && handoffAgentNames.length === 0)}
+        >
           {create.isPending ? 'Registering…' : 'Register'}
         </button>
         <button type="button" className="link" onClick={() => setOpen(false)}>

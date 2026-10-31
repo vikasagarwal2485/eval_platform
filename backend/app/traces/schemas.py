@@ -59,10 +59,17 @@ class TurnStartEvent(_Event):
     input: str = ""
     reference: str | None = None
     metadata: dict = Field(default_factory=dict)
+    # The system prompt actually in effect for this turn (after any skill instructions were
+    # prepended), whether this turn was launched from a terminal or the platform's own Playground -
+    # `None` only for an agent that genuinely sends no system message at all, never omitted just
+    # because it's the agent's own hardcoded default rather than an operator override
+    # (`add-agent-playground`).
+    system_prompt: str | None = None
 
     def truncated(self) -> tuple[TurnStartEvent, bool]:
-        text, cut = _truncate(self.input)
-        return self.model_copy(update={"input": text}), cut
+        text, cut1 = _truncate(self.input)
+        system_prompt, cut2 = (None, False) if self.system_prompt is None else _truncate(self.system_prompt)
+        return self.model_copy(update={"input": text, "system_prompt": system_prompt}), (cut1 or cut2)
 
 
 class TurnEndEvent(_Event):

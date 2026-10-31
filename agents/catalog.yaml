@@ -1,0 +1,58 @@
+# Agent flavor catalog (add-agent-playground, design.md D3).
+#
+# Static, repo-shipped reference data describing the runnable agent *scripts* this repo ships -
+# not registered `Agent` rows. Many registered agents may share the same flavor. Loaded read-only
+# by the backend at startup (`backend/app/core/agent_catalog.py`, mirroring `model_pricing.yaml`'s
+# loading pattern) to resolve a playground spawn's entrypoint command and to validate that a
+# registration's declared-model task keys match its chosen flavor.
+#
+# `entrypoint` is run with `cwd` as the working directory, exactly as this repo's own docs/tests
+# already invoke each script (`python -m <module>` from `agents/`).
+# `task_slots` are the declared-models keys this flavor expects (see `agent-registry`'s
+# declared-models shape) - every slot is required at registration time for that flavor.
+# `accepts` names the CLI flags every flavor in this catalog accepts for a playground spawn
+# (`reference-agents` delta: `--system-prompt`/`--skill`/`--task` on all three).
+
+flavors:
+  chatbot:
+    kind: chatbot
+    description: A single-call chatbot answering one message per turn against one declared model.
+    entrypoint: [python, -m, chatbot]
+    cwd: agents
+    task_slots: [default]
+    accepts: [system_prompt, skill, task]
+
+  reasoning:
+    kind: reasoning
+    description: >-
+      A multi-step reasoning pipeline (classify, plan, solve, verify) spanning three task-scoped
+      model groups within one turn.
+    entrypoint: [python, -m, reasoning_agent]
+    cwd: agents
+    task_slots: [classification, reasoning, generation]
+    accepts: [system_prompt, skill, task]
+
+  router:
+    kind: router
+    description: >-
+      A classifier-router orchestrator that classifies, routes via a tool call, and either
+      finishes directly, hands off to a separate, independently registered reasoning agent, or
+      hands off to a separate, independently registered chatbot agent, depending on the routing
+      decision (add-chatbot-handoff).
+    entrypoint: [python, -m, classifier_router_agent]
+    cwd: agents
+    # "routing" is the one gateway-routed LLM call; "classification" names the external, non-LLM
+    # context-classifier service as a custom-kind provider (agent-registry's self-discovery resolves
+    # it via `custom_model_endpoints`, not a gateway group - see reasoning_agent.py's own distinct,
+    # gateway-routed "classification" task for contrast; this is a different thing with the same name).
+    task_slots: [routing, classification]
+    accepts: [system_prompt, skill, task]
+    # A script limitation, not a registry one: `classifier_router_agent.py`'s own CLI resolves, among
+    # a registered router's own `handoff_agent_names`, at most one agent of each kind listed here -
+    # a `reasoning`-kind target via `--reasoning-agent-token`/`--reasoning-agent-gateway-key`, a
+    # `chatbot`-kind target via `--chatbot-agent-token` - never more than one of either kind
+    # (ambiguous: the script has no way to pick between two same-kind targets). The registry itself
+    # places no limit on how many an agent may declare or what kind they are. A hand-off target of
+    # any other kind (e.g. another `router`) is accepted by the registry but rejected at spawn time,
+    # since this script has nothing to do with it.
+    handoff_kinds: [reasoning, chatbot]

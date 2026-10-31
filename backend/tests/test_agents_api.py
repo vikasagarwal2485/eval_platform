@@ -44,6 +44,22 @@ def test_create_list_get_agent(settings, file_session_factory):
         assert "token" not in r.json()
 
 
+def test_router_kind_is_accepted(settings, file_session_factory):
+    with new_client(settings, file_session_factory, FakeOllama()) as c:
+        _create_agent(c, name="reasoner", kind="reasoning")
+        created = _create_agent(c, name="router-bot", kind="router", handoff_agent_names=["reasoner"])
+        assert created["kind"] == "router"
+
+
+def test_invalid_kind_is_rejected(settings, file_session_factory):
+    with new_client(settings, file_session_factory, FakeOllama()) as c:
+        r = c.post(
+            "/api/agents",
+            json={"name": "bot", "kind": "orchestrator", "declared_models": {"default": "x:1"}},
+        )
+        assert r.status_code == 422
+
+
 def test_duplicate_name_is_409(settings, file_session_factory):
     with new_client(settings, file_session_factory, FakeOllama()) as c:
         _create_agent(c)
@@ -529,3 +545,421 @@ def test_updating_an_unrelated_setting_does_not_touch_the_gateway(settings, file
         assert r.status_code == 200
         assert "gateway_sync" not in r.json()
         assert gw.calls == []  # no gateway request at all for a settings change that isn't declared_models
+
+
+# ------------------------------------------------------------------ add-agent-playground: enable/disable/rotate
+def _pg_settings(settings, **over):
+    return dataclasses.replace(settings, gateway_url=GATEWAY_URL, playground_secret_key="a-test-passphrase", **over)
+
+
+def test_enable_playground_requires_matching_flavor_kind(settings, file_session_factory, monkeypatch):
+    _patch_gateway(monkeypatch, _MockGateway())
+    with new_client(_pg_settings(settings), file_session_factory, FakeOllama()) as c:
+        agent = _create_agent(c, kind="chatbot")
+        r = c.post(f"/api/agents/{agent['id']}/playground/enable", json={"flavor": "reasoning"})
+        assert r.status_code == 422
+        assert r.json()["detail"]["code"] == "flavor_kind_mismatch"
+
+
+def test_enable_playground_rejects_an_unknown_flavor(settings, file_session_factory, monkeypatch):
+    _patch_gateway(monkeypatch, _MockGateway())
+    with new_client(_pg_settings(settings), file_session_factory, FakeOllama()) as c:
+        agent = _create_agent(c, kind="chatbot")
+        r = c.post(f"/api/agents/{agent['id']}/playground/enable", json={"flavor": "nope"})
+        assert r.status_code == 422
+        assert r.json()["detail"]["code"] == "unknown_flavor"
+
+
+def test_enable_playground_requires_eval_secret_key_configured(settings, file_session_factory, monkeypatch):
+    _patch_gateway(monkeypatch, _MockGateway())
+    gw_settings = dataclasses.replace(settings, gateway_url=GATEWAY_URL)  # no playground_secret_key
+    with new_client(gw_settings, file_session_factory, FakeOllama()) as c:
+        agent = _create_agent(c, kind="chatbot")
+        r = c.post(f"/api/agents/{agent['id']}/playground/enable", json={"flavor": "chatbot"})
+        assert r.status_code == 422
+        assert r.json()["detail"]["code"] == "playground_secrets_disabled"
+
+
+def test_enable_playground_succeeds_and_mints_a_scoped_gateway_key(settings, file_session_factory, monkeypatch):
+    gw = _MockGateway()
+    _patch_gateway(monkeypatch, gw)
+    with new_client(_pg_settings(settings), file_session_factory, FakeOllama()) as c:
+        agent = _create_agent(c, kind="chatbot")
+        r = c.post(f"/api/agents/{agent['id']}/playground/enable", json={"flavor": "chatbot"})
+        assert r.status_code == 200
+        body = r.json()
+        assert "token" in body and body["token"]  # shown once, like registration
+        assert body["playground_eligible"] is True
+        assert body["flavor"] == "chatbot"
+        assert body["playground_gateway_key_configured"] is True
+        assert body["gateway_key_mint"]["status"] == "ok"
+        # the new ingest token actually authenticates - the old registration token was rotated away
+        r2 = c.get(f"/api/agents/{agent['id']}")
+        assert r2.json()["playground_gateway_key_configured"] is True
+        assert "token" not in r2.json()
+        assert any(call[1] == "/key/generate" for call in gw.calls)
+
+
+def test_enable_playground_never_returns_the_gateway_key_itself(settings, file_session_factory, monkeypatch):
+    _patch_gateway(monkeypatch, _MockGateway())
+    with new_client(_pg_settings(settings), file_session_factory, FakeOllama()) as c:
+        agent = _create_agent(c, kind="chatbot")
+        body = c.post(f"/api/agents/{agent['id']}/playground/enable", json={"flavor": "chatbot"}).json()
+        assert "playground_gateway_key_enc" not in body
+        assert "playground_ingest_token_enc" not in body
+
+
+def test_enable_playground_reports_a_mint_failure_without_blocking(settings, file_session_factory, monkeypatch):
+    _patch_gateway(monkeypatch, _MockGateway(fail=True))
+    with new_client(_pg_settings(settings), file_session_factory, FakeOllama()) as c:
+        agent = _create_agent(c, kind="chatbot")
+        r = c.post(f"/api/agents/{agent['id']}/playground/enable", json={"flavor": "chatbot"})
+        assert r.status_code == 200  # still succeeds
+        assert r.json()["gateway_key_mint"]["status"] == "error"
+        assert r.json()["playground_gateway_key_configured"] is False
+
+
+def test_disable_playground_clears_eligibility_but_keeps_the_registration(settings, file_session_factory, monkeypatch):
+    _patch_gateway(monkeypatch, _MockGateway())
+    with new_client(_pg_settings(settings), file_session_factory, FakeOllama()) as c:
+        agent = _create_agent(c, kind="chatbot")
+        c.post(f"/api/agents/{agent['id']}/playground/enable", json={"flavor": "chatbot"})
+        r = c.post(f"/api/agents/{agent['id']}/playground/disable")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["playground_eligible"] is False
+        assert body["flavor"] is None
+        assert body["playground_gateway_key_configured"] is False
+        assert body["name"] == "bot"  # registration itself untouched
+
+
+def test_rotate_playground_credentials_requires_eligibility(settings, file_session_factory, monkeypatch):
+    _patch_gateway(monkeypatch, _MockGateway())
+    with new_client(_pg_settings(settings), file_session_factory, FakeOllama()) as c:
+        agent = _create_agent(c, kind="chatbot")
+        r = c.post(f"/api/agents/{agent['id']}/playground/rotate")
+        assert r.status_code == 409
+
+
+def test_rotate_playground_credentials_reissues_token_and_remints_key(settings, file_session_factory, monkeypatch):
+    gw = _MockGateway()
+    _patch_gateway(monkeypatch, gw)
+    with new_client(_pg_settings(settings), file_session_factory, FakeOllama()) as c:
+        agent = _create_agent(c, kind="chatbot")
+        first = c.post(f"/api/agents/{agent['id']}/playground/enable", json={"flavor": "chatbot"}).json()
+        r = c.post(f"/api/agents/{agent['id']}/playground/rotate")
+        assert r.status_code == 200
+        second = r.json()
+        assert second["token"] != first["token"]
+        # the old (enable-issued) token no longer authenticates ingest
+        ir = c.post(
+            "/api/ingest/v1/events", json=[], headers={"Authorization": f"Bearer {first['token']}"}
+        )
+        assert ir.status_code == 401
+
+
+def test_updating_declared_models_remints_the_stored_gateway_key(settings, file_session_factory, monkeypatch):
+    gw = _MockGateway()
+    _patch_gateway(monkeypatch, gw)
+    with new_client(_pg_settings(settings), file_session_factory, FakeOllama()) as c:
+        agent = _create_agent(c, kind="reasoning", declared_models={"reasoning": "author:1"})
+        c.post(f"/api/agents/{agent['id']}/playground/enable", json={"flavor": "reasoning"})
+        gw.calls.clear()
+        r = c.patch(
+            f"/api/agents/{agent['id']}",
+            json={"declared_models": {"reasoning": "author:1", "generation": "author:2"}},
+        )
+        assert r.status_code == 200
+        assert r.json()["gateway_key_mint"]["status"] == "ok"
+        mint_calls = [call for call in gw.calls if call[1] == "/key/generate"]
+        assert len(mint_calls) == 1
+        assert set(mint_calls[0][2]["models"]) == {"bot__reasoning", "bot__generation"}
+
+
+def test_updating_an_unrelated_setting_does_not_remint_the_gateway_key(settings, file_session_factory, monkeypatch):
+    gw = _MockGateway()
+    _patch_gateway(monkeypatch, gw)
+    with new_client(_pg_settings(settings), file_session_factory, FakeOllama()) as c:
+        agent = _create_agent(c, kind="chatbot")
+        c.post(f"/api/agents/{agent['id']}/playground/enable", json={"flavor": "chatbot"})
+        gw.calls.clear()
+        r = c.patch(f"/api/agents/{agent['id']}", json={"eval_config": {"evaluators": ["judge:1"]}})
+        assert r.status_code == 200
+        assert "gateway_key_mint" not in r.json()
+        assert not any(call[1] == "/key/generate" for call in gw.calls)
+
+
+# ------------------------------------------------------------------ add-agent-playground: handoff_agent_names
+def test_handoff_agent_names_requires_router_kind(settings, file_session_factory):
+    with new_client(settings, file_session_factory, FakeOllama()) as c:
+        _create_agent(c, name="reasoner", kind="reasoning")
+        r = c.post(
+            "/api/agents",
+            json={
+                "name": "bot", "kind": "chatbot", "declared_models": {"default": "author:1"},
+                "handoff_agent_names": ["reasoner"],
+            },
+        )
+        assert r.status_code == 422
+
+
+def test_handoff_agent_names_mandatory_for_router_kind_at_registration(settings, file_session_factory):
+    """Point 1: a router-kind agent with zero hand-off agents configured could never hand anything
+    off - enforced at registration, not just on later settings saves."""
+    with new_client(settings, file_session_factory, FakeOllama()) as c:
+        r = c.post(
+            "/api/agents",
+            json={"name": "router", "kind": "router", "declared_models": {"routing": "author:1"}},
+        )
+        assert r.status_code == 422
+        assert "at least one" in r.json()["detail"]["message"]
+
+
+def test_handoff_agent_names_must_name_an_existing_reasoning_agent(settings, file_session_factory):
+    with new_client(settings, file_session_factory, FakeOllama()) as c:
+        r = c.post(
+            "/api/agents",
+            json={
+                "name": "router", "kind": "router", "declared_models": {"routing": "author:1"},
+                "handoff_agent_names": ["no-such-agent"],
+            },
+        )
+        assert r.status_code == 422
+
+
+def test_handoff_agent_names_accepts_a_target_of_any_kind(settings, file_session_factory):
+    """A hand-off target's own registered kind is purely descriptive - nothing in the spawn
+    mechanism depends on it (`app.core.playground_spawn`'s router branch only ever checks the
+    target is playground-eligible, never its kind), so it is unconstrained: chatbot, reasoning or
+    router are all accepted."""
+    with new_client(settings, file_session_factory, FakeOllama()) as c:
+        _create_agent(c, name="chatbot-target", kind="chatbot")
+        agent = _create_agent(
+            c, name="router", kind="router", declared_models={"routing": "author:1"},
+            handoff_agent_names=["chatbot-target"],
+        )
+        assert agent["handoff_agent_names"] == ["chatbot-target"]
+
+
+def test_handoff_agent_names_rejects_self_reference(settings, file_session_factory):
+    with new_client(settings, file_session_factory, FakeOllama()) as c:
+        r = c.post(
+            "/api/agents",
+            json={
+                "name": "router", "kind": "router", "declared_models": {"routing": "author:1"},
+                "handoff_agent_names": ["router"],
+            },
+        )
+        assert r.status_code == 422
+
+
+def test_handoff_agent_names_rejects_duplicates(settings, file_session_factory):
+    with new_client(settings, file_session_factory, FakeOllama()) as c:
+        _create_agent(c, name="reasoner", kind="reasoning")
+        r = c.post(
+            "/api/agents",
+            json={
+                "name": "router", "kind": "router", "declared_models": {"routing": "author:1"},
+                "handoff_agent_names": ["reasoner", "reasoner"],
+            },
+        )
+        assert r.status_code == 422
+
+
+def test_handoff_agent_names_accepted_for_a_valid_router_and_target(settings, file_session_factory):
+    with new_client(settings, file_session_factory, FakeOllama()) as c:
+        _create_agent(c, name="reasoner", kind="reasoning")
+        agent = _create_agent(
+            c, name="router", kind="router", declared_models={"routing": "author:1"},
+            handoff_agent_names=["reasoner"],
+        )
+        assert agent["handoff_agent_names"] == ["reasoner"]
+
+
+def test_handoff_agent_names_accepts_more_than_one(settings, file_session_factory):
+    """Point 2: the registry places no limit on how many hand-off agents a router declares, even
+    though today's one reference router script only ever consumes the first."""
+    with new_client(settings, file_session_factory, FakeOllama()) as c:
+        _create_agent(c, name="reasoner-a", kind="reasoning")
+        _create_agent(c, name="reasoner-b", kind="reasoning")
+        agent = _create_agent(
+            c, name="router", kind="router", declared_models={"routing": "author:1"},
+            handoff_agent_names=["reasoner-a", "reasoner-b"],
+        )
+        assert agent["handoff_agent_names"] == ["reasoner-a", "reasoner-b"]
+
+
+def test_handoff_agent_names_empty_by_default_for_non_router_kinds(settings, file_session_factory):
+    with new_client(settings, file_session_factory, FakeOllama()) as c:
+        agent = _create_agent(c)
+        assert agent["handoff_agent_names"] == []
+
+
+def test_handoff_agent_names_survives_an_unrelated_settings_save(settings, file_session_factory):
+    with new_client(settings, file_session_factory, FakeOllama()) as c:
+        _create_agent(c, name="reasoner", kind="reasoning")
+        router = _create_agent(
+            c, name="router", kind="router", declared_models={"routing": "author:1"},
+            handoff_agent_names=["reasoner"],
+        )
+        r = c.patch(f"/api/agents/{router['id']}", json={"eval_config": {"evaluators": ["judge:1"]}})
+        assert r.status_code == 200
+        assert r.json()["handoff_agent_names"] == ["reasoner"]
+
+
+def test_handoff_agent_names_can_be_set_to_an_empty_list_explicitly(settings, file_session_factory):
+    """`[]` unambiguously clears it - no separate clear_* flag needed, unlike the single-name field
+    this replaced."""
+    with new_client(settings, file_session_factory, FakeOllama()) as c:
+        _create_agent(c, name="reasoner", kind="reasoning")
+        router = _create_agent(
+            c, name="router", kind="router", declared_models={"routing": "author:1"},
+            handoff_agent_names=["reasoner"],
+        )
+        # emptying it while staying router-kind is itself rejected (router must have >= 1)...
+        r = c.patch(f"/api/agents/{router['id']}", json={"handoff_agent_names": []})
+        assert r.status_code == 422
+        # ...but succeeds together with a kind change away from router in the same request
+        r2 = c.patch(f"/api/agents/{router['id']}", json={"kind": "chatbot", "handoff_agent_names": []})
+        assert r2.status_code == 200
+        assert r2.json()["handoff_agent_names"] == []
+
+
+# ------------------------------------------------------------------ add-agent-playground: spawn endpoint
+def test_spawn_rejects_a_non_eligible_agent(settings, file_session_factory, monkeypatch):
+    _patch_gateway(monkeypatch, _MockGateway())
+    with new_client(_pg_settings(settings), file_session_factory, FakeOllama()) as c:
+        agent = _create_agent(c, kind="chatbot")
+        r = c.post(f"/api/agents/{agent['id']}/playground/spawn", json={"task": "hi"})
+        assert r.status_code == 422
+        assert r.json()["detail"]["code"] == "spawn_failed"
+
+
+def test_spawn_launches_the_subprocess_with_the_expected_argv(settings, file_session_factory, monkeypatch, tmp_path):
+    from app.core import agent_catalog, playground_spawn
+
+    _patch_gateway(monkeypatch, _MockGateway())
+    venv_python = tmp_path / ".venv" / "bin" / "python"
+    venv_python.parent.mkdir(parents=True)
+    venv_python.touch()
+    monkeypatch.setattr(agent_catalog, "flavor_root", lambda flavor: tmp_path)
+
+    captured = {}
+
+    async def fake_exec(*args, **kwargs):
+        captured["argv"] = args
+
+        class _Proc:
+            returncode = 0
+
+            async def communicate(self):
+                return b"", b""
+
+        return _Proc()
+
+    monkeypatch.setattr(playground_spawn.asyncio, "create_subprocess_exec", fake_exec)
+
+    with new_client(_pg_settings(settings), file_session_factory, FakeOllama()) as c:
+        agent = _create_agent(c, kind="chatbot")
+        c.post(f"/api/agents/{agent['id']}/playground/enable", json={"flavor": "chatbot"})
+        r = c.post(
+            f"/api/agents/{agent['id']}/playground/spawn",
+            json={"system_prompt": "be terse", "skills": ["step-by-step"], "task": "2+2?"},
+        )
+        assert r.status_code == 200
+        assert r.json()["status"] == "ok"
+        argv = list(captured["argv"])
+        assert str(venv_python) in argv
+        assert "--platform-url" in argv
+        assert "--model" in argv and argv[argv.index("--model") + 1] == "author:1"
+        assert "--system-prompt" in argv and argv[argv.index("--system-prompt") + 1] == "be terse"
+        assert "--skill" in argv and argv[argv.index("--skill") + 1] == "step-by-step"
+        assert argv[-2:] == ["--task", "2+2?"]
+
+
+# ------------------------------------------------------------------ editing an agent's kind
+def test_kind_can_be_edited_via_settings_update(settings, file_session_factory):
+    with new_client(settings, file_session_factory, FakeOllama()) as c:
+        agent = _create_agent(c, kind="chatbot")
+        r = c.patch(f"/api/agents/{agent['id']}", json={"declared_models": agent["declared_models"], "kind": "reasoning"})
+        assert r.status_code == 200, r.text
+        assert r.json()["kind"] == "reasoning"
+        assert c.get(f"/api/agents/{agent['id']}").json()["kind"] == "reasoning"
+
+
+def test_omitting_kind_leaves_it_unchanged(settings, file_session_factory):
+    with new_client(settings, file_session_factory, FakeOllama()) as c:
+        agent = _create_agent(c, kind="chatbot")
+        r = c.patch(f"/api/agents/{agent['id']}", json={"eval_config": {"evaluators": ["judge:1"]}})
+        assert r.status_code == 200
+        assert r.json()["kind"] == "chatbot"
+
+
+def test_kind_change_rejected_when_playground_eligible_flavor_mismatches(
+    settings, file_session_factory, monkeypatch
+):
+    _patch_gateway(monkeypatch, _MockGateway())
+    with new_client(_pg_settings(settings), file_session_factory, FakeOllama()) as c:
+        agent = _create_agent(c, kind="chatbot")
+        c.post(f"/api/agents/{agent['id']}/playground/enable", json={"flavor": "chatbot"})
+        r = c.patch(f"/api/agents/{agent['id']}", json={"kind": "reasoning"})
+        assert r.status_code == 422
+        assert r.json()["detail"]["code"] == "invalid_settings"
+        assert "playground-eligible" in r.json()["detail"]["message"]
+        # unchanged
+        assert c.get(f"/api/agents/{agent['id']}").json()["kind"] == "chatbot"
+
+
+def test_kind_change_allowed_when_playground_flavor_still_matches(settings, file_session_factory, monkeypatch):
+    """Changing to a different setting that happens to equal the already-matching kind is a no-op
+    for this check - verifies the check is about the *flavor*, not a blanket freeze."""
+    _patch_gateway(monkeypatch, _MockGateway())
+    with new_client(_pg_settings(settings), file_session_factory, FakeOllama()) as c:
+        agent = _create_agent(c, kind="chatbot")
+        c.post(f"/api/agents/{agent['id']}/playground/enable", json={"flavor": "chatbot"})
+        r = c.patch(f"/api/agents/{agent['id']}", json={"kind": "chatbot"})
+        assert r.status_code == 200
+
+
+def test_kind_change_allowed_for_an_agent_that_is_a_routers_handoff_target(settings, file_session_factory):
+    """A hand-off target's kind is unconstrained (see `test_handoff_agent_names_accepts_a_target_of_
+    any_kind`), so changing it away from 'reasoning' no longer needs to check whether any router
+    depends on it still being one - that dependency doesn't exist anymore."""
+    with new_client(settings, file_session_factory, FakeOllama()) as c:
+        _create_agent(c, name="reasoner", kind="reasoning")
+        _create_agent(
+            c, name="router", kind="router", declared_models={"routing": "author:1"},
+            handoff_agent_names=["reasoner"],
+        )
+        target = c.get("/api/agents").json()
+        target_id = next(a["id"] for a in target if a["name"] == "reasoner")
+        r = c.patch(f"/api/agents/{target_id}", json={"kind": "chatbot"})
+        assert r.status_code == 200
+        assert r.json()["kind"] == "chatbot"
+        # the router's own handoff_agent_names is untouched by its target's kind changing
+        router_id = next(a["id"] for a in target if a["name"] == "router")
+        assert c.get(f"/api/agents/{router_id}").json()["handoff_agent_names"] == ["reasoner"]
+
+
+def test_kind_change_to_router_rejected_unless_handoff_targets_are_cleared_or_valid(
+    settings, file_session_factory
+):
+    """A router-kind agent that already has handoff_agent_names set keeps it across an unrelated
+    settings save (existing value carried over) - so changing kind *away* from router while it's
+    still set is rejected by the existing handoff validator, consistent with changing kind and
+    handoff_agent_names together being the correct way to do it."""
+    with new_client(settings, file_session_factory, FakeOllama()) as c:
+        _create_agent(c, name="reasoner", kind="reasoning")
+        router = _create_agent(
+            c, name="router", kind="router", declared_models={"routing": "author:1"},
+            handoff_agent_names=["reasoner"],
+        )
+        r = c.patch(f"/api/agents/{router['id']}", json={"kind": "chatbot"})
+        assert r.status_code == 422
+        assert "handoff_agent_names" in r.json()["detail"]["message"]
+
+        # clearing handoff_agent_names (to []) in the same request allows the kind change
+        r2 = c.patch(f"/api/agents/{router['id']}", json={"kind": "chatbot", "handoff_agent_names": []})
+        assert r2.status_code == 200
+        assert r2.json()["kind"] == "chatbot"
+        assert r2.json()["handoff_agent_names"] == []

@@ -7,7 +7,7 @@ Ships three runnable example agents that exercise the full ingest-to-evaluation 
 ## Requirements
 
 ### Requirement: A reference chatbot agent is provided
-The system SHALL ship a runnable chatbot agent that answers user messages using a configurable local model, sends each exchange as one turn with one LLM span to the platform using the agent SDK, and works against the same test infrastructure the platform's own tests use. That span SHALL be a real OpenTelemetry span (`trace-observability`), not a custom ingest event, so the exchange is viewable as a trace in Tempo/Grafana and in the platform's own frontend, in addition to appearing in that agent's conversation view.
+The system SHALL ship a runnable chatbot agent that answers user messages using a configurable local model, sends each exchange as one turn with one LLM span to the platform using the agent SDK, and works against the same test infrastructure the platform's own tests use. That span SHALL be a real OpenTelemetry span (`trace-observability`), not a custom ingest event, so the exchange is viewable as a trace in Tempo/Grafana and in the platform's own frontend, in addition to appearing in that agent's conversation view. The agent SHALL accept an optional system-prompt override, zero or more attached-skill contents to prepend to it, and a one-shot task input, so it can be driven as a single invocation instead of only its default interactive loop.
 
 #### Scenario: Chatbot turn is ingested
 - **WHEN** the reference chatbot answers a user message
@@ -18,6 +18,19 @@ The system SHALL ship a runnable chatbot agent that answers user messages using 
 - **THEN** the resulting span is emitted via OpenTelemetry (not the platform's custom span-event
   type) and is visible as a trace in the platform's own frontend and in Grafana, correlated to the
   turn by its `trace_id`
+
+#### Scenario: A supplied system prompt overrides the hardcoded default
+- **WHEN** the chatbot is started with an explicit system-prompt override
+- **THEN** it uses that prompt for the exchange instead of its hardcoded default
+
+#### Scenario: Attached skills are prepended to the system prompt
+- **WHEN** the chatbot is started with one or more attached-skill contents
+- **THEN** their instructions are prepended, in the order given, to whichever system prompt is in
+  effect (the override, or the hardcoded default if none was given)
+
+#### Scenario: A one-shot task answers a single input and exits
+- **WHEN** the chatbot is started with a one-shot task input instead of its interactive loop
+- **THEN** it answers that one input, emits its turn exactly as any other exchange would, and exits
 
 ### Requirement: A reference multi-step reasoning agent is provided
 The system SHALL ship a runnable reasoning agent that answers a problem through more than one LLM
@@ -32,7 +45,10 @@ discovering its registration from the platform at startup, rather than requiring
 know and pass them by hand, unless an explicit override is given or discovery itself fails. Each
 of this agent's spans SHALL be a real OpenTelemetry span using the OpenTelemetry GenAI semantic
 conventions for the model, token usage and (when known) cost it recorded, rather than the
-platform's custom span-event type.
+platform's custom span-event type. The agent SHALL accept an optional system-prompt override
+applied to its planning/solving/verification calls, zero or more attached-skill contents to
+prepend to it, and a one-shot task input, so it can be driven as a single invocation instead of
+only its default interactive loop.
 
 #### Scenario: Reasoning turn has multiple spans
 - **WHEN** the reference reasoning agent answers one problem using several internal LLM calls
@@ -104,6 +120,22 @@ platform's custom span-event type.
   carrying its own model, token usage and cost attributes, viewable as one connected trace in
   Tempo/Grafana and in the platform's own frontend
 
+#### Scenario: A supplied system prompt overrides the hardcoded default
+- **WHEN** the reasoning agent is started with an explicit system-prompt override
+- **THEN** its planning, solving and verification calls use that prompt instead of their hardcoded
+  defaults; the classification call, which uses no free-form prompt, is unaffected
+
+#### Scenario: Attached skills are prepended to the system prompt
+- **WHEN** the reasoning agent is started with one or more attached-skill contents
+- **THEN** their instructions are prepended, in the order given, to whichever system prompt is in
+  effect for the planning/solving/verification calls
+
+#### Scenario: A one-shot task answers a single problem and exits
+- **WHEN** the reasoning agent is started with a one-shot task input instead of its interactive
+  loop
+- **THEN** it answers that one problem through its usual classify/plan/solve/verify sequence,
+  emits its turn, and exits
+
 ### Requirement: The reference agents demonstrate evaluation by a different model
 The reference agents' documented setup SHALL configure at least one evaluator that is not the model the agent uses, so that running them produces evaluated turns without any self-judged score.
 
@@ -118,12 +150,20 @@ discovers from its own registration, like every other task-scoped dependency it 
 explicit override is given - then makes a gateway-routed LLM call that decides, via a tool call,
 which of at least two distinct downstream actions to take, and finally either hands the problem
 off to a different, independently registered reference agent or finishes the turn immediately with
-no further model call. Every real LLM call this agent makes SHALL be routed through the shared LLM
-gateway (`agent-llm-gateway`) by a task-scoped model group name the agent discovers for itself,
-exactly like the platform's other reference agents; this agent SHALL NOT call any LLM provider
-directly under any circumstance. Its model-call and tool-call spans SHALL be real OpenTelemetry
-spans, the model-call span using the OpenTelemetry GenAI semantic conventions, exactly like the
-platform's other reference agents.
+no further model call. A hand-off action SHALL be able to resolve to either of at least two kinds
+of hand-off target - a multi-step reasoning agent or a single-call chatbot agent
+(`add-chatbot-handoff`) - the tool's own resolved action naming which kind, never the orchestrator's
+own code inspecting the classifier's raw labels to decide. A hand-off action resolving to a kind
+this run has no credentials configured for SHALL fail that turn visibly rather than silently
+misrouting to whichever kind happens to be available. Every real LLM call this agent makes SHALL
+be routed through the shared LLM gateway (`agent-llm-gateway`) by a task-scoped model group name
+the agent discovers for itself, exactly like the platform's other reference agents; this agent
+SHALL NOT call any LLM provider directly under any circumstance. Its model-call and tool-call spans
+SHALL be real OpenTelemetry spans, the model-call span using the OpenTelemetry GenAI semantic
+conventions, exactly like the platform's other reference agents. The agent SHALL accept an
+optional system-prompt override applied to its routing-decision call, zero or more attached-skill
+contents to prepend to it, and a one-shot task input, so it can be driven as a single invocation
+instead of only its default interactive loop.
 
 #### Scenario: A turn classifies before it routes
 - **WHEN** the reference classifier-routed agent begins answering a problem
@@ -167,6 +207,18 @@ platform's other reference agents.
   in the platform (not attributed to the orchestrator's spans), and the orchestrator's own turn
   records the hand-off and its result as a `tool` span
 
+#### Scenario: A hand-off action names which kind of target it resolved to
+- **WHEN** the resolved action is a hand-off
+- **THEN** it also names which kind of hand-off target it resolved to (a multi-step reasoning agent
+  or a single-call chatbot agent), and the orchestrator spawns that kind's own reference script
+  rather than always assuming the same kind
+
+#### Scenario: A hand-off to a kind this run has no credentials for fails visibly
+- **WHEN** the resolved action is a hand-off to a kind of target this run was not given credentials
+  for
+- **THEN** the turn ends in a visible error naming the missing credentials, rather than silently
+  misrouting to a different kind or crashing on a missing value deep inside the spawn logic
+
 #### Scenario: A different branch finishes without any further model call
 - **WHEN** the resolved action is one that needs no further reasoning or generation (for example,
   a rejected/short-circuited case)
@@ -183,6 +235,21 @@ platform's other reference agents.
 - **THEN** that call is recorded as a real OpenTelemetry `tool`-kind span under the turn's trace,
   even though it is not subject to the gateway-only constraint and carries no GenAI model
   attributes
+
+#### Scenario: A supplied system prompt overrides the hardcoded default
+- **WHEN** the classifier-router agent is started with an explicit system-prompt override
+- **THEN** its routing-decision call uses that prompt instead of its hardcoded default
+
+#### Scenario: Attached skills are prepended to the system prompt
+- **WHEN** the classifier-router agent is started with one or more attached-skill contents
+- **THEN** their instructions are prepended, in the order given, to whichever system prompt is in
+  effect for the routing-decision call
+
+#### Scenario: A one-shot task answers a single problem and exits
+- **WHEN** the classifier-router agent is started with a one-shot task input instead of its
+  interactive loop
+- **THEN** it answers that one problem through its usual classify/route/(solve-or-finish)
+  sequence, emits its turn, and exits
 
 ### Requirement: A routing-mapping tool resolves classification results to a target action
 The system SHALL ship a standalone tool, reachable over a tool-calling protocol, that resolves a

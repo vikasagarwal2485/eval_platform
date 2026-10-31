@@ -441,7 +441,7 @@ export interface AvailableModel {
 }
 
 // ---------------------------------------------------------------- agents (live evaluation)
-export type AgentKind = 'chatbot' | 'reasoning';
+export type AgentKind = 'chatbot' | 'reasoning' | 'router';
 export type AgentStatus = 'active' | 'paused';
 export type AgentLiveness = 'live' | 'idle' | 'offline' | 'paused';
 
@@ -507,6 +507,15 @@ export interface Agent {
   token?: string;
   /** present only on a create/update response that touched declared_models */
   gateway_sync?: GatewaySyncResult;
+  /** add-agent-playground: whether this agent can be spawned from the Playground tab, which catalog
+   * flavor it was marked eligible as, whether a gateway virtual key is currently stored for it (never
+   * the key itself), and - `router`-kind only - the other registered agents it may hand off to, by
+   * name. A list: the platform places no limit on how many, even though today's one reference router
+   * script only ever consumes the first. */
+  playground_eligible: boolean;
+  flavor: string | null;
+  playground_gateway_key_configured: boolean;
+  handoff_agent_names: string[];
 }
 export interface AgentCreate {
   name: string;
@@ -515,13 +524,46 @@ export interface AgentCreate {
   eval_config?: Partial<EvalConfig>;
   rubric?: RubricCriterion[] | null;
   provider_acks?: string[];
+  handoff_agent_names?: string[];
 }
 export interface AgentSettingsUpdate {
+  // `undefined`/omitted leaves kind unchanged - validated server-side (playground-flavor and
+  // hand-off-target consistency; never silently breaks another agent's configuration).
+  kind?: AgentKind;
   declared_models?: DeclaredModels;
   eval_config?: Partial<EvalConfig>;
   rubric?: RubricCriterion[] | null;
   clear_rubric?: boolean;
   provider_acks?: string[];
+  // `undefined`/omitted leaves it unchanged; `[]` explicitly clears it - a list needs no separate
+  // `clear_*` escape hatch, unlike the single-name field this replaced: the empty list already
+  // says exactly that, unambiguously.
+  handoff_agent_names?: string[];
+}
+
+/** `add-agent-playground`: one entry from the static agent-flavor catalog (`GET /agents/catalog`) - a
+ * runnable script this repo ships, not a registered `Agent` row. */
+export interface AgentCatalogFlavor {
+  id: string;
+  kind: AgentKind;
+  description: string;
+  task_slots: string[];
+  accepts: string[];
+}
+
+export type MintStatus = { status: 'ok' | 'error' | 'skipped'; detail?: string };
+
+/** Response shape shared by the three playground-eligibility endpoints (enable/disable/rotate). */
+export interface PlaygroundCredentialsResult extends Agent {
+  /** shown once, exactly like registration/rotation's own `token` field */
+  token?: string;
+  gateway_key_mint?: MintStatus;
+}
+
+export interface PlaygroundSpawnResult {
+  status: 'ok' | 'timeout' | 'error';
+  returncode?: number;
+  stderr?: string;
 }
 
 export type TurnStatus = 'open' | 'ok' | 'error' | 'abandoned';
@@ -586,6 +628,11 @@ export interface AgentTurn {
   input: string;
   output: string;
   reference: string | null;
+  /** The system prompt actually in effect for this turn (post skill-composition), whichever way the
+   * turn was launched (terminal or the platform's own Playground) - `null` only when the agent sent
+   * none at all, never omitted just because it's the script's own hardcoded default rather than an
+   * explicit override (`add-agent-playground`). */
+  system_prompt: string | null;
   error: string | null;
   models: string[];
   models_unknown: boolean;

@@ -10,6 +10,7 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.core import agent_catalog
 from app.core.eligibility import same_model
 from app.core.tokens import display_prefix, generate_token, hash_token, verify_token
 from app.models import (
@@ -156,6 +157,12 @@ def get_skill(session: Session, skill_id: int) -> Skill:
     if not skill:
         raise NotFound(f"skill {skill_id} not found")
     return skill
+
+
+def get_skill_by_name(session: Session, name: str) -> Skill | None:
+    """Used by the agent-token-authenticated skill-fetch endpoint (add-agent-playground) - a script's
+    `--skill NAME` flag names a skill by name, not id, the same way a CLI flag would."""
+    return session.scalar(select(Skill).where(Skill.name == name))
 
 
 def list_skills(session: Session) -> list[Skill]:
@@ -661,6 +668,61 @@ def _check_provider_acks(session: Session, refs: list[str], acks: dict) -> None:
                 raise AckRequired(provider_name)
 
 
+def _check_handoff_agent_names(
+    session: Session, *, own_name: str, kind: str, handoff_agent_names: list[str]
+) -> None:
+    """`add-agent-playground`: a `router`-kind agent SHALL declare at least one hand-off target - a
+    router with none configured could never actually hand a problem off to anything, so this is
+    enforced at registration and on every later settings save, not just checked loosely. Every
+    other kind SHALL declare none (meaningless outside `router`). Each named target must be a real,
+    already-registered agent, distinct from every other entry, and never the router itself - of
+    *any* kind. A hand-off target's own registered `kind` is purely descriptive of that agent's own
+    registration; nothing in the actual spawn mechanism depends on it (`app.core.playground_spawn`'s
+    router branch only ever checks the target is playground-eligible with valid credentials, never
+    its kind) - `classifier_router_agent.py` always spawns `reasoning_agent.py` literally for any
+    target, under that target's own identity, regardless of what kind it is registered as.
+    Restricting this to `reasoning`-kind targets would be baking one script's own behavior into the
+    registry's validation, the same mistake already corrected for `handoff_kinds` (a flavor-specific,
+    spawn-time concern - which kinds of hand-off target a given script actually knows how to use -
+    never a registry-wide limit). The *platform* places no limit on how many a router may declare,
+    nor any constraint on their kind."""
+    if kind != "router":
+        if handoff_agent_names:
+            raise ValueError("handoff_agent_names is only meaningful for a 'router'-kind agent")
+        return
+    if not handoff_agent_names:
+        raise ValueError("a 'router'-kind agent must declare at least one handoff_agent_names entry")
+    if len(set(handoff_agent_names)) != len(handoff_agent_names):
+        raise ValueError("handoff_agent_names must not list the same agent more than once")
+    for name in handoff_agent_names:
+        if name == own_name:
+            raise ValueError("an agent cannot name itself in its own handoff_agent_names")
+        target = get_agent_by_name(session, name)
+        if target is None:
+            raise ValueError(f"handoff_agent_names '{name}' does not name a registered agent")
+
+
+def _check_kind_change(agent: Agent, new_kind: str) -> None:
+    """Refuses a `kind` change that would silently break something else already configured against
+    this agent's *current* kind (`add-agent-playground`) - a no-op when `new_kind` matches what's
+    already stored, so a routine settings save that never touches kind is never newly restricted.
+
+    A hand-off target's kind is unconstrained (`_check_handoff_agent_names`), so changing an
+    agent's kind away from `reasoning` no longer needs checking against routers that name it - the
+    only remaining cross-reference concern is the agent's own playground-flavor consistency (which
+    needs no database lookup of its own - the flavor catalog is static, repo-shipped data)."""
+    if new_kind == agent.kind:
+        return
+    if agent.playground_eligible and agent.flavor:
+        flavor = agent_catalog.get_flavor(agent.flavor)
+        if flavor is not None and flavor.kind != new_kind:
+            raise ValueError(
+                f"'{agent.name}' is playground-eligible as the '{agent.flavor}' flavor (kind "
+                f"'{flavor.kind}'); disable the Playground for it, or choose a kind matching that "
+                "flavor, before changing kind"
+            )
+
+
 def _declared_model_refs(declared_models: dict[str, object]) -> list[str]:
     """Every model reference a `declared_models` map can carry - each entry's primary reference plus its
     fallback, if it has one (`add-declared-model-fallback`) - for the provider-ack check to treat identically."""
@@ -682,11 +744,14 @@ def create_agent(
     eval_config: EvalConfigIn,
     rubric: list[dict] | None,
     provider_acks: list[str] | None = None,
+    handoff_agent_names: list[str] | None = None,
 ) -> tuple[Agent, str]:
     """Returns (agent, raw_token). The raw token is generated here and never stored - only its hash is kept."""
     if session.scalar(select(Agent).where(Agent.name == name)):
         raise Conflict(f"An agent named '{name}' already exists")
     _check_no_self_evaluator(declared_models, eval_config.evaluators)
+    handoff_names = handoff_agent_names or []
+    _check_handoff_agent_names(session, own_name=name, kind=kind, handoff_agent_names=handoff_names)
     acks = _merge_acks({}, provider_acks or [])
     declared_refs = _declared_model_refs(declared_models)
     _check_provider_acks(session, eval_config.evaluators + declared_refs, acks)
@@ -701,6 +766,7 @@ def create_agent(
         eval_config=eval_config.model_dump(),
         rubric=rubric,
         provider_acks=acks,
+        handoff_agent_names=handoff_names,
     )
     session.add(agent)
     session.flush()
@@ -724,16 +790,24 @@ def list_agents(session: Session) -> list[Agent]:
 
 def update_agent_settings(session: Session, agent_id: int, body: AgentSettingsUpdate) -> Agent:
     agent = get_agent(session, agent_id)
+    new_kind = body.kind if body.kind is not None else agent.kind
+    _check_kind_change(agent, new_kind)
     declared = body.declared_models if body.declared_models is not None else agent.declared_models
     eval_cfg = body.eval_config.model_dump() if body.eval_config is not None else dict(agent.eval_config or {})
     evaluators = eval_cfg.get("evaluators", [])
     _check_no_self_evaluator(declared, evaluators)
+    handoff_agent_names = (
+        body.handoff_agent_names if body.handoff_agent_names is not None else agent.handoff_agent_names
+    )
+    _check_handoff_agent_names(session, own_name=agent.name, kind=new_kind, handoff_agent_names=handoff_agent_names)
     acks = _merge_acks(agent.provider_acks or {}, body.provider_acks)
     declared_refs = _declared_model_refs(declared)
     _check_provider_acks(session, evaluators + declared_refs, acks)
+    agent.kind = new_kind
     agent.declared_models = declared
     agent.eval_config = eval_cfg
     agent.provider_acks = acks
+    agent.handoff_agent_names = handoff_agent_names
     if body.clear_rubric:
         agent.rubric = None
     elif body.rubric is not None:
@@ -758,6 +832,53 @@ def rotate_agent_token(session: Session, agent_id: int) -> tuple[Agent, str]:
     agent.token_prefix = display_prefix(raw)
     session.flush()
     return agent, raw
+
+
+# ------------------------------------------------------------------ playground eligibility (add-agent-playground)
+def enable_agent_playground(session: Session, agent_id: int, *, flavor: str) -> tuple[Agent, str]:
+    """Marks `agent_id` playground-eligible for `flavor`, issuing a fresh ingest token exactly like
+    `rotate_agent_token` - a plaintext token from an earlier registration/rotation was never
+    retained (hash-only storage, design D4/D11), so becoming playground-eligible needs a new one to
+    keep a usable, encrypted copy of. Returns `(agent, raw_token)`; the caller (the API layer, which
+    alone knows `Settings.playground_secret_key`) encrypts `raw_token` and stores it via
+    `set_playground_credentials`, and mints/stores the gateway virtual key the same way - this
+    function only touches the registry fields themselves."""
+    agent = get_agent(session, agent_id)
+    raw = generate_token()
+    agent.token_hash = hash_token(raw)
+    agent.token_prefix = display_prefix(raw)
+    agent.playground_eligible = True
+    agent.flavor = flavor
+    session.flush()
+    return agent, raw
+
+
+def disable_agent_playground(session: Session, agent_id: int) -> Agent:
+    """Reversible (spec `agent-playground`: 'Unmarking eligibility leaves the registration itself
+    intact') - clears eligibility, flavor and both stored encrypted credentials, but never touches
+    the agent's name, kind, declared models or history."""
+    agent = get_agent(session, agent_id)
+    agent.playground_eligible = False
+    agent.flavor = None
+    agent.playground_ingest_token_enc = None
+    agent.playground_gateway_key_enc = None
+    session.flush()
+    return agent
+
+
+def set_playground_credentials(
+    session: Session, agent_id: int, *, ingest_token_enc: bytes | None = None, gateway_key_enc: bytes | None = None
+) -> Agent:
+    """Stores the already-encrypted credential bytes the caller computed (`app.core.secrets`) -
+    `None` for either argument leaves that field unchanged, so a gateway-key mint failure doesn't
+    overwrite a previously-stored key with nothing."""
+    agent = get_agent(session, agent_id)
+    if ingest_token_enc is not None:
+        agent.playground_ingest_token_enc = ingest_token_enc
+    if gateway_key_enc is not None:
+        agent.playground_gateway_key_enc = gateway_key_enc
+    session.flush()
+    return agent
 
 
 def verify_agent_token(session: Session, raw_token: str | None) -> Agent | None:
@@ -853,6 +974,7 @@ def apply_turn_start(session: Session, turn: AgentTurn, event, *, was_truncated:
     if not duplicate:
         turn.input = event.input
         turn.reference = event.reference
+        turn.system_prompt = event.system_prompt
         turn.started_at = _parse_event_ts(event.ts) or turn.created_at
         turn.truncated = turn.truncated or was_truncated
     session.flush()

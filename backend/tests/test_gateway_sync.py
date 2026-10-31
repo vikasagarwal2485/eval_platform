@@ -10,7 +10,14 @@ import pytest
 
 from app import repo
 from app.config import Settings
-from app.core.gateway_sync import fallback_group_name, model_group_name, sync_agent_model_groups, to_litellm_params
+from app.core.gateway_sync import (
+    agent_gateway_group_names,
+    fallback_group_name,
+    mint_virtual_key,
+    model_group_name,
+    sync_agent_model_groups,
+    to_litellm_params,
+)
 from app.models import Agent
 
 GATEWAY_URL = "http://gateway.local"
@@ -37,8 +44,8 @@ def _agent(session, declared_models: dict) -> Agent:
 
 
 class _MockGateway:
-    """A minimal in-memory stand-in for the gateway's `/model/info`, `/model/new`, `/model/update` and
-    `/model/delete`, recording every call for assertions."""
+    """A minimal in-memory stand-in for the gateway's `/model/info`, `/model/new`, `/model/update`,
+    `/model/delete` and `/key/generate`, recording every call for assertions."""
 
     def __init__(self, *, static_groups: list[str] | None = None, fail: bool = False):
         self.db_models: dict[str, dict] = {}  # model_id -> {"model_name", "litellm_params"}
@@ -46,6 +53,8 @@ class _MockGateway:
         self.fail = fail
         self.calls: list[tuple[str, str, dict | None]] = []
         self._next_id = 1
+        self._next_key_id = 1
+        self.minted_aliases: set[str] = set()
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         if self.fail:
@@ -74,21 +83,51 @@ class _MockGateway:
         if path == "/model/delete" and request.method == "POST":
             self.db_models.pop(body["id"], None)
             return httpx.Response(200, json={"message": "deleted"})
+        if path == "/key/generate" and request.method == "POST":
+            alias = body.get("key_alias")
+            if alias is not None and alias in self.minted_aliases:
+                # Mirrors litellm's own real behavior: a `key_alias` already in use is rejected -
+                # this mock only accepts a second `/key/generate` for the same alias once it's been
+                # cleared by `/key/delete` first (`gateway_sync.mint_virtual_key`'s pre-delete fix).
+                return httpx.Response(
+                    400, json={"error": f"Key with alias '{alias}' already exists."}
+                )
+            key = f"sk-mock-{self._next_key_id}"
+            self._next_key_id += 1
+            if alias is not None:
+                self.minted_aliases.add(alias)
+            return httpx.Response(200, json={"key": key, "models": body["models"], "key_alias": alias})
+        if path == "/key/delete" and request.method == "POST":
+            for alias in body.get("key_aliases", []):
+                self.minted_aliases.discard(alias)
+            return httpx.Response(200, json={"deleted_keys": body.get("key_aliases", [])})
         return httpx.Response(404)
 
 
 def _patch_gateway(monkeypatch, gw: _MockGateway) -> None:
-    """Points every `httpx.Client(...)` `gateway_sync` creates at `gw` instead of the network. Captures the
-    real `httpx.Client` *before* patching - `httpx` is one shared module object, so patching
-    `app.core.gateway_sync.httpx.Client` also changes what a later `httpx.Client(...)` call in this file's own
-    code would resolve to; calling the saved reference avoids the fake client recursively calling itself."""
+    """Points every `httpx.Client(...)` call AND every bare `httpx.post(...)` call `gateway_sync` makes
+    at `gw` instead of the network - `sync_agent_model_groups` uses a `Client`, `mint_virtual_key` a bare
+    `post()`. Captures the real objects *before* patching - `httpx` is one shared module object, so
+    patching `app.core.gateway_sync.httpx.Client`/`.post` also changes what a later call in this file's
+    own code would resolve to; calling the saved reference avoids the fake client recursively calling
+    itself."""
     real_client = httpx.Client
 
     def fake_client(*args, **kwargs):
         kwargs.pop("base_url", None)
         return real_client(*args, transport=httpx.MockTransport(gw.handler), base_url=GATEWAY_URL, **kwargs)
 
+    def fake_post(url, **kwargs):
+        if gw.fail:
+            raise httpx.ConnectError("connection refused", request=httpx.Request("POST", url))
+        # Routed through a real `httpx.Client`/`MockTransport` pair (not a bare `gw.handler(...)` call) so
+        # the returned `Response` has its `.request` set - `raise_for_status()` needs it, and a bare call
+        # leaves it unset (verified directly: that raises `RuntimeError`, not the intended HTTPStatusError).
+        with real_client(transport=httpx.MockTransport(gw.handler)) as client:
+            return client.post(url, **kwargs)
+
     monkeypatch.setattr("app.core.gateway_sync.httpx.Client", fake_client)
+    monkeypatch.setattr("app.core.gateway_sync.httpx.post", fake_post)
     monkeypatch.setenv("EVAL_GATEWAY_ADMIN_KEY", "admin-key")
 
 
@@ -412,3 +451,96 @@ def test_a_fallback_declared_alongside_a_custom_kind_primary_is_also_never_gatew
         }
     }
     assert mock_gateway.db_models == {}  # neither the primary nor its fallback ever gets a gateway deployment
+
+
+# ------------------------------------------------------------------ add-agent-playground: virtual-key minting
+def test_agent_gateway_group_names_includes_primary_and_fallback(session):
+    agent = _agent(
+        session,
+        {
+            "reasoning": {"model": "qwen3:8b", "fallback": "gemma3:4b"},
+            "generation": "qwen3:8b",
+        },
+    )
+    names = agent_gateway_group_names(session, agent)
+    assert set(names) == {
+        model_group_name("my-reasoner", "reasoning"),
+        fallback_group_name("my-reasoner", "reasoning"),
+        model_group_name("my-reasoner", "generation"),
+    }
+
+
+def test_agent_gateway_group_names_skips_custom_kind_tasks(session):
+    repo.create_provider(
+        session, kind="custom", name="context-classifier", key_env=None, base_url="http://127.0.0.1:8765", ack_at=None
+    )
+    agent = _agent(session, {"classification": "@context-classifier/classify", "routing": "qwen3:8b"})
+    names = agent_gateway_group_names(session, agent)
+    assert names == [model_group_name("my-reasoner", "routing")]
+
+
+def test_mint_virtual_key_posts_scoped_groups_and_returns_the_key(session, monkeypatch):
+    agent = _agent(session, {"reasoning": "qwen3:8b"})
+    captured = {}
+
+    def fake_post(url, json=None, headers=None, timeout=None):
+        captured["url"] = url
+        captured["json"] = json
+        captured["headers"] = headers
+        return httpx.Response(200, json={"key": "sk-minted"}, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr("app.core.gateway_sync.httpx.post", fake_post)
+    monkeypatch.setenv("EVAL_GATEWAY_ADMIN_KEY", "admin-key")
+    result = mint_virtual_key(session, agent, _settings())
+    assert result.status == "ok"
+    assert result.key == "sk-minted"
+    assert captured["url"] == f"{GATEWAY_URL}/key/generate"
+    assert captured["json"] == {"models": [model_group_name("my-reasoner", "reasoning")], "key_alias": "my-reasoner"}
+    assert captured["headers"] == {"Authorization": "Bearer admin-key"}
+
+
+def test_mint_virtual_key_is_skipped_without_a_configured_gateway(session):
+    agent = _agent(session, {"reasoning": "qwen3:8b"})
+    result = mint_virtual_key(session, agent, Settings())
+    assert result.status == "skipped"
+    assert result.key is None
+
+
+def test_mint_virtual_key_is_skipped_without_an_admin_key(session, monkeypatch):
+    agent = _agent(session, {"reasoning": "qwen3:8b"})
+    monkeypatch.delenv("EVAL_GATEWAY_ADMIN_KEY", raising=False)
+    result = mint_virtual_key(session, agent, _settings())
+    assert result.status == "skipped"
+
+
+def test_mint_virtual_key_clears_a_previous_key_under_the_same_alias_before_re_minting(session, mock_gateway):
+    """Found live: litellm enforces globally unique `key_alias` values, so a second mint for the
+    same agent (re-enabling playground, rotating, or a declared-model change re-mint) used to 400
+    with "Key with alias '...' already exists" - this agent's alias is never new on a re-mint."""
+    agent = _agent(session, {"reasoning": "qwen3:8b"})
+    first = mint_virtual_key(session, agent, _settings())
+    assert first.status == "ok"
+
+    second = mint_virtual_key(session, agent, _settings())
+    assert second.status == "ok"
+    assert second.key != first.key  # a genuinely fresh key, not the same one reused
+
+    # A pre-delete runs before every mint, unconditionally (simpler and more robust than parsing
+    # litellm's own error text to detect "alias already exists" reactively) - the first is a no-op
+    # (nothing minted yet under this alias), the second actually clears the first mint's key.
+    delete_calls = [c for c in mock_gateway.calls if c[1] == "/key/delete"]
+    assert len(delete_calls) == 2
+    assert all(c[2] == {"key_aliases": ["my-reasoner"]} for c in delete_calls)
+
+
+def test_mint_virtual_key_reports_a_failure_without_raising(session, monkeypatch):
+    agent = _agent(session, {"reasoning": "qwen3:8b"})
+
+    def fake_post(url, json=None, headers=None, timeout=None):
+        raise httpx.ConnectError("connection refused", request=httpx.Request("POST", url))
+
+    monkeypatch.setattr("app.core.gateway_sync.httpx.post", fake_post)
+    monkeypatch.setenv("EVAL_GATEWAY_ADMIN_KEY", "admin-key")
+    result = mint_virtual_key(session, agent, _settings())
+    assert result.status == "error"
+    assert result.key is None

@@ -5,6 +5,7 @@ import type { DeclaredModels } from '../api/types';
 import AgentQualityPanel from '../components/agents/AgentQualityPanel';
 import AgentSettingsPanel from '../components/agents/AgentSettingsPanel';
 import AgentTurnsPanel from '../components/agents/AgentTurnsPanel';
+import PlaygroundPanel from '../components/agents/PlaygroundPanel';
 import { ErrorBox, Spinner } from '../components/ui';
 
 /** The model reference out of one declared_models entry, whichever shape it is (mirrors the backend's
@@ -13,12 +14,13 @@ function declaredModelRef(entry: DeclaredModels[string]): string {
   return typeof entry === 'string' ? entry : entry.model;
 }
 
-const TABS = ['live', 'conversations', 'quality', 'settings'] as const;
+const TABS = ['live', 'conversations', 'quality', 'playground', 'settings'] as const;
 type Tab = (typeof TABS)[number];
 const TAB_LABEL: Record<Tab, string> = {
   live: 'Live',
   conversations: 'Conversations',
   quality: 'Quality',
+  playground: 'Playground',
   settings: 'Settings',
 };
 
@@ -84,6 +86,7 @@ export default function AgentPage() {
               {t === 'live' && <AgentTurnsPanel agentId={agent.id} mode="live" />}
               {t === 'conversations' && <AgentTurnsPanel agentId={agent.id} mode="conversations" />}
               {t === 'quality' && <AgentQualityPanel agentId={agent.id} />}
+              {t === 'playground' && <PlaygroundPanel agent={agent} />}
               {t === 'settings' && <AgentSettingsPanel agent={agent} />}
             </div>
           ),

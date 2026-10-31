@@ -19,6 +19,9 @@ dependencies = [
   # experimental upstream) - bump deliberately, not via a floor constraint.
   "opentelemetry-sdk==1.45.1",
   "opentelemetry-exporter-otlp-proto-grpc==1.45.1",
+  # add-agent-playground: Fernet symmetric encryption for a playground-eligible agent's stored
+  # spawn credentials (design.md D2) - the platform's first reversibly-stored secret.
+  "cryptography>=42",
 ]
 
 [project.optional-dependencies]

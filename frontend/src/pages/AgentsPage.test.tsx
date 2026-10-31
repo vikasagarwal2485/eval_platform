@@ -1,4 +1,4 @@
-import { screen } from '@testing-library/react';
+import { screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { jsonError, mockApi, renderApp } from '../test/utils';
 import AgentsPage from './AgentsPage';
@@ -75,6 +75,60 @@ describe('registration', () => {
     expect(screen.queryByText('RAW-TOKEN-VALUE')).not.toBeInTheDocument();
   });
 
+  it('does not show the hand-off agents picker for non-router kinds', async () => {
+    const { user } = setup([agent({ name: 'reasoner', kind: 'reasoning' })]);
+    await user.click(await screen.findByRole('button', { name: 'Register agent' }));
+    expect(screen.queryByRole('group', { name: 'Hand-off agents' })).not.toBeInTheDocument();
+  });
+
+  it('requires at least one hand-off agent before a router-kind agent can be registered', async () => {
+    const { user } = setup([agent({ name: 'reasoner', kind: 'reasoning' })]);
+    await user.click(await screen.findByRole('button', { name: 'Register agent' }));
+    await user.type(screen.getByLabelText('Name'), 'new-router');
+    await user.selectOptions(screen.getByLabelText('Kind'), 'router');
+    const group = await screen.findByRole('group', { name: 'Hand-off agents' });
+    const registerButton = screen.getByRole('button', { name: 'Register' });
+    expect(registerButton).toBeDisabled();
+    await user.click(within(group).getByLabelText('reasoner', { exact: false }));
+    expect(registerButton).toBeEnabled();
+  });
+
+  it('sends the selected hand-off agents when registering a router', async () => {
+    const { user, calls } = setup([agent({ name: 'reasoner', kind: 'reasoning' })], {
+      'POST /agents': { ...agent({ name: 'new-router', kind: 'router' }), token: 'RAW-TOKEN-VALUE' },
+    });
+    await user.click(await screen.findByRole('button', { name: 'Register agent' }));
+    await user.type(screen.getByLabelText('Name'), 'new-router');
+    await user.selectOptions(screen.getByLabelText('Kind'), 'router');
+    const group = await screen.findByRole('group', { name: 'Hand-off agents' });
+    await user.click(within(group).getByLabelText('reasoner', { exact: false }));
+    await user.selectOptions(screen.getByLabelText('Task type for declared model 1'), 'routing');
+    await user.type(screen.getByLabelText('Model for declared model 1'), 'qwen3:8b');
+    await user.click(screen.getByRole('button', { name: 'Register' }));
+    await screen.findByText('RAW-TOKEN-VALUE');
+    const post = calls.find((c) => c.method === 'POST' && c.path === '/agents');
+    expect(post?.body.handoff_agent_names).toEqual(['reasoner']);
+  });
+
+  it('resets kind and hand-off agents after finishing registration', async () => {
+    const { user } = setup([agent({ name: 'reasoner', kind: 'reasoning' })], {
+      'POST /agents': { ...agent({ name: 'new-router', kind: 'router' }), token: 'RAW-TOKEN-VALUE' },
+    });
+    await user.click(await screen.findByRole('button', { name: 'Register agent' }));
+    await user.type(screen.getByLabelText('Name'), 'new-router');
+    await user.selectOptions(screen.getByLabelText('Kind'), 'router');
+    const group = await screen.findByRole('group', { name: 'Hand-off agents' });
+    await user.click(within(group).getByLabelText('reasoner', { exact: false }));
+    await user.selectOptions(screen.getByLabelText('Task type for declared model 1'), 'routing');
+    await user.type(screen.getByLabelText('Model for declared model 1'), 'qwen3:8b');
+    await user.click(screen.getByRole('button', { name: 'Register' }));
+    await screen.findByText('RAW-TOKEN-VALUE');
+    await user.click(screen.getByRole('button', { name: 'Done' }));
+    await user.click(await screen.findByRole('button', { name: 'Register agent' }));
+    expect((screen.getByLabelText('Kind') as HTMLSelectElement).value).toBe('chatbot');
+    expect(screen.queryByRole('group', { name: 'Hand-off agents' })).not.toBeInTheDocument();
+  });
+
   it('sends a temperature override as a declared-model object, not a plain string', async () => {
     const { user, calls } = setup([], {
       'POST /agents': { ...agent({ name: 'new-bot' }), token: 'RAW-TOKEN-VALUE' },
@@ -117,6 +171,7 @@ describe('registration', () => {
       'Reasoning',
       'Generation',
       'Classification',
+      'Routing',
       'Default (single, undifferentiated task)',
     ]);
     await user.selectOptions(taskSelect, 'reasoning');

@@ -69,6 +69,20 @@ def test_oversized_output_is_truncated_not_rejected():
     assert len(result.accepted[0].output) < len(huge)
 
 
+def test_oversized_system_prompt_is_truncated_not_rejected():
+    huge = "x" * (MAX_TEXT_CHARS + 500)
+    result = validate_batch([_turn_start(system_prompt=huge)])
+    assert len(result.accepted) == 1
+    assert result.truncated_count == 1
+    assert result.accepted[0].system_prompt.endswith("[truncated]")
+
+
+def test_absent_system_prompt_stays_none_not_an_empty_string():
+    result = validate_batch([_turn_start()])
+    assert result.accepted[0].system_prompt is None
+    assert result.truncated_count == 0
+
+
 def test_unknown_event_type_is_rejected_individually():
     result = validate_batch(
         [_turn_start(), {"v": 1, "event_id": "e9", "session_id": "s1", "turn_id": "t1", "type": "span.delta"}]

@@ -44,6 +44,13 @@ log = logging.getLogger(__name__)
 GEN_AI_REQUEST_MODEL = "gen_ai.request.model"
 GEN_AI_USAGE_INPUT_TOKENS = "gen_ai.usage.input_tokens"
 GEN_AI_USAGE_OUTPUT_TOKENS = "gen_ai.usage.output_tokens"
+# The portion of GEN_AI_USAGE_OUTPUT_TOKENS spent on reasoning/thinking (e.g. chain-of-thought) -
+# a genuine provider-reported count when the call reports one (none of this platform's current
+# reference agents ever do - all local Ollama), otherwise apportioned from `thinking`/`output`
+# text length against the call's total completion_tokens and paired with EVAL_REASONING_TOKENS_APPROX
+# so an estimate is never presented as a fact (mirrors the Runner's own identical approximation in
+# `app/core/metrics.py`'s `thinking_tokens`/`thinking_tokens_approx`).
+GEN_AI_USAGE_REASONING_OUTPUT_TOKENS = "gen_ai.usage.reasoning.output_tokens"
 # A closed enum ("chat"/"generate_content"/"text_completion"/"embeddings"/"retrieval"/
 # "create_agent"/"invoke_agent"/"execute_tool"/"invoke_workflow") naming the *kind of API call* a
 # span represents - complementary to, not a replacement for, `EVAL_KIND` below: every one of
@@ -84,6 +91,11 @@ EVAL_ERROR = "eval.error"  # ditto - the error message a failed tool call report
 # agent's own task labels - every call here would be "chat" alike), so this stays in our own `eval.`
 # namespace rather than a fabricated `gen_ai.*` name implying spec compliance that doesn't exist.
 EVAL_KIND = "eval.kind"
+# Paired with GEN_AI_USAGE_REASONING_OUTPUT_TOKENS whenever that count is an apportioned estimate
+# rather than a provider-reported figure - GenAI semconv has no "this number is approximate" flag
+# of its own, so this follows the same `eval.*` precedent as EVAL_KIND above. Never set when the
+# reasoning-token attribute itself is absent (nothing to caveat).
+EVAL_REASONING_TOKENS_APPROX = "eval.reasoning_tokens_approx"
 
 
 def setup_tracing(otlp_endpoint: str | None, *, service_name: str = "agent") -> TracerProvider | None:

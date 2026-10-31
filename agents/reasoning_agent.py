@@ -135,6 +135,7 @@ def call_llm(
     *,
     timeout: float = 120.0,
     fallback_group: str | None = None,
+    system_prompt: str | None = None,
 ) -> tuple[str, dict]:
     """One completion call, through the gateway when `gateway_url` is set (the normal, task-routed path) or
     directly otherwise (local testing). Returns `(content, usage)`; `usage["model"]` carries the concrete model
@@ -150,10 +151,16 @@ def call_llm(
     `completion()` again with whatever string is in `fallbacks`, unprefixed, which fails with `LLM Provider NOT
     provided` exactly like an unprefixed primary model would (this is a *client-side* SDK mechanism, distinct
     from - and with different prefix requirements than - sending `fallbacks` directly to the gateway's own REST
-    `/chat/completions` endpoint, which was verified separately and does not need this prefix)."""
+    `/chat/completions` endpoint, which was verified separately and does not need this prefix).
+
+    `system_prompt` (`add-agent-playground`) is sent as a leading `system`-role message when given - unset by
+    default, matching this agent's behavior before this parameter existed."""
     started = time.monotonic()
     call_model = model
-    kwargs: dict = {"model": model, "messages": [{"role": "user", "content": prompt}], "timeout": timeout}
+    messages = ([{"role": "system", "content": system_prompt}] if system_prompt else []) + [
+        {"role": "user", "content": prompt}
+    ]
+    kwargs: dict = {"model": model, "messages": messages, "timeout": timeout}
     if gateway_url:
         # The SDK needs an explicit provider hint to treat an arbitrary `api_base` as an OpenAI-compatible
         # endpoint - a bare group name fails with `BadRequestError: LLM Provider NOT provided` (verified
@@ -167,22 +174,34 @@ def call_llm(
             kwargs["fallbacks"] = [f"openai/{fallback_group}"]
     resp = litellm.completion(**kwargs)
     usage = resp.usage
-    return resp.choices[0].message.content or "", {
+    message = resp.choices[0].message
+    return message.content or "", {
         "latency_ms": (time.monotonic() - started) * 1000,
         "prompt_tokens": getattr(usage, "prompt_tokens", None) if usage else None,
         "completion_tokens": getattr(usage, "completion_tokens", None) if usage else None,
         "model": _concrete_model(resp, model),
+        # A thinking-capable Ollama model's separate "thinking" text, normalized by litellm onto
+        # this standard field name regardless of whether the call went direct or through the
+        # gateway (verified directly: litellm's Ollama chat transformation remaps Ollama's own
+        # `message.thinking` to `message.reasoning_content` on the response it returns here) -
+        # `add-agent-playground`. `None` for a model that doesn't produce one.
+        "thinking": getattr(message, "reasoning_content", None),
     }
 
 
-def _span(t, requested_model: str, output: str, usage: dict, *, kind: str) -> None:
+def _span(t, requested_model: str, output: str, usage: dict, *, kind: str, thinking: str | None = None) -> None:
     """`kind` (add-otel-tracing) names this call's role (classify/plan/solve/verify) - every call shares
     the same span name ("gen_ai.chat"), so without it there is no way to tell which of the turn's four
-    calls a given span was for, especially when `--model` makes all four use the same literal model."""
+    calls a given span was for, especially when `--model` makes all four use the same literal model.
+
+    `thinking` (`add-agent-playground`) is the call's own separate reasoning text, when the caller
+    chooses to forward it - never read implicitly from `usage` here, so each call site stays
+    explicit about whether this call's thinking content is meaningful to record (the classify call
+    never passes it: its result is a short label, not a reasoning step - spec `reference-agents`)."""
     t.llm_call(
         model=usage.get("model") or requested_model, output=output,
         prompt_tokens=usage.get("prompt_tokens"), completion_tokens=usage.get("completion_tokens"),
-        kind=kind,
+        kind=kind, thinking=thinking,
     )
 
 
@@ -201,6 +220,7 @@ def solve_one(
     reasoning_fallback_group: str | None = None,
     generation_fallback_group: str | None = None,
     classification_fallback_group: str | None = None,
+    system_prompt: str | None = None,
 ) -> str:
     """Classify -> plan -> solve -> verify, each its own LLM span under one turn (`add-classification-task-
     routing` adds the classify step ahead of plan - a `call_llm()` call like the other three, nothing new about
@@ -215,7 +235,11 @@ def solve_one(
     (`add-declared-model-fallback`) are each passed on the matching calls' underlying request as the gateway
     group to retry against if the primary group is unreachable - `None` (the default) passes no fallback,
     exactly as before this parameter existed. The classification result is recorded but not otherwise used -
-    see design.md's Non-Goals: changing plan/solve/verify's prompts based on it is a separate, future change."""
+    see design.md's Non-Goals: changing plan/solve/verify's prompts based on it is a separate, future change.
+
+    `system_prompt` (`add-agent-playground`) is sent on the plan, solve and verify calls only - the
+    classification call uses no free-form prompt, so there is nothing for a system prompt to influence
+    there (spec `reference-agents`: "the classification call... is unaffected")."""
     reasoning_model = model or reasoning_group
     generation_model = model or generation_group
     classification_model = model or classification_group
@@ -224,7 +248,7 @@ def solve_one(
     generation_fallback = None if model else generation_fallback_group
     classification_fallback = None if model else classification_fallback_group
 
-    with client.turn(session_id, input=problem, reference=reference) as t:
+    with client.turn(session_id, input=problem, reference=reference, system_prompt=system_prompt) as t:
         _classification, classify_usage = call_llm(
             effective_gateway_url, gateway_key, classification_model, CLASSIFY_PROMPT.format(problem=problem),
             fallback_group=classification_fallback,
@@ -233,23 +257,23 @@ def solve_one(
 
         plan, plan_usage = call_llm(
             effective_gateway_url, gateway_key, reasoning_model, PLAN_PROMPT.format(problem=problem),
-            fallback_group=reasoning_fallback,
+            fallback_group=reasoning_fallback, system_prompt=system_prompt,
         )
-        _span(t, reasoning_model, plan, plan_usage, kind="plan")
+        _span(t, reasoning_model, plan, plan_usage, kind="plan", thinking=plan_usage.get("thinking"))
 
         solution, solve_usage = call_llm(
             effective_gateway_url, gateway_key, generation_model,
             SOLVE_PROMPT.format(problem=problem, plan=plan),
-            fallback_group=generation_fallback,
+            fallback_group=generation_fallback, system_prompt=system_prompt,
         )
-        _span(t, generation_model, solution, solve_usage, kind="solve")
+        _span(t, generation_model, solution, solve_usage, kind="solve", thinking=solve_usage.get("thinking"))
 
         final, verify_usage = call_llm(
             effective_gateway_url, gateway_key, reasoning_model,
             VERIFY_PROMPT.format(problem=problem, solution=solution),
-            fallback_group=reasoning_fallback,
+            fallback_group=reasoning_fallback, system_prompt=system_prompt,
         )
-        _span(t, reasoning_model, final, verify_usage, kind="verify")
+        _span(t, reasoning_model, final, verify_usage, kind="verify", thinking=verify_usage.get("thinking"))
 
         t.finish(final)
     return final
@@ -283,6 +307,7 @@ def run_once(
     reasoning_fallback_group: str | None = None,
     generation_fallback_group: str | None = None,
     classification_fallback_group: str | None = None,
+    system_prompt: str | None = None,
 ) -> None:
     session_id = uuid.uuid4().hex
     try:
@@ -291,7 +316,7 @@ def run_once(
             reasoning_group=reasoning_group, generation_group=generation_group,
             classification_group=classification_group,
             reasoning_fallback_group=reasoning_fallback_group, generation_fallback_group=generation_fallback_group,
-            classification_fallback_group=classification_fallback_group,
+            classification_fallback_group=classification_fallback_group, system_prompt=system_prompt,
         )
     except openai.OpenAIError as exc:
         # Covers every exception litellm raises (connection, auth, rate-limit, bad-request, ...) - all of
@@ -405,8 +430,29 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=os.environ.get("EVAL_OTEL_ENDPOINT"),
         help="OTLP gRPC endpoint for real tracing, e.g. localhost:4317 (default: $EVAL_OTEL_ENDPOINT)",
     )
+    p.add_argument(
+        "--system-prompt",
+        default=None,
+        help="Sent as a leading system-role message on the plan/solve/verify calls (add-agent-playground). "
+        "Unset by default (no system message, matching this agent's behavior before this flag existed). "
+        "The classification call is unaffected.",
+    )
+    p.add_argument(
+        "--skill",
+        action="append",
+        default=[],
+        dest="skills",
+        metavar="NAME",
+        help="Fetch a named skill's instructions from the platform and prepend them to --system-prompt "
+        "(add-agent-playground). Repeatable; applied in the order given.",
+    )
     g = p.add_mutually_exclusive_group(required=True)
-    g.add_argument("--problem", help="A single problem to solve")
+    g.add_argument("--problem", dest="problem", help="A single problem to solve")
+    g.add_argument(
+        "--task", dest="problem",
+        help="Alias for --problem (add-agent-playground - a uniform one-shot input flag across every "
+        "catalog flavor).",
+    )
     g.add_argument("--suite", type=Path, help="A suite file (.json/.yaml) whose reasoning cases to replay")
     return p
 
@@ -465,8 +511,37 @@ def _discover_agent_name(platform_url: str, token: str) -> str | None:
         return None
 
 
+def _fetch_skill(platform_url: str, token: str, name: str) -> str:
+    """One skill's instructions, by name (`add-agent-playground`) - see `chatbot.py`'s identical
+    helper; duplicated rather than shared, matching this module's existing `_discover_agent_name()`
+    duplication convention."""
+    try:
+        resp = httpx.get(
+            f"{platform_url.rstrip('/')}/api/ingest/v1/skills/{name}",
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=30.0,
+        )
+        resp.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        raise SystemExit(f"could not fetch skill '{name}': {exc.response.status_code} {exc.response.text}") from exc
+    except httpx.HTTPError as exc:
+        raise SystemExit(f"could not fetch skill '{name}': {exc}") from exc
+    return resp.json()["instructions"]
+
+
+def compose_system_prompt(base_prompt: str | None, skill_instructions: list[str]) -> str | None:
+    """Prepends each skill's instructions, in the order given, ahead of `base_prompt` - see
+    `chatbot.py`'s identical helper. Returns `None` when there is neither a base prompt nor any
+    skill, so `call_llm()` sends no system message at all, exactly as before this flag existed."""
+    parts = [*skill_instructions, base_prompt] if base_prompt else list(skill_instructions)
+    parts = [p for p in parts if p]
+    return "\n\n".join(parts) if parts else None
+
+
 def main(argv: list[str] | None = None) -> None:
     args = build_arg_parser().parse_args(argv)
+    skill_instructions = [_fetch_skill(args.platform_url, args.token, name) for name in args.skills]
+    system_prompt = compose_system_prompt(args.system_prompt, skill_instructions)
     if args.model:
         # No gateway call of any kind happens in this mode (solve_one's `model or ...` always picks `model`
         # for all four calls) - discovery would be a pointless network round-trip, so it's skipped entirely.
@@ -508,6 +583,7 @@ def main(argv: list[str] | None = None) -> None:
                 reasoning_fallback_group=args.reasoning_fallback_group,
                 generation_fallback_group=args.generation_fallback_group,
                 classification_fallback_group=args.classification_fallback_group,
+                system_prompt=system_prompt,
             )
     finally:
         client.close()

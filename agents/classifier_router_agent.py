@@ -6,10 +6,16 @@ Per turn: (1) **classify** the problem via an external, non-LLM context-classifi
 not an `llm` span, explicitly exempt from the gateway-only constraint below; (2) **route** - a single
 gateway-routed LLM call, given the classifier's result, that must call the `resolve_route` tool (over MCP)
 to decide what happens next - the tool's own result *is* the routing decision, not anything the LLM says
-afterwards; (3) **act** - either hand the problem to the existing `reasoning_agent.py` as its own,
-separately-registered subprocess (the "handoff" branch), or finish the turn immediately with a canned
-response and no further model call (the "short_circuit" branch). An unmapped classification result ends the
-turn in a visible error rather than guessing a branch.
+afterwards; (3) **act** - either finish the turn immediately with a canned response and no further model
+call (the "short_circuit" branch), or hand the problem off to one of two kinds of separately-registered
+subprocess (the "handoff" branch, `add-chatbot-handoff`): the existing `reasoning_agent.py`, for a problem
+the routing-mapping tool judged needs multi-step reasoning, or `chatbot.py`, for one it judged simple enough
+for a single-call chatbot. The routing decision's `target_kind` (`"reasoning"`, the default for backward
+compatibility, or `"chatbot"`) picks which; `--reasoning-agent-token`/`--chatbot-agent-token` each name
+*which* registered agent that handoff actually runs as, independently of the routing decision itself - see
+their own help text. An unmapped classification result ends the turn in a visible error rather than
+guessing a branch; so does a routing decision that wants a hand-off kind this run was never given
+credentials for.
 
 Built with LangGraph (a small `StateGraph`: classify -> route -> a conditional edge to short_circuit/handoff/
 no_match) and LangChain's `ChatOpenAI` for the one real LLM call this agent makes. That call is never made
@@ -33,11 +39,19 @@ failing to start.
 `--routing-fallback-group` (`add-declared-model-fallback`) names a gateway group to fall back to if the
 routing call's primary group is unreachable - unset by default.
 
-The reasoning (handoff) branch spawns `agents/reasoning_agent.py` as its own subprocess, with its own
+The reasoning-handoff branch spawns `agents/reasoning_agent.py` as its own subprocess, with its own
 platform token/gateway key (`--reasoning-agent-token`/`--reasoning-agent-gateway-key`) - that subprocess
-registers its own turn, under its own agent identity, fully gateway-routed exactly as already proven. This
-orchestrator's own turn records the hand-off and its result as a `tool` span, never the sub-agent's own LLM
-spans.
+registers its own turn, under its own agent identity, fully gateway-routed exactly as already proven. The
+chatbot-handoff branch (`add-chatbot-handoff`) likewise spawns `agents/chatbot.py` as its own subprocess,
+with its own platform token (`--chatbot-agent-token`) - `chatbot.py` never talks to the gateway at all (no
+corresponding gateway-key flag exists for it), so it's spawned with a plain Ollama URL instead
+(`--chatbot-agent-ollama-url`). `chatbot.py` itself has no self-discovery of its own model (unlike
+`reasoning_agent.py`'s group-name discovery), so this agent discovers the chatbot target's declared model
+on its behalf via `whoami()`, using the target's own token, and passes it explicitly as `--model`. Either
+flag is optional - a run that never needs a given hand-off kind need not supply credentials for it, but a
+routing decision that *does* want that kind without the matching flag ends the turn in a visible error.
+This orchestrator's own turn records the hand-off and its result as a `tool` span, never the sub-agent's own
+LLM spans.
 
 Usage:
     # the normal case - routing group and classifier address are discovered from this agent's own registration:
@@ -45,6 +59,7 @@ Usage:
         --gateway-url http://localhost:4000 --gateway-key <this-agent's-virtual-key> \
         --reasoning-agent-token <reasoning-agent's-ingest-token> \
         --reasoning-agent-gateway-key <reasoning-agent's-virtual-key> \
+        --chatbot-agent-token <chatbot-agent's-ingest-token> \
         --problem "Apple stock surged today after a strong earnings report."
     # override discovery (e.g. to point this run at a different agent's group, or a different classifier):
     python -m classifier_router_agent --platform-url ... --token ... --gateway-url ... --gateway-key ... \
@@ -172,7 +187,9 @@ def make_routing_llm(
     return ChatOpenAI(**kwargs)
 
 
-def routing_decision(llm: ChatOpenAI, classification: dict, call_tool=call_resolve_route) -> tuple[dict, str, dict]:
+def routing_decision(
+    llm: ChatOpenAI, classification: dict, call_tool=call_resolve_route, *, system_prompt: str | None = None,
+) -> tuple[dict, str, dict]:
     """The bounded routing step: one LLM call (bound with the `resolve_route` tool, required to call it),
     executing only the first tool call it requests, and using that tool's own return value directly as the
     final routing decision (design.md Decision 5 - revised during implementation to drop an earlier draft's
@@ -180,7 +197,10 @@ def routing_decision(llm: ChatOpenAI, classification: dict, call_tool=call_resol
     result, without depending on a model to correctly restate a JSON object verbatim).
 
     Returns `(decision, concrete_model, usage)` - the concrete model and usage are this one LLM call's,
-    recorded as the turn's single "routing" span; `call_tool` is injectable for tests."""
+    recorded as the turn's single "routing" span; `call_tool` is injectable for tests.
+
+    `system_prompt` (`add-agent-playground`) overrides the hardcoded `ROUTING_SYSTEM_PROMPT` when
+    given - unset by default, matching this agent's behavior before this parameter existed."""
     tool_schema = {
         "type": "function",
         "function": {
@@ -193,7 +213,7 @@ def routing_decision(llm: ChatOpenAI, classification: dict, call_tool=call_resol
             },
         },
     }
-    messages = [SystemMessage(ROUTING_SYSTEM_PROMPT), HumanMessage(json.dumps(classification))]
+    messages = [SystemMessage(system_prompt or ROUTING_SYSTEM_PROMPT), HumanMessage(json.dumps(classification))]
     response = llm.bind_tools([tool_schema]).invoke(messages)
     if not response.tool_calls:
         raise RoutingToolNotCalled("the routing model did not call resolve_route")
@@ -244,6 +264,64 @@ def spawn_reasoning_agent(
     return result.stdout.strip()
 
 
+# ------------------------------------------------------------------ handoff (chatbot branch, add-chatbot-handoff)
+def _discover_chatbot_model(platform_url: str, token: str) -> str | None:
+    """The chatbot hand-off target's own declared model, discovered on its behalf via `whoami()` using
+    *its* token (not this router's own) - `chatbot.py` itself has no self-discovery of its own model
+    (unlike `reasoning_agent.py`'s group-name discovery), so this agent discovers it instead, the same
+    best-effort way `_discover_agent_name()` discovers the target's name. Falls back to `None` (letting
+    `chatbot.py`'s own hardcoded `--model` default apply) when discovery fails or the target declares no
+    `default` model - never blocks the handoff."""
+    try:
+        declared = whoami(platform_url, token).get("declared_models") or {}
+    except httpx.HTTPError:
+        return None
+    entry = declared.get("default")
+    if entry is None:
+        return None
+    return entry.get("model") if isinstance(entry, dict) else entry
+
+
+def spawn_chatbot_agent(
+    problem: str,
+    *,
+    platform_url: str,
+    chatbot_agent_token: str,
+    ollama_url: str = "http://localhost:11434",
+    model: str | None = None,
+    otel_endpoint: str | None = None,
+    timeout: float = 600.0,
+) -> str:
+    """Spawns `agents/chatbot.py` as its own subprocess, mirroring `spawn_reasoning_agent()`'s design
+    (design.md D8) - its own platform credentials, registering its own, separate turn under its own
+    agent identity. Unlike the reasoning branch, `chatbot.py` never talks to the gateway (it has no
+    `--gateway-key` flag at all), so this is spawned with a plain Ollama URL rather than gateway
+    credentials. `model` is the hand-off target's own discovered declared model
+    (`_discover_chatbot_model()`); when `None`, `chatbot.py`'s own hardcoded default applies instead, so
+    this still starts rather than failing on a discovery miss."""
+    cmd = [
+        sys.executable,
+        "-m",
+        "chatbot",
+        "--platform-url",
+        platform_url,
+        "--token",
+        chatbot_agent_token,
+        "--ollama-url",
+        ollama_url,
+        "--task",
+        problem,
+    ]
+    if model:
+        cmd += ["--model", model]
+    if otel_endpoint:
+        cmd += ["--otel-endpoint", otel_endpoint]
+    result = subprocess.run(cmd, cwd=str(AGENTS_DIR), capture_output=True, text=True, timeout=timeout)
+    if result.returncode != 0:
+        raise RuntimeError(f"chatbot exited with {result.returncode}: {result.stderr.strip()}")
+    return result.stdout.strip()
+
+
 # ------------------------------------------------------------------ the graph
 class RouterState(TypedDict, total=False):
     turn: Any  # eval_agent_sdk.Turn - spans are recorded directly from inside each node
@@ -251,13 +329,16 @@ class RouterState(TypedDict, total=False):
     classifier_url: str
     llm: Any  # ChatOpenAI bound to the routing group
     platform_url: str
-    reasoning_agent_token: str
+    reasoning_agent_token: str | None
     gateway_url: str
-    reasoning_agent_gateway_key: str
-    reasoning_agent_otel_endpoint: str | None
+    reasoning_agent_gateway_key: str | None
+    chatbot_agent_token: str | None  # add-chatbot-handoff
+    chatbot_agent_ollama_url: str  # add-chatbot-handoff
+    handoff_otel_endpoint: str | None  # forwarded as-is to whichever hand-off subprocess is spawned
     classification: dict
     decision: dict
     final_answer: str
+    system_prompt: str | None
 
 
 def _classify_node(state: RouterState) -> dict:
@@ -277,7 +358,10 @@ def _route_node(state: RouterState) -> dict:
     # `call_tool=call_resolve_route` is passed explicitly (not left to routing_decision()'s own default)
     # so it resolves this module global at call time, not def time - letting tests monkeypatch
     # `call_resolve_route` and have it actually take effect here.
-    decision, model, usage = routing_decision(state["llm"], state["classification"], call_tool=call_resolve_route)
+    decision, model, usage = routing_decision(
+        state["llm"], state["classification"], call_tool=call_resolve_route,
+        system_prompt=state.get("system_prompt"),
+    )
     state["turn"].llm_call(
         model=model,
         output=json.dumps(decision),
@@ -302,24 +386,68 @@ def _short_circuit_node(state: RouterState) -> dict:
     return {"final_answer": final}
 
 
+def _missing_handoff_credentials_error(target_kind: str) -> RuntimeError:
+    flag = "--reasoning-agent-token/--reasoning-agent-gateway-key" if target_kind == "reasoning" else (
+        "--chatbot-agent-token"
+    )
+    return RuntimeError(
+        f"the routing decision wants a '{target_kind}' hand-off target, but {flag} "
+        f"was not given to this run"
+    )
+
+
 def _handoff_node(state: RouterState) -> dict:
     decision = state["decision"]
-    description = "Spawns the reference reasoning agent as a subprocess and returns its final answer"
+    # `target_kind` (add-chatbot-handoff) picks which kind of hand-off target this decision wants -
+    # "reasoning" is the default when a routing rule omits it, matching this agent's behavior before
+    # this field existed (every existing `routes.yaml` rule, and any other rule set written before
+    # this change, still resolves to the reasoning branch unchanged).
+    target_kind = decision.get("target_kind", "reasoning")
+    if target_kind == "reasoning":
+        token, gateway_key = state.get("reasoning_agent_token"), state.get("reasoning_agent_gateway_key")
+        if not token or not gateway_key:
+            raise _missing_handoff_credentials_error(target_kind)
+    elif target_kind == "chatbot":
+        token = state.get("chatbot_agent_token")
+        if not token:
+            raise _missing_handoff_credentials_error(target_kind)
+    else:
+        raise ValueError(f"routing decision named an unsupported hand-off target_kind: {target_kind!r}")
+
+    # The routing-mapping tool's own `target_agent` is a static config label (e.g. a hardcoded
+    # "reasoning-agent"), not this handoff's actual destination - whichever agent the registry
+    # resolved this kind's token to could be registered under any name (e.g. "discovery-agent").
+    # Discovered here via the same best-effort `whoami()` this agent already uses for its own
+    # identity, using the *target's* token instead of this router's own - never blocks the handoff
+    # on failure; falls back to the tool's own static label rather than leaving it blank.
+    target_agent_name = _discover_agent_name(state["platform_url"], token)
+    span_args = {**decision, "target_agent": target_agent_name or decision.get("target_agent")}
+    name = f"handoff_to_{target_kind}_agent"
+    description = f"Spawns the reference {target_kind} agent as a subprocess and returns its final answer"
     try:
-        final = spawn_reasoning_agent(
-            state["problem"],
-            platform_url=state["platform_url"],
-            reasoning_agent_token=state["reasoning_agent_token"],
-            gateway_url=state["gateway_url"],
-            reasoning_agent_gateway_key=state["reasoning_agent_gateway_key"],
-            otel_endpoint=state.get("reasoning_agent_otel_endpoint"),
-        )
+        if target_kind == "reasoning":
+            final = spawn_reasoning_agent(
+                state["problem"],
+                platform_url=state["platform_url"],
+                reasoning_agent_token=token,
+                gateway_url=state["gateway_url"],
+                reasoning_agent_gateway_key=gateway_key,
+                otel_endpoint=state.get("handoff_otel_endpoint"),
+            )
+        else:
+            chatbot_model = _discover_chatbot_model(state["platform_url"], token)
+            final = spawn_chatbot_agent(
+                state["problem"],
+                platform_url=state["platform_url"],
+                chatbot_agent_token=token,
+                ollama_url=state.get("chatbot_agent_ollama_url") or "http://localhost:11434",
+                model=chatbot_model,
+                otel_endpoint=state.get("handoff_otel_endpoint"),
+            )
     except Exception as exc:
-        state["turn"].tool_call(
-            name="handoff_to_reasoning_agent", args=decision, error=str(exc), description=description
-        )
+        state["turn"].tool_call(name=name, args=span_args, error=str(exc), description=description)
         raise
-    state["turn"].tool_call(name="handoff_to_reasoning_agent", args=decision, result=final, description=description)
+    state["turn"].tool_call(name=name, args=span_args, result=final, description=description)
     return {"final_answer": final}
 
 
@@ -357,14 +485,17 @@ def solve_one(
     routing_fallback_group: str | None = None,
     classifier_url: str = DEFAULT_CLASSIFIER_URL,
     platform_url: str,
-    reasoning_agent_token: str,
-    reasoning_agent_gateway_key: str,
-    reasoning_agent_otel_endpoint: str | None = None,
+    reasoning_agent_token: str | None = None,
+    reasoning_agent_gateway_key: str | None = None,
+    chatbot_agent_token: str | None = None,
+    chatbot_agent_ollama_url: str = "http://localhost:11434",
+    handoff_otel_endpoint: str | None = None,
     reference: str | None = None,
+    system_prompt: str | None = None,
 ) -> str:
     graph = build_graph()
     llm = make_routing_llm(gateway_url, gateway_key, routing_group, fallback_group=routing_fallback_group)
-    with client.turn(session_id, input=problem, reference=reference) as t:
+    with client.turn(session_id, input=problem, reference=reference, system_prompt=system_prompt) as t:
         result = graph.invoke(
             {
                 "turn": t,
@@ -375,7 +506,10 @@ def solve_one(
                 "reasoning_agent_token": reasoning_agent_token,
                 "gateway_url": gateway_url,
                 "reasoning_agent_gateway_key": reasoning_agent_gateway_key,
-                "reasoning_agent_otel_endpoint": reasoning_agent_otel_endpoint,
+                "chatbot_agent_token": chatbot_agent_token,
+                "chatbot_agent_ollama_url": chatbot_agent_ollama_url,
+                "handoff_otel_endpoint": handoff_otel_endpoint,
+                "system_prompt": system_prompt,
             }
         )
         final = result["final_answer"]
@@ -441,9 +575,31 @@ def build_arg_parser() -> argparse.ArgumentParser:
         f"this agent's own registration (`add-custom-model-provider-kind`), falling back to "
         f"{DEFAULT_CLASSIFIER_URL!r} if discovery fails. Pass this to override discovery entirely.",
     )
-    p.add_argument("--reasoning-agent-token", required=True, help="The reasoning-agent's own ingest token.")
     p.add_argument(
-        "--reasoning-agent-gateway-key", required=True, help="The reasoning-agent's own gateway virtual key."
+        "--reasoning-agent-token",
+        default=None,
+        help="The reasoning hand-off target's own ingest token. Required only if a routing decision can "
+        "actually resolve to target_kind 'reasoning' (the default when a routing rule omits target_kind) - "
+        "omitting it ends such a turn in a visible error rather than silently failing the handoff.",
+    )
+    p.add_argument(
+        "--reasoning-agent-gateway-key",
+        default=None,
+        help="The reasoning hand-off target's own gateway virtual key. See --reasoning-agent-token.",
+    )
+    p.add_argument(
+        "--chatbot-agent-token",
+        default=None,
+        help="The chatbot hand-off target's own ingest token (add-chatbot-handoff). Required only if a "
+        "routing decision can resolve to target_kind 'chatbot' - omitting it ends such a turn in a "
+        "visible error rather than silently failing the handoff. chatbot.py never talks to the gateway, "
+        "so it has no corresponding gateway-key flag.",
+    )
+    p.add_argument(
+        "--chatbot-agent-ollama-url",
+        default="http://localhost:11434",
+        help="Ollama base URL the chatbot hand-off target is spawned against (add-chatbot-handoff). "
+        "Matches chatbot.py's own --ollama-url default.",
     )
     # add-otel-tracing: unset (the default, or EVAL_OTEL_ENDPOINT also unset) is a graceful no-op.
     # Also forwarded to the spawned reasoning-agent subprocess on a handoff, so both agents' spans
@@ -458,7 +614,28 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=os.environ.get("EVAL_OTEL_ENDPOINT"),
         help="OTLP gRPC endpoint for real tracing, e.g. localhost:4317 (default: $EVAL_OTEL_ENDPOINT)",
     )
-    p.add_argument("--problem", required=True, help="A single problem to answer.")
+    p.add_argument(
+        "--system-prompt",
+        default=None,
+        help="Overrides the hardcoded ROUTING_SYSTEM_PROMPT for the routing-decision call "
+        "(add-agent-playground). Unset by default.",
+    )
+    p.add_argument(
+        "--skill",
+        action="append",
+        default=[],
+        dest="skills",
+        metavar="NAME",
+        help="Fetch a named skill's instructions from the platform and prepend them to "
+        "--system-prompt (add-agent-playground). Repeatable; applied in the order given.",
+    )
+    g = p.add_mutually_exclusive_group(required=True)
+    g.add_argument("--problem", dest="problem", help="A single problem to answer.")
+    g.add_argument(
+        "--task", dest="problem",
+        help="Alias for --problem (add-agent-playground - a uniform one-shot input flag across every "
+        "catalog flavor).",
+    )
     return p
 
 
@@ -472,9 +649,12 @@ def run_once(
     routing_fallback_group: str | None,
     classifier_url: str,
     platform_url: str,
-    reasoning_agent_token: str,
-    reasoning_agent_gateway_key: str,
-    reasoning_agent_otel_endpoint: str | None = None,
+    reasoning_agent_token: str | None = None,
+    reasoning_agent_gateway_key: str | None = None,
+    chatbot_agent_token: str | None = None,
+    chatbot_agent_ollama_url: str = "http://localhost:11434",
+    handoff_otel_endpoint: str | None = None,
+    system_prompt: str | None = None,
 ) -> None:
     import uuid
 
@@ -492,7 +672,10 @@ def run_once(
             platform_url=platform_url,
             reasoning_agent_token=reasoning_agent_token,
             reasoning_agent_gateway_key=reasoning_agent_gateway_key,
-            reasoning_agent_otel_endpoint=reasoning_agent_otel_endpoint,
+            chatbot_agent_token=chatbot_agent_token,
+            chatbot_agent_ollama_url=chatbot_agent_ollama_url,
+            handoff_otel_endpoint=handoff_otel_endpoint,
+            system_prompt=system_prompt,
         )
     except (openai.OpenAIError, httpx.HTTPError, RoutingToolNotCalled, NoRouteMatched, RuntimeError) as exc:
         # Covers: a gateway/LLM failure (never silently retried direct against a provider, bypassing the
@@ -513,8 +696,38 @@ def _discover_agent_name(platform_url: str, token: str) -> str | None:
         return None
 
 
+def _fetch_skill(platform_url: str, token: str, name: str) -> str:
+    """One skill's instructions, by name (`add-agent-playground`) - see `chatbot.py`'s identical
+    helper; duplicated rather than shared, matching this module's existing `_discover_agent_name()`
+    duplication convention."""
+    try:
+        resp = httpx.get(
+            f"{platform_url.rstrip('/')}/api/ingest/v1/skills/{name}",
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=30.0,
+        )
+        resp.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        raise SystemExit(f"could not fetch skill '{name}': {exc.response.status_code} {exc.response.text}") from exc
+    except httpx.HTTPError as exc:
+        raise SystemExit(f"could not fetch skill '{name}': {exc}") from exc
+    return resp.json()["instructions"]
+
+
+def compose_system_prompt(base_prompt: str | None, skill_instructions: list[str]) -> str | None:
+    """Prepends each skill's instructions, in the order given, ahead of `base_prompt` - see
+    `chatbot.py`'s identical helper. Returns `None` when there is neither a base prompt nor any
+    skill, so `routing_decision()` falls back to the hardcoded `ROUTING_SYSTEM_PROMPT`, exactly as
+    before this flag existed."""
+    parts = [*skill_instructions, base_prompt] if base_prompt else list(skill_instructions)
+    parts = [p for p in parts if p]
+    return "\n\n".join(parts) if parts else None
+
+
 def main(argv: list[str] | None = None) -> None:
     args = build_arg_parser().parse_args(argv)
+    skill_instructions = [_fetch_skill(args.platform_url, args.token, name) for name in args.skills]
+    system_prompt = compose_system_prompt(args.system_prompt, skill_instructions)
     routing_group, classifier_url = _resolve_routing_group_and_classifier_url(
         args.platform_url, args.token, args.routing_model_group, args.classifier_url
     )
@@ -540,7 +753,10 @@ def main(argv: list[str] | None = None) -> None:
             platform_url=args.platform_url,
             reasoning_agent_token=args.reasoning_agent_token,
             reasoning_agent_gateway_key=args.reasoning_agent_gateway_key,
-            reasoning_agent_otel_endpoint=args.otel_endpoint,
+            chatbot_agent_token=args.chatbot_agent_token,
+            chatbot_agent_ollama_url=args.chatbot_agent_ollama_url,
+            handoff_otel_endpoint=args.otel_endpoint,
+            system_prompt=system_prompt,
         )
     finally:
         client.close()

@@ -15,17 +15,37 @@ from routing_mcp.server import ROUTES_PATH, load_routes, resolve  # noqa: E402
 
 
 def test_routes_yaml_parses_and_has_the_expected_shape():
+    """`add-chatbot-handoff`: the reference `routes.yaml` now demonstrates all three branches -
+    spam short-circuits, the ag_news topics Sports/World hand off to a chatbot target (specific
+    rules, matched before the trailing wildcard), and every other ag_news topic keeps the original
+    behavior via the wildcard, handing off to a reasoning target."""
     routes = load_routes()
     assert routes["rules"][0] == {
         "task": "spam",
         "label": "spam",
+        "min_confidence": 0.8,
         "action": "short_circuit",
         "response": "This message looks like spam and was not forwarded to any agent.",
     }
     assert routes["rules"][1] == {
         "task": "ag_news",
+        "label": "Sports",
+        "action": "handoff",
+        "target_kind": "chatbot",
+        "target_agent": "chatbot-agent",
+    }
+    assert routes["rules"][2] == {
+        "task": "ag_news",
+        "label": "World",
+        "action": "handoff",
+        "target_kind": "chatbot",
+        "target_agent": "chatbot-agent",
+    }
+    assert routes["rules"][3] == {
+        "task": "ag_news",
         "label": "*",
         "action": "handoff",
+        "target_kind": "reasoning",
         "target_agent": "reasoning-agent",
     }
     assert routes["default"] == {"action": "error"}
@@ -37,18 +57,72 @@ def test_a_known_label_resolves_to_its_configured_action():
     assert result == {"action": "short_circuit", "response": routes["rules"][0]["response"]}
 
 
-def test_a_wildcard_rule_matches_any_label_for_its_task():
+# ------------------------------------------------------------------ min_confidence (found via live testing)
+def test_a_label_match_below_min_confidence_is_not_treated_as_a_match():
+    """Live finding: a `spam` label at only barely-above-0.5 confidence must not short-circuit an
+    otherwise confidently-classified-by-topic problem - it falls through to the ag_news rule
+    instead, exactly as if the spam rule weren't there for this result."""
     routes = load_routes()
-    for label in ("Business", "Sci/Tech", "Sports", "World"):
+    result = resolve(
+        {
+            "ag_news": {"label": "Business", "confidence": 0.79},
+            "spam": {"label": "spam", "confidence": 0.54},
+        },
+        routes,
+    )
+    assert result == {"action": "handoff", "target_kind": "reasoning", "target_agent": "reasoning-agent"}
+
+
+def test_a_label_match_at_or_above_min_confidence_still_matches():
+    routes = load_routes()
+    result = resolve(
+        {"ag_news": {"label": "Business", "confidence": 0.79}, "spam": {"label": "spam", "confidence": 0.95}},
+        routes,
+    )
+    assert result["action"] == "short_circuit"
+
+
+def test_a_missing_confidence_on_a_gated_rule_is_treated_as_not_meeting_the_threshold():
+    """Never guesses a confidence that wasn't actually reported - a gated rule with no `confidence`
+    at all on the task result fails the gate, the same as an explicitly low one."""
+    routes = load_routes()
+    result = resolve(
+        {"ag_news": {"label": "Business", "confidence": 0.79}, "spam": {"label": "spam"}},
+        routes,
+    )
+    assert result["action"] == "handoff"
+
+
+def test_an_ungated_rule_matches_on_label_alone():
+    """A rule with no `min_confidence` (every ag_news rule here) is unaffected - this is the
+    pre-existing behavior for every rule written before this field existed."""
+    routes = load_routes()
+    result = resolve({"ag_news": {"label": "Sports"}}, routes)  # no confidence at all
+    assert result == {"action": "handoff", "target_kind": "chatbot", "target_agent": "chatbot-agent"}
+
+
+def test_specific_rules_match_before_the_trailing_wildcard():
+    """Sports/World each have their own rule, listed before the wildcard - first-match-wins means
+    they resolve to the chatbot target, never falling through to the wildcard's reasoning target."""
+    routes = load_routes()
+    for label in ("Sports", "World"):
         result = resolve({"ag_news": {"label": label, "confidence": 0.5}}, routes)
-        assert result == {"action": "handoff", "target_agent": "reasoning-agent"}
+        assert result == {"action": "handoff", "target_kind": "chatbot", "target_agent": "chatbot-agent"}
+
+
+def test_a_wildcard_rule_matches_any_other_label_for_its_task():
+    routes = load_routes()
+    for label in ("Business", "Sci-Tech"):
+        result = resolve({"ag_news": {"label": label, "confidence": 0.5}}, routes)
+        assert result == {"action": "handoff", "target_kind": "reasoning", "target_agent": "reasoning-agent"}
 
 
 def test_first_match_wins_when_more_than_one_rule_could_apply():
     routes = load_routes()
-    # spam's rule comes first in routes.yaml, so it wins even though ag_news also has a result
+    # spam's rule comes first in routes.yaml, so it wins even though ag_news also has a result -
+    # given a confidently-spam result (comfortably above the spam rule's own min_confidence)
     result = resolve(
-        {"ag_news": {"label": "Business"}, "spam": {"label": "spam"}},
+        {"ag_news": {"label": "Business"}, "spam": {"label": "spam", "confidence": 0.95}},
         routes,
     )
     assert result["action"] == "short_circuit"

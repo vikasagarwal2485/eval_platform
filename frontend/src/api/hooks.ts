@@ -6,6 +6,7 @@ import type {
   AttentionItem,
   AvailableModel,
   Agent,
+  AgentCatalogFlavor,
   AgentCreate,
   AgentSettingsUpdate,
   AgentSummary,
@@ -16,6 +17,8 @@ import type {
   Health,
   JudgeMode,
   ModelInfo,
+  PlaygroundCredentialsResult,
+  PlaygroundSpawnResult,
   Provider,
   ProviderCreate,
   ProviderModel,
@@ -47,6 +50,7 @@ export const keys = {
   agentTurn: (agentId: number, turnId: number) => ['agent-turn', agentId, turnId] as const,
   agentSummary: (id: number, window: string) => ['agent-summary', id, window] as const,
   agentAttention: (id: number, window: string) => ['agent-attention', id, window] as const,
+  agentCatalog: ['agent-catalog'] as const,
   runs: ['runs'] as const,
   run: (id: number) => ['run', id] as const,
   summary: (id: number, w?: string, cold?: boolean, attempt?: number | null) =>
@@ -456,6 +460,37 @@ export function useAgentMutations(id: number) {
     remove: useMutation({
       mutationFn: () => api.delete(`/agents/${id}`),
       onSuccess: refresh,
+    }),
+  };
+}
+
+// ---------------------------------------------------------------- add-agent-playground
+export const useAgentCatalog = () =>
+  useQuery({
+    queryKey: keys.agentCatalog,
+    queryFn: () => api.get<AgentCatalogFlavor[]>('/agents/catalog'),
+    staleTime: Infinity, // static, repo-shipped reference data - never changes while the app is open
+  });
+
+export function usePlaygroundMutations(id: number) {
+  const refresh = useAgentRefresh(id);
+  return {
+    enable: useMutation({
+      mutationFn: (flavor: string) =>
+        api.post<PlaygroundCredentialsResult>(`/agents/${id}/playground/enable`, { flavor }),
+      onSuccess: refresh,
+    }),
+    disable: useMutation({
+      mutationFn: () => api.post<Agent>(`/agents/${id}/playground/disable`),
+      onSuccess: refresh,
+    }),
+    rotate: useMutation({
+      mutationFn: () => api.post<PlaygroundCredentialsResult>(`/agents/${id}/playground/rotate`),
+      onSuccess: refresh,
+    }),
+    spawn: useMutation({
+      mutationFn: (body: { system_prompt?: string | null; skills: string[]; task: string }) =>
+        api.post<PlaygroundSpawnResult>(`/agents/${id}/playground/spawn`, body),
     }),
   };
 }

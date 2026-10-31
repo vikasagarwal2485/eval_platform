@@ -178,6 +178,38 @@ Run either agent from the **repo root** with that venv's interpreter, e.g.
 `agents/.venv/bin/python -m agents.chatbot --help`. If you're already inside `backend/.venv` (it depends on
 `httpx` and `pyyaml` too), that works as well - a separate venv is a convenience, not a requirement.
 
+## Playground mode (`--system-prompt` / `--skill` / `--task`)
+
+All three scripts (`add-agent-playground`) accept the same three flags, letting any of them be
+driven as a single one-shot invocation - the same mechanism the platform's own Agent Playground UI
+uses to spawn these scripts directly, and one you can use by hand from a terminal exactly the same
+way:
+
+- **`--system-prompt TEXT`** - overrides the script's hardcoded default prompt (`chatbot.py`'s
+  single call; `reasoning_agent.py`'s plan/solve/verify calls - its classification call uses no
+  free-form prompt, so it is unaffected; `classifier_router_agent.py`'s routing-decision call).
+- **`--skill NAME`** (repeatable) - fetches a named skill's instructions from the platform (the
+  same stored content a benchmark run would attach - `skills-registry`) and prepends it, in the
+  order given, ahead of whichever system prompt is in effect. Needs `--platform-url`/`--token` to
+  resolve, like every other platform call these scripts make.
+- **`--task TEXT`** - a one-shot input to answer and exit. On `chatbot.py` this replaces the
+  default interactive REPL for this one invocation; on `reasoning_agent.py` and
+  `classifier_router_agent.py` it is simply an alias for `--problem` (both already answer one
+  input and exit - there was no REPL to replace), kept as a separate flag name so a caller (like
+  the backend's own spawn code) can use one uniform flag across every catalog flavor.
+
+```bash
+# chatbot.py: one message, with two skills attached, instead of the REPL
+agents/.venv/bin/python -m agents.chatbot --platform-url http://localhost:8000 --token <token> \
+    --system-prompt "You are a terse assistant." --skill step-by-step --skill cite-sources \
+    --task "What is the capital of France?"
+
+# reasoning_agent.py: --task is an alias for --problem
+agents/.venv/bin/python -m agents.reasoning_agent --platform-url http://localhost:8000 --token <token> \
+    --gateway-key <key> --system-prompt "Show your work tersely." --skill step-by-step \
+    --task "A train travels 60 miles in 40 minutes. What is its speed in mph?"
+```
+
 ## Classifier-routed multi-agent orchestrator
 
 `classifier_router_agent.py` (`openspec/changes/add-classifier-router-agent`) proves the same gateway-only,
@@ -194,11 +226,12 @@ Per turn:
    discovered `routing` task group) that must call the `resolve_route` tool, reached over MCP, to decide what
    happens next. The tool's own result *is* the routing decision - the orchestrator's own code never branches on
    the classifier's raw labels.
-3. **Act** - either **hand off** to `reasoning_agent.py`, spawned as its own subprocess with its own platform
-   token and gateway key (it registers its own, separate turn, under its own agent identity - never attributed
-   to the orchestrator's spans), or **short-circuit**: finish the turn immediately with a canned response and no
-   further model call at all. An unmapped classification result ends the turn in a visible error rather than
-   guessing a branch.
+3. **Act** - either **hand off** to `reasoning_agent.py` or to `chatbot.py` (`add-chatbot-handoff`), depending on
+   the routing decision's `target_kind`, spawned as its own subprocess with its own platform credentials (it
+   registers its own, separate turn, under its own agent identity - never attributed to the orchestrator's
+   spans), or **short-circuit**: finish the turn immediately with a canned response and no further model call at
+   all. An unmapped classification result ends the turn in a visible error rather than guessing a branch - so
+   does a routing decision wanting a hand-off kind this run was never given credentials for.
 
 The `resolve_route` tool is served by `routing_mcp/server.py`, a small standalone MCP server (stdio transport)
 this agent spawns and owns for the duration of resolving one turn's routing decision. Its label -> action mapping
@@ -219,19 +252,20 @@ anywhere.
     -H 'Content-Type: application/json' -d '{"model_id": "classify"}'
   ```
 
-- This agent registered with a `routing` declared model (any chat-capable model/group) and a `classification`
-  declared model pointing at the custom provider's model above:
+- This agent registered with a `router` kind, a `routing` declared model (any chat-capable model/group), a
+  `classification` declared model pointing at the custom provider's model above, and one or more
+  `handoff_agent_names` naming its own hand-off targets by their registered name:
 
   ```bash
   curl -s -X POST http://localhost:8000/api/agents \
     -H 'Content-Type: application/json' \
-    -d '{"name": "classifier-router-agent", "kind": "reasoning", "declared_models": {"routing": "qwen3:8b", "classification": "@context-classifier/classify"}}'
+    -d '{"name": "classifier-router-agent", "kind": "router", "declared_models": {"routing": "qwen3:8b", "classification": "@context-classifier/classify"}, "handoff_agent_names": ["reasoning-agent", "chatbot-agent"]}'
   ```
-  (`kind` is `reasoning` - the registry's `chatbot`/`reasoning` kinds are not extended for this agent; see
-  design.md's Non-Goals.)
 
-- `reasoning_agent.py` registered too (however you'd normally run it), for the handoff branch - note its token
-  and gateway key.
+- `reasoning_agent.py` registered too (however you'd normally run it), for the reasoning hand-off branch - note
+  its token and gateway key.
+- `chatbot.py` registered too (`add-chatbot-handoff`), for the chatbot hand-off branch - note its token (it has
+  no gateway key: `chatbot.py` never talks to the gateway).
 - A virtual gateway key for *this* agent, scoped to its own `routing` group (`gateway/README.md`).
 
 ### Running it
@@ -242,6 +276,7 @@ agents/.venv/bin/python -m agents.classifier_router_agent \
   --gateway-url http://localhost:4000 --gateway-key <this-agent's-virtual-key> \
   --reasoning-agent-token <reasoning-agent's-token> \
   --reasoning-agent-gateway-key <reasoning-agent's-virtual-key> \
+  --chatbot-agent-token <chatbot-agent's-token> \
   --problem "The Lakers won their basketball game last night in overtime."
 ```
 
@@ -254,7 +289,7 @@ instance - with no platform round-trip for the one(s) you override:
 ```bash
 agents/.venv/bin/python -m agents.classifier_router_agent \
   --platform-url ... --token ... --gateway-url ... --gateway-key ... \
-  --reasoning-agent-token ... --reasoning-agent-gateway-key ... \
+  --reasoning-agent-token ... --reasoning-agent-gateway-key ... --chatbot-agent-token ... \
   --routing-model-group my-router__routing --classifier-url http://127.0.0.1:9999 \
   --problem "..."
 ```
@@ -262,12 +297,32 @@ agents/.venv/bin/python -m agents.classifier_router_agent \
 `--routing-fallback-group` names a gateway group to fall back to if the routing call's primary group is
 unreachable, the same way `reasoning_agent.py`'s fallback flags work.
 
-**A note on the classifier's own labels**: the reference `routes.yaml` routes any `spam`-labeled result to the
-short-circuit branch and any `ag_news` result to the handoff branch. The classifier is a real, independently
-trained model and its `spam` detector can be noisy in practice - a perfectly ordinary sentence can occasionally
-come back labeled `spam` with high confidence. That is the classifier's own behavior, not a bug in this agent;
-if you want more predictable demo behavior, check `/classify`'s raw response for a given sentence first (`curl
--s -X POST http://127.0.0.1:8765/classify -d '{"text": "..."}'`) before using it as a worked example.
+`--reasoning-agent-token`/`--reasoning-agent-gateway-key` and `--chatbot-agent-token` (`add-chatbot-handoff`)
+are each **optional** - a run that will never route to a given hand-off kind need not supply its credentials -
+but a routing decision that *does* want a kind this run has no credentials for ends that turn in a visible
+error rather than silently misrouting or crashing. `chatbot.py` itself has no self-discovery of its own model,
+so the chatbot branch discovers the target's declared model on its behalf (via `whoami()`, using the target's
+own token) and passes it through explicitly.
+
+**A note on the classifier's own labels**: the reference `routes.yaml` routes any confidently
+`spam`-labeled result (`min_confidence: 0.8` - see below) to the short-circuit branch, the `ag_news` topics
+`Sports`/`World` to the chatbot hand-off branch, and every other `ag_news` topic (`Business`/`Sci-Tech`) to
+the reasoning hand-off branch - a demonstration split over the only two tasks this classifier loads, not a
+claim that a topic label reliably predicts how much reasoning a problem needs. The classifier is also a
+real, independently trained model, and its `spam` detector can be noisy in practice - a perfectly ordinary
+sentence can land barely above its 0.5 binary decision boundary (e.g. 0.54) even while the *other* loaded
+task (`ag_news`) classifies it with real confidence. If you want to see the classifier's raw confidence for
+a given sentence first, `curl -s -X POST http://127.0.0.1:8765/classify -d '{"text": "..."}'`.
+
+**`min_confidence` (found via live testing)**: a rule in `routes.yaml` may name a minimum confidence its own
+task's result must meet - a label match below it doesn't count, and `resolve_route` keeps checking the
+remaining rules, exactly as if that rule weren't there for this result. Found live: a genuine
+partial-differential-equation problem was short-circuited as spam on a 0.54 `spam` confidence alone, even
+though `ag_news` classified it (as `Sci-Tech`) at 0.79 confidence. The reference `spam` rule's own
+`min_confidence: 0.8` is deliberately the highest bar in this file - short-circuiting is the most
+consequential action available (the problem is discarded outright, with no model call and no chance to
+answer), so it should take the most convincing. A rule with no `min_confidence` (every `ag_news` rule here)
+is unaffected, matching on label alone exactly as before this field existed.
 
 ## Demonstration setup: agent and evaluator on different models
 

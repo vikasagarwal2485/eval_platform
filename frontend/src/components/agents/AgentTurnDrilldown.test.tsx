@@ -21,6 +21,7 @@ function turn(overrides: Partial<AgentTurnDetail> = {}): AgentTurnDetail {
     input: 'hi',
     output: 'hello there',
     reference: null,
+    system_prompt: null,
     error: null,
     models: ['qwen3:8b'],
     models_unknown: false,
@@ -55,6 +56,19 @@ const legacySpan: AgentSpan = {
   prompt_tokens: 10,
   completion_tokens: 5,
 };
+
+describe('add-agent-playground: system prompt', () => {
+  it('shows the system prompt in its own collapsible section when the turn has one', () => {
+    render(<AgentTurnDrilldown agentId={1} turn={turn({ system_prompt: 'be terse' })} />);
+    expect(screen.getByText('System prompt')).toBeInTheDocument(); // the <summary> toggle
+    expect(screen.getByText('be terse')).toBeInTheDocument();
+  });
+
+  it('omits the section entirely when the turn had no system prompt', () => {
+    render(<AgentTurnDrilldown agentId={1} turn={turn({ system_prompt: null })} />);
+    expect(screen.queryByText('System prompt')).not.toBeInTheDocument();
+  });
+});
 
 describe('add-otel-tracing 8.3: agent turn drill-down', () => {
   it('shows the live span tree when the turn has a trace_id', async () => {

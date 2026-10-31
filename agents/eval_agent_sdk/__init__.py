@@ -30,6 +30,7 @@ from eval_agent_sdk.tracing import (
     EVAL_COST,
     EVAL_ERROR,
     EVAL_KIND,
+    EVAL_REASONING_TOKENS_APPROX,
     GEN_AI_AGENT_DESCRIPTION,
     GEN_AI_AGENT_ID,
     GEN_AI_AGENT_NAME,
@@ -43,6 +44,7 @@ from eval_agent_sdk.tracing import (
     GEN_AI_TOOL_TYPE,
     GEN_AI_USAGE_INPUT_TOKENS,
     GEN_AI_USAGE_OUTPUT_TOKENS,
+    GEN_AI_USAGE_REASONING_OUTPUT_TOKENS,
     GEN_AI_WORKFLOW_NAME,
     compute_cost,
     setup_tracing,
@@ -83,7 +85,15 @@ class Turn:
     reasoning trace are also accumulated in Python regardless - these always reach `turn.end`, with
     or without tracing configured (`trace-observability`: evaluation never depends on it)."""
 
-    def __init__(self, client: AgentClient, session_id: str, turn_id: str, input_text: str, reference: str | None):
+    def __init__(
+        self,
+        client: AgentClient,
+        session_id: str,
+        turn_id: str,
+        input_text: str,
+        reference: str | None,
+        system_prompt: str | None = None,
+    ):
         self._client = client
         self.session_id = session_id
         self.turn_id = turn_id
@@ -135,6 +145,7 @@ class Turn:
                 "type": "turn.start",
                 "input": input_text,
                 "reference": reference,
+                "system_prompt": system_prompt,
             }
         )
 
@@ -207,10 +218,25 @@ class Turn:
         Recorded as `eval.kind`, not a `gen_ai.*` name - GenAI semconv has nothing that covers an
         agent's own task labels (`eval.kind` matches this span's own `eval.cost`/`eval.ttft_ms`
         below rather than inventing a non-standard `gen_ai.*` name). Omitted (the default) when the
-        caller has nothing meaningful to put there - never fabricated."""
+        caller has nothing meaningful to put there - never fabricated.
+
+        When `thinking` and `completion_tokens` are both given, also records
+        `gen_ai.usage.reasoning.output_tokens` - the portion of `completion_tokens` spent on
+        reasoning. No provider this SDK's reference callers use ever reports that count directly
+        (Ollama, directly or via the gateway, only ever returns separate *text*, not a token
+        count), so it is apportioned from `thinking`'s share of `thinking + output`'s combined
+        character length and paired with `eval.reasoning_tokens_approx = true` so the estimate is
+        never presented as a provider-reported fact - mirrors the Runner's own identical
+        approximation (`app/core/metrics.py`'s `thinking_tokens`/`thinking_tokens_approx`)."""
         now = _now_iso()
         started_at, ended_at = started_at or now, ended_at or now
         cost = compute_cost(model, prompt_tokens, completion_tokens)
+
+        reasoning_tokens: int | None = None
+        if thinking and completion_tokens is not None:
+            total_chars = len(thinking) + len(output)
+            if total_chars > 0:
+                reasoning_tokens = round(completion_tokens * len(thinking) / total_chars)
 
         if model and model not in self._models:
             self._models.append(model)
@@ -234,6 +260,9 @@ class Turn:
                 span.set_attribute(GEN_AI_USAGE_INPUT_TOKENS, prompt_tokens)
             if completion_tokens is not None:
                 span.set_attribute(GEN_AI_USAGE_OUTPUT_TOKENS, completion_tokens)
+            if reasoning_tokens is not None:
+                span.set_attribute(GEN_AI_USAGE_REASONING_OUTPUT_TOKENS, reasoning_tokens)
+                span.set_attribute(EVAL_REASONING_TOKENS_APPROX, True)
             if cost is not None:
                 span.set_attribute(EVAL_COST, cost)
             if ttft_ms is not None:
@@ -354,8 +383,16 @@ class AgentClient:
         self._thread.start()
 
     # ------------------------------------------------------------------ public surface
-    def turn(self, session_id: str, *, input: str, reference: str | None = None, turn_id: str | None = None) -> Turn:
-        return Turn(self, session_id, turn_id or _new_id(), input, reference)
+    def turn(
+        self,
+        session_id: str,
+        *,
+        input: str,
+        reference: str | None = None,
+        turn_id: str | None = None,
+        system_prompt: str | None = None,
+    ) -> Turn:
+        return Turn(self, session_id, turn_id or _new_id(), input, reference, system_prompt)
 
     def close(self, timeout_s: float = 5.0) -> None:
         """Flushes what it can within `timeout_s`, then stops the background thread."""

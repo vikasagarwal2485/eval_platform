@@ -26,6 +26,7 @@ describe('routing', () => {
     ['/runs/1', 'Results'],
     ['/suites', 'Suites'],
     ['/providers', 'Models'],
+    ['/skills', 'Skills'],
     ['/agents', 'Agents'],
     ['/history', 'History'],
     ['/nope', 'Page not found'],
@@ -44,6 +45,17 @@ describe('routing', () => {
     expect(screen.getByRole('link', { name: 'Agents' })).toHaveAttribute('href', '/agents');
   });
 
+  it('has a Skills link in the main navigation, between Models and Agents (add-agent-playground)', () => {
+    renderAt('/');
+    const mainNav = screen.getByRole('navigation', { name: 'Main' });
+    expect(within(mainNav).getByRole('link', { name: 'Skills' })).toHaveAttribute('href', '/skills');
+    const names = within(mainNav)
+      .getAllByRole('link')
+      .map((el) => el.textContent);
+    expect(names.indexOf('Models')).toBeLessThan(names.indexOf('Skills'));
+    expect(names.indexOf('Skills')).toBeLessThan(names.indexOf('Agents'));
+  });
+
   it('marks the active nav link', () => {
     renderAt('/suites');
     expect(screen.getByRole('link', { name: 'Suites' })).toHaveAttribute('aria-current', 'page');
@@ -59,6 +71,12 @@ describe('routing', () => {
     const mainNav = screen.getByRole('navigation', { name: 'Main' });
     expect(within(mainNav).queryByRole('link', { name: 'Suites' })).toBeNull();
     expect(within(mainNav).queryByRole('link', { name: 'History' })).toBeNull();
+  });
+
+  it('does not list Skills as a Run Evaluation setup sub-tab (add-agent-playground: it moved to the main nav)', () => {
+    renderAt('/');
+    const subNav = screen.getByRole('navigation', { name: 'Run Evaluation setup sections' });
+    expect(within(subNav).queryByRole('link', { name: 'Skills' })).toBeNull();
   });
 
   it.each(['/', '/suites', '/history'])(
@@ -96,5 +114,14 @@ describe('routing', () => {
     expect(within(mainNav).getByRole('link', { name: 'Run Evaluation setup' })).not.toHaveAttribute(
       'aria-current',
     );
+  });
+
+  it('does not mark "Run Evaluation setup" active on the Skills page', () => {
+    renderAt('/skills');
+    const mainNav = screen.getByRole('navigation', { name: 'Main' });
+    expect(within(mainNav).getByRole('link', { name: 'Run Evaluation setup' })).not.toHaveAttribute(
+      'aria-current',
+    );
+    expect(within(mainNav).getByRole('link', { name: 'Skills' })).toHaveAttribute('aria-current', 'page');
   });
 });

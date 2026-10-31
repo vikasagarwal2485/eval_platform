@@ -159,6 +159,48 @@ def test_llm_call_kind_is_omitted_not_fabricated_when_not_given(exporter):
     assert "eval.kind" not in call_span.attributes
 
 
+def test_llm_call_apportions_reasoning_tokens_from_thinking_text_share(exporter):
+    exp, provider = exporter
+    client = _client(provider)
+    with client.turn("s1", input="hi") as t:
+        # 20 "thinking" chars, 10 "output" chars -> thinking is 2/3 of the combined text
+        t.llm_call(
+            model="qwen3:8b", output="a" * 10, thinking="b" * 20, completion_tokens=300, kind="plan",
+        )
+        t.finish("a" * 10)
+    client.close(timeout_s=2.0)
+
+    (call_span,) = [s for s in exp.get_finished_spans() if s.name == "gen_ai.chat"]
+    assert call_span.attributes["gen_ai.usage.reasoning.output_tokens"] == 200  # round(300 * 20/30)
+    assert call_span.attributes["eval.reasoning_tokens_approx"] is True
+
+
+def test_llm_call_omits_reasoning_tokens_without_thinking_text(exporter):
+    exp, provider = exporter
+    client = _client(provider)
+    with client.turn("s1", input="hi") as t:
+        t.llm_call(model="qwen3:8b", output="a", completion_tokens=300)
+        t.finish("a")
+    client.close(timeout_s=2.0)
+
+    (call_span,) = [s for s in exp.get_finished_spans() if s.name == "gen_ai.chat"]
+    assert "gen_ai.usage.reasoning.output_tokens" not in call_span.attributes
+    assert "eval.reasoning_tokens_approx" not in call_span.attributes
+
+
+def test_llm_call_omits_reasoning_tokens_without_a_completion_token_count(exporter):
+    """Never fabricated: thinking text alone, with nothing to apportion it against, stays absent."""
+    exp, provider = exporter
+    client = _client(provider)
+    with client.turn("s1", input="hi") as t:
+        t.llm_call(model="qwen3:8b", output="a", thinking="deliberating...")
+        t.finish("a")
+    client.close(timeout_s=2.0)
+
+    (call_span,) = [s for s in exp.get_finished_spans() if s.name == "gen_ai.chat"]
+    assert "gen_ai.usage.reasoning.output_tokens" not in call_span.attributes
+
+
 def test_llm_call_with_an_error_sets_span_status_to_error(exporter):
     exp, provider = exporter
     client = _client(provider)

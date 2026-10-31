@@ -199,12 +199,78 @@ def test_routing_decision_raises_when_the_model_never_calls_the_tool():
         router_agent.routing_decision(llm, {"x": 1}, call_tool=lambda c: {"action": "error"})
 
 
+def test_routing_decision_uses_hardcoded_prompt_by_default():
+    response = _FakeAIResponse([{"name": "resolve_route", "args": {"classification": {"x": 1}}, "id": "1"}])
+    llm = _FakeLLM(response)
+    router_agent.routing_decision(llm, {"x": 1}, call_tool=lambda c: {"action": "short_circuit", "response": "ok"})
+    assert llm.bound.invoked_with[0].content == router_agent.ROUTING_SYSTEM_PROMPT
+
+
+def test_routing_decision_system_prompt_override_replaces_the_default():
+    response = _FakeAIResponse([{"name": "resolve_route", "args": {"classification": {"x": 1}}, "id": "1"}])
+    llm = _FakeLLM(response)
+    router_agent.routing_decision(
+        llm, {"x": 1}, call_tool=lambda c: {"action": "short_circuit", "response": "ok"}, system_prompt="be terse",
+    )
+    assert llm.bound.invoked_with[0].content == "be terse"
+
+
+# ------------------------------------------------------------------ add-agent-playground: system-prompt/skill/task
+def test_compose_system_prompt_prepends_skills_in_order():
+    assert router_agent.compose_system_prompt("base", ["A", "B"]) == "A\n\nB\n\nbase"
+
+
+def test_compose_system_prompt_with_nothing_returns_none():
+    assert router_agent.compose_system_prompt(None, []) is None
+
+
+def test_fetch_skill_returns_instructions(monkeypatch):
+    def fake_get(url, headers=None, timeout=None):
+        return httpx.Response(200, json={"instructions": "Think."}, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(router_agent.httpx, "get", fake_get)
+    assert router_agent._fetch_skill("http://platform.local", "tok", "step-by-step") == "Think."
+
+
+def test_cli_exposes_system_prompt_skill_and_task_flags():
+    args = router_agent.build_arg_parser().parse_args(
+        [
+            "--platform-url", "http://x", "--token", "t", "--gateway-key", "k",
+            "--reasoning-agent-token", "rt", "--reasoning-agent-gateway-key", "rk",
+            "--system-prompt", "be terse", "--skill", "a", "--skill", "b", "--task", "a one-shot task",
+        ]
+    )
+    assert args.system_prompt == "be terse"
+    assert args.skills == ["a", "b"]
+    assert args.problem == "a one-shot task"
+
+
+def test_cli_problem_still_works_without_task():
+    args = router_agent.build_arg_parser().parse_args(
+        [
+            "--platform-url", "http://x", "--token", "t", "--gateway-key", "k",
+            "--reasoning-agent-token", "rt", "--reasoning-agent-gateway-key", "rk",
+            "--problem", "classic flag still works",
+        ]
+    )
+    assert args.problem == "classic flag still works"
+
+
 # ------------------------------------------------------------------ 4.3/4.4/5.1/5.2/5.3 the graph / full turn
-def _patched_agent(monkeypatch, *, classification, tool_result, reasoning_output=None, handoff_error=None):
+def _patched_agent(
+    monkeypatch, *, classification, tool_result, reasoning_output=None, handoff_error=None,
+    chatbot_output=None, chatbot_error=None, discovered_target_name="discovery-agent",
+    discovered_chatbot_model=None,
+):
     """Wires `classifier_router_agent` so a turn runs end to end against fakes only: `classify()` returns
     `classification`, the routing LLM always calls the tool, `call_resolve_route()` returns `tool_result`
-    without touching any real MCP subprocess, and (for a handoff) `spawn_reasoning_agent()` returns
-    `reasoning_output` or raises `handoff_error`, without spawning a real subprocess."""
+    without touching any real MCP subprocess, and (for a handoff) `spawn_reasoning_agent()`/
+    `spawn_chatbot_agent()` return `reasoning_output`/`chatbot_output` or raise `handoff_error`/
+    `chatbot_error`, without spawning a real subprocess. `whoami()` is mocked too - the handoff
+    branch calls it both to discover the real hand-off target's registered name (never a real
+    network call in tests) and, for a chatbot target, its declared model
+    (`discovered_chatbot_model`); `discovered_target_name=None` simulates name discovery failing,
+    matching `_discover_agent_name()`'s own best-effort "returns None" contract."""
     monkeypatch.setattr(router_agent, "classify", lambda url, problem, **kw: classification)
     monkeypatch.setattr(router_agent, "call_resolve_route", lambda c: tool_result)
 
@@ -214,15 +280,33 @@ def _patched_agent(monkeypatch, *, classification, tool_result, reasoning_output
 
     monkeypatch.setattr(router_agent, "make_routing_llm", fake_make_routing_llm)
 
-    def fake_spawn(problem, **kw):
+    def fake_spawn_reasoning(problem, **kw):
         if handoff_error is not None:
             raise handoff_error
         return reasoning_output
 
-    monkeypatch.setattr(router_agent, "spawn_reasoning_agent", fake_spawn)
+    monkeypatch.setattr(router_agent, "spawn_reasoning_agent", fake_spawn_reasoning)
+
+    def fake_spawn_chatbot(problem, **kw):
+        if chatbot_error is not None:
+            raise chatbot_error
+        return chatbot_output
+
+    monkeypatch.setattr(router_agent, "spawn_chatbot_agent", fake_spawn_chatbot)
+
+    def fake_whoami(platform_url, token):
+        if discovered_target_name is None:
+            raise httpx.ConnectError("discovery unreachable", request=httpx.Request("GET", platform_url))
+        return {"name": discovered_target_name, "declared_models": {"default": discovered_chatbot_model}}
+
+    monkeypatch.setattr(router_agent, "whoami", fake_whoami)
 
 
-def _run_turn(monkeypatch, *, tracer_provider=None, **patch_kwargs):
+def _run_turn(
+    monkeypatch, *, tracer_provider=None, system_prompt=None,
+    reasoning_agent_token="ra-token", reasoning_agent_gateway_key="ra-gw-key",
+    chatbot_agent_token=None, **patch_kwargs,
+):
     _patched_agent(monkeypatch, **patch_kwargs)
     received: list = []
     client = AgentClient(
@@ -240,8 +324,10 @@ def _run_turn(monkeypatch, *, tracer_provider=None, **patch_kwargs):
         "Apple stock surged today.",
         classifier_url="http://classifier.local",
         platform_url="http://platform.local",
-        reasoning_agent_token="ra-token",
-        reasoning_agent_gateway_key="ra-gw-key",
+        reasoning_agent_token=reasoning_agent_token,
+        reasoning_agent_gateway_key=reasoning_agent_gateway_key,
+        chatbot_agent_token=chatbot_agent_token,
+        system_prompt=system_prompt,
     )
     client.close(timeout_s=2.0)
     return final, received
@@ -281,6 +367,180 @@ def test_handoff_turn_has_classify_routing_llm_and_handoff_tool_spans_in_order(m
     assert end["trace_id"] == format(spans[0].context.trace_id, "032x")  # all under one trace
 
 
+def test_handoff_span_names_the_real_discovered_target_agent_not_the_static_routing_label(monkeypatch):
+    """The routing-mapping tool's own `target_agent` is a static config label (e.g. a hardcoded
+    "reasoning-agent") - not necessarily the hand-off target's actual registered name (e.g.
+    "discovery-agent"). The handoff span's recorded arguments must reflect the real one."""
+    exp = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exp))
+
+    _run_turn(
+        monkeypatch,
+        tracer_provider=provider,
+        classification={"ag_news": {"label": "Business"}},
+        tool_result={"action": "handoff", "target_agent": "reasoning-agent"},
+        reasoning_output="final",
+        discovered_target_name="discovery-agent",
+    )
+    provider.shutdown()
+
+    (handoff_span,) = [s for s in exp.get_finished_spans() if s.name == "handoff_to_reasoning_agent"]
+    args = json.loads(handoff_span.attributes["gen_ai.tool.call.arguments"])
+    assert args["target_agent"] == "discovery-agent"
+
+
+def test_handoff_span_falls_back_to_the_static_label_when_discovery_fails(monkeypatch):
+    """Discovery is best-effort - a failure must never block the handoff or leave target_agent blank."""
+    exp = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exp))
+
+    final, _ = _run_turn(
+        monkeypatch,
+        tracer_provider=provider,
+        classification={"ag_news": {"label": "Business"}},
+        tool_result={"action": "handoff", "target_agent": "reasoning-agent"},
+        reasoning_output="final",
+        discovered_target_name=None,
+    )
+    provider.shutdown()
+
+    assert final == "final"  # discovery failing never blocks the handoff itself
+    (handoff_span,) = [s for s in exp.get_finished_spans() if s.name == "handoff_to_reasoning_agent"]
+    args = json.loads(handoff_span.attributes["gen_ai.tool.call.arguments"])
+    assert args["target_agent"] == "reasoning-agent"  # the static label, not left blank
+
+
+def test_handoff_error_span_also_names_the_real_discovered_target_agent(monkeypatch):
+    exp = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exp))
+
+    with pytest.raises(RuntimeError):
+        _run_turn(
+            monkeypatch,
+            tracer_provider=provider,
+            classification={"ag_news": {"label": "Business"}},
+            tool_result={"action": "handoff", "target_agent": "reasoning-agent"},
+            handoff_error=RuntimeError("subprocess failed"),
+            discovered_target_name="discovery-agent",
+        )
+    provider.shutdown()
+
+    (handoff_span,) = [s for s in exp.get_finished_spans() if s.name == "handoff_to_reasoning_agent"]
+    args = json.loads(handoff_span.attributes["gen_ai.tool.call.arguments"])
+    assert args["target_agent"] == "discovery-agent"
+
+
+# ------------------------------------------------------------------ add-chatbot-handoff
+def test_chatbot_handoff_turn_spawns_chatbot_not_reasoning_agent(monkeypatch):
+    """A routing decision with target_kind 'chatbot' spawns chatbot.py instead of reasoning_agent.py,
+    and records its own, differently-named tool span."""
+    exp = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exp))
+
+    final, received = _run_turn(
+        monkeypatch,
+        tracer_provider=provider,
+        classification={"ag_news": {"label": "Sports"}},
+        tool_result={"action": "handoff", "target_kind": "chatbot", "target_agent": "chatbot-agent"},
+        chatbot_output="Sure, here's a quick answer.",
+        discovered_target_name="bot",
+        chatbot_agent_token="chatbot-tok",
+    )
+    provider.shutdown()
+    assert final == "Sure, here's a quick answer."
+
+    spans = [s for s in exp.get_finished_spans() if s.name != "agent.turn"]
+    spans.sort(key=lambda s: s.start_time)
+    assert [s.name for s in spans] == ["classify", "gen_ai.chat", "handoff_to_chatbot_agent"]
+    args = json.loads(spans[2].attributes["gen_ai.tool.call.arguments"])
+    assert args["target_agent"] == "bot"  # the real discovered name, not the static "chatbot-agent" label
+    end = next(e for e in received if e["type"] == "turn.end")
+    assert end["models"] == ["ollama_chat/qwen3:8b"]  # only the routing call is an llm call
+
+
+def test_chatbot_handoff_discovers_the_targets_declared_model_and_passes_it_through(monkeypatch):
+    _patched_agent(
+        monkeypatch,
+        classification={"ag_news": {"label": "Sports"}},
+        tool_result={"action": "handoff", "target_kind": "chatbot", "target_agent": "chatbot-agent"},
+        discovered_chatbot_model="qwen3:8b",
+    )
+    captured = {}
+
+    def fake_spawn_chatbot(problem, **kw):
+        captured.update(kw)
+        return "answer"
+
+    monkeypatch.setattr(router_agent, "spawn_chatbot_agent", fake_spawn_chatbot)
+    final = router_agent.solve_one(
+        AgentClient(
+            "http://platform.local", "tok", transport=httpx.MockTransport(_platform_handler([])),
+            flush_interval_s=0.02,
+        ),
+        "s1",
+        "http://gateway.local",
+        "gw-key",
+        "Sports fans gathered for the match.",
+        classifier_url="http://classifier.local",
+        platform_url="http://platform.local",
+        chatbot_agent_token="chatbot-tok",
+    )
+    assert final == "answer"
+    assert captured["chatbot_agent_token"] == "chatbot-tok"
+    assert captured["model"] == "qwen3:8b"
+
+
+def test_a_failed_chatbot_handoff_records_the_tool_span_as_an_error_and_fails_the_turn(monkeypatch):
+    with pytest.raises(RuntimeError, match="chatbot exited"):
+        _run_turn(
+            monkeypatch,
+            classification={"ag_news": {"label": "Sports"}},
+            tool_result={"action": "handoff", "target_kind": "chatbot", "target_agent": "chatbot-agent"},
+            chatbot_error=RuntimeError("chatbot exited with 1: boom"),
+            chatbot_agent_token="chatbot-tok",
+        )
+
+
+def test_a_chatbot_handoff_without_a_token_fails_visibly_rather_than_silently_misrouting(monkeypatch):
+    """`--chatbot-agent-token` is optional - a run that was never given one, but whose routing
+    decision wants a chatbot hand-off anyway, must fail clearly rather than guessing a target or
+    crashing on a None token deep inside spawn_chatbot_agent."""
+    with pytest.raises(RuntimeError, match="chatbot.*--chatbot-agent-token"):
+        _run_turn(
+            monkeypatch,
+            classification={"ag_news": {"label": "Sports"}},
+            tool_result={"action": "handoff", "target_kind": "chatbot", "target_agent": "chatbot-agent"},
+            chatbot_agent_token=None,
+        )
+
+
+def test_a_reasoning_handoff_without_credentials_fails_visibly_rather_than_silently_misrouting(monkeypatch):
+    """Symmetric with the chatbot case above, now that --reasoning-agent-token/--reasoning-agent-
+    gateway-key are themselves optional (add-chatbot-handoff): a run given neither, whose routing
+    decision still wants target_kind 'reasoning' (the default), fails clearly."""
+    with pytest.raises(RuntimeError, match="reasoning.*--reasoning-agent-token"):
+        _run_turn(
+            monkeypatch,
+            classification={"ag_news": {"label": "Business"}},
+            tool_result={"action": "handoff", "target_agent": "reasoning-agent"},
+            reasoning_agent_token=None,
+            reasoning_agent_gateway_key=None,
+        )
+
+
+def test_an_unsupported_target_kind_fails_visibly_rather_than_guessing(monkeypatch):
+    with pytest.raises(ValueError, match="unsupported hand-off target_kind"):
+        _run_turn(
+            monkeypatch,
+            classification={"ag_news": {"label": "Business"}},
+            tool_result={"action": "handoff", "target_kind": "router", "target_agent": "some-router"},
+        )
+
+
 def test_short_circuit_turn_has_no_further_spans_after_the_routing_decision(monkeypatch):
     exp = InMemorySpanExporter()
     provider = TracerProvider()
@@ -301,6 +561,27 @@ def test_short_circuit_turn_has_no_further_spans_after_the_routing_decision(monk
     assert spans[2].attributes["gen_ai.tool.call.result"] == "This looks like spam."
     # never spawned the reasoning-agent subprocess or made a second LLM call for this branch
     assert len([s for s in spans if s.name == "gen_ai.chat"]) == 1
+
+
+def test_turn_start_carries_the_system_prompt(monkeypatch):
+    _, received = _run_turn(
+        monkeypatch,
+        classification={"spam": {"label": "spam"}},
+        tool_result={"action": "short_circuit", "response": "This looks like spam."},
+        system_prompt="be terse",
+    )
+    start = next(e for e in received if e["type"] == "turn.start")
+    assert start["system_prompt"] == "be terse"
+
+
+def test_turn_start_omits_system_prompt_by_default(monkeypatch):
+    _, received = _run_turn(
+        monkeypatch,
+        classification={"spam": {"label": "spam"}},
+        tool_result={"action": "short_circuit", "response": "This looks like spam."},
+    )
+    start = next(e for e in received if e["type"] == "turn.start")
+    assert start["system_prompt"] is None
 
 
 def test_an_unmapped_result_ends_the_turn_in_a_visible_error_not_a_guess(monkeypatch):

@@ -148,6 +148,34 @@ turn. See `openspec/changes/archive/2026-09-27-add-live-agent-evaluation/` for t
 4. Watch it on the agent's page: a **Live** feed of turns as they arrive and get scored, **Conversations** with
    full drill-down, and **Quality** (score over time, latency, evaluator strictness, a needs-attention list).
 
+### Playground: spawn an agent from the browser
+
+Running an agent by hand (step 3 above) is still exactly how it works today - the Playground is an
+alternative to that, not a replacement for it; the same turn shows up in the agent's **Live** feed
+either way (`add-agent-playground`).
+
+1. Set `EVAL_SECRET_KEY` before starting the backend (see *Configuration* below) - this is a
+   one-time, deliberate exception to "every credential this platform holds is hash-only": a
+   playground-eligible agent's ingest token and gateway virtual key are stored encrypted, not
+   hashed, specifically because spawning a subprocess needs a *usable* secret, not just a hash of
+   one.
+2. On an agent's page, open the **Playground** tab and pick the catalog flavor (`chatbot`,
+   `reasoning`, or `router` - see `agents/catalog.yaml`) that matches its own script. This captures
+   a fresh ingest token and mints a gateway virtual key scoped to this agent's own model groups,
+   both automatically - nothing to copy-paste.
+3. Write a system prompt (optional - overrides the script's hardcoded default), pick zero or more
+   skills to prepend to it, type a task, and spawn. The platform launches that agent's *real*
+   script (`agents/chatbot.py`/`reasoning_agent.py`/`classifier_router_agent.py`) as a one-shot
+   subprocess from `agents/.venv` (run `make agents-setup` first if you haven't) - never a
+   reimplementation - and the resulting turn appears in the same Live feed a terminal-run instance
+   would use.
+4. A `router`-flavor agent additionally needs at least one **hand-off agent** set (at registration,
+   or later on its Settings tab) - any other separate, independently registered agent, of any kind,
+   it may hand problems off to (a target's own registered kind is purely descriptive; nothing about
+   spawning it depends on it). The platform places no limit on how many a router can declare, even
+   though today's reference router script only ever uses the first; whichever one it uses must
+   itself be playground-eligible before the router can be spawned.
+
 ### The event contract and the SDK
 
 Agents never call this platform's REST API directly for ingest - they use `agents/eval_agent_sdk`
@@ -314,6 +342,8 @@ cases:
 | `EVAL_PROVIDER_MAX_RETRIES` | `4` | Retries for a rate-limited or failing enterprise-provider request, before that request errors |
 | `EVAL_PROVIDER_BACKOFF_S` | `1.0` | Starting backoff for provider retries; doubles each attempt, capped at 30 s (or the provider's own `Retry-After`, if given) |
 | `PORT` / `HOST` | `8000` / `127.0.0.1` | For `make run` |
+| `EVAL_SECRET_KEY` | unset (Playground off) | Encrypts a playground-eligible agent's stored spawn credentials (`add-agent-playground`) - any non-empty passphrase. Unset disables marking any agent playground-eligible, with a clear error naming this variable, rather than storing something that could never be decrypted back. |
+| `EVAL_PLATFORM_SELF_URL` | `http://127.0.0.1:8000` | This backend's own address, passed as `--platform-url` to a spawned agent subprocess - the one a terminal operator would type by hand. Only matters once something is actually spawned from the Playground. |
 
 **Provider API keys are not configured here.** Register a provider on the Providers page by the *name* of the
 environment variable that holds its key (commonly `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, or `AZURE_OPENAI_API_KEY`),

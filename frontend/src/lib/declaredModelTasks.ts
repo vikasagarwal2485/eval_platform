@@ -2,11 +2,14 @@
  * field's purpose (which task this row's model serves) is obvious at a glance instead of relying on a
  * placeholder that disappears the moment you start typing. The backend itself doesn't restrict these keys to
  * this list (any string works - `agent-registry`'s "for example `reasoning`, `generation`, or `default`"), but
- * these four cover every agent shape this platform ships or documents. */
+ * these cover every agent shape this platform ships or documents, including the `router` flavor's own
+ * gateway-routed "routing" task (add-agent-playground) - its "classification" task reuses the same label as
+ * the reasoning agent's, but is a different, custom-kind (non-gateway) dependency for that flavor. */
 export const TASK_TYPE_OPTIONS: { value: string; label: string }[] = [
   { value: 'reasoning', label: 'Reasoning' },
   { value: 'generation', label: 'Generation' },
   { value: 'classification', label: 'Classification' },
+  { value: 'routing', label: 'Routing' },
   { value: 'default', label: 'Default (single, undifferentiated task)' },
 ];
 

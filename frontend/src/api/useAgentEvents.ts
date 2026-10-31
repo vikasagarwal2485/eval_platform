@@ -46,7 +46,12 @@ const EVENT_TYPES = [
   'agent_status',
 ];
 
-const RESYNC_ON = new Set(['turn_finished', 'evaluation_finished']);
+// `turn_started` is included so a turn appears in the list the moment it begins, not only once it
+// finishes (add-agent-playground: a spawned turn can run for minutes - e.g. the reasoning agent's
+// four sequential LLM calls - and the live panel must show it as in-progress immediately, per spec
+// `agent-playground`'s "A spawn's progress streams live to the UI": "the turn's start... shown...
+// without a manual refresh", not just its completion).
+const RESYNC_ON = new Set(['turn_started', 'turn_finished', 'evaluation_finished']);
 
 /**
  * Subscribe to an agent's live feed. Unlike a benchmark run's stream, this one never terminates on its own - the
@@ -78,6 +83,12 @@ export function useAgentEvents(agentId: number | null, enabled = true): AgentLiv
         if (RESYNC_ON.has(type)) {
           qc.invalidateQueries({ queryKey: ['agent-turns', agentId] });
           qc.invalidateQueries({ queryKey: ['agent-summary', agentId] });
+          // Every ingest event that reaches here also moved the agent's `last_seen_at` server-side
+          // (`touch_agent_liveness`), which is what the header's live/idle/offline badge is computed
+          // from (`_liveness()`) - without refreshing this, a freshly-spawned agent that's actively
+          // sending turns keeps showing its stale pre-spawn status (e.g. "offline") indefinitely,
+          // since this single-agent query has no polling interval of its own (unlike the agents list).
+          qc.invalidateQueries({ queryKey: keys.agent(agentId) });
           if (typeof data.turn_id === 'number')
             qc.invalidateQueries({ queryKey: keys.agentTurn(agentId, data.turn_id) });
         }

@@ -6,6 +6,12 @@ evaluation runs later in the `EvaluationWorker`), and returns. See design D1/D2.
 Also GET /api/ingest/v1/whoami (spec `agent-registry`, "An agent can discover its own registration",
 `add-agent-self-discovery`) - lets an agent read back its own registration using the same ingest token, so it
 can derive its own gateway model group names without an operator passing them by hand.
+
+Also GET /api/ingest/v1/skills/{name} (spec `skills-registry`, "A skill is attachable to a single live
+agent invocation", `add-agent-playground`) - lets an agent fetch one skill's current instructions by name,
+using the same ingest token, for a script's `--skill` flag to prepend to its system prompt. Creates or
+modifies no run/suite/case record - this is a read of the same stored skill content a benchmark run would
+attach, not a run of any kind.
 """
 
 from __future__ import annotations
@@ -70,6 +76,26 @@ async def whoami(
         "gateway_model_groups": gateway_model_groups,
         "custom_model_endpoints": custom_model_endpoints,
     }
+
+
+@router.get("/v1/skills/{name}")
+async def get_skill_for_agent(
+    name: str,
+    authorization: str | None = Header(default=None),
+    session: Session = Depends(get_session),
+):
+    """A single skill's current instructions, by name, for an agent to prepend to its system prompt
+    (spec `skills-registry`). Authenticated like `whoami` - a paused agent may still fetch a skill,
+    since this is not sending live traffic. 404 names the missing skill, matching how a deleted
+    skill is rejected elsewhere (spec: "A deleted skill cannot be newly attached")."""
+    token = _bearer_token(authorization)
+    agent = repo.verify_agent_token(session, token)
+    if agent is None:
+        return _err(401, "unauthorized", "Unknown or missing ingest token.")
+    skill = repo.get_skill_by_name(session, name)
+    if skill is None:
+        return _err(404, "skill_not_found", f"No skill named '{name}' exists.")
+    return {"name": skill.name, "description": skill.description, "instructions": skill.instructions}
 
 
 @router.post("/v1/events")

@@ -46,6 +46,38 @@ def test_turn_sends_start_and_end():
     assert end["trace_id"] is None  # no otel_endpoint configured on this client
 
 
+def test_turn_start_carries_the_system_prompt_when_given():
+    received = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        received.extend(request.read() and __import__("json").loads(request.content))
+        return httpx.Response(202, json={"accepted": len(received), "duplicates": 0, "rejected": []})
+
+    client = _client(handler)
+    with client.turn("s1", input="hello", system_prompt="be terse") as t:
+        t.finish("hi")
+    client.close(timeout_s=2.0)
+
+    start = next(e for e in received if e["type"] == "turn.start")
+    assert start["system_prompt"] == "be terse"
+
+
+def test_turn_start_system_prompt_defaults_to_none():
+    received = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        received.extend(request.read() and __import__("json").loads(request.content))
+        return httpx.Response(202, json={"accepted": len(received), "duplicates": 0, "rejected": []})
+
+    client = _client(handler)
+    with client.turn("s1", input="hello") as t:
+        t.finish("hi")
+    client.close(timeout_s=2.0)
+
+    start = next(e for e in received if e["type"] == "turn.start")
+    assert start["system_prompt"] is None
+
+
 def test_exception_inside_turn_is_recorded_as_error_and_reraised():
     received = []
 

@@ -243,7 +243,10 @@ class RunCreate(_BM):
 
 
 # ---------------------------------------------------------------- live agent evaluation
-AgentKind = Literal["chatbot", "reasoning"]
+# "router" (add-agent-playground): a classifier-router orchestrator - classifies, then routes via
+# a tool call, never reasoning through a problem itself. Added so a new classifier-router
+# registration no longer has to reuse "reasoning"'s kind and its built-in rubric.
+AgentKind = Literal["chatbot", "reasoning", "router"]
 
 
 class RubricCriterionIn(_BM):
@@ -348,6 +351,12 @@ class AgentCreate(_BM):
     eval_config: EvalConfigIn = EvalConfigIn()
     rubric: list[RubricCriterionIn] | None = None
     provider_acks: list[str] = []  # provider names being acknowledged in this same request
+    # add-agent-playground: `router`-kind only - the other registered agents (by name) this one may
+    # hand off to; required (non-empty) for that kind, meaningless (must be empty) for any other.
+    # A list - the platform places no limit on how many, even though today's one reference router
+    # script only ever consumes the first. Validated in `repo.py` (each must name an existing
+    # `reasoning`-kind agent, never itself, no duplicates).
+    handoff_agent_names: list[str] = []
 
     @field_validator("declared_models")
     @classmethod
@@ -358,11 +367,20 @@ class AgentCreate(_BM):
 class AgentSettingsUpdate(_BM):
     model_config = ConfigDict(extra="forbid")
 
+    # `None` (the default) leaves the agent's kind unchanged - `omitted` and `set to its current
+    # value` are deliberately the same no-op here, matching every other optional field on this
+    # schema. Changing it is validated in `repo.py` (playground-flavor and hand-off-target
+    # consistency) - never silently breaks another agent's configuration.
+    kind: AgentKind | None = None
     declared_models: dict[str, str | DeclaredModelSpec] | None = None
     eval_config: EvalConfigIn | None = None
     rubric: list[RubricCriterionIn] | None = None
     clear_rubric: bool = False
     provider_acks: list[str] = []
+    # `None` (omitted) leaves it unchanged; `[]` explicitly clears it - unlike the single-name field
+    # this replaced, a list needs no separate `clear_*` escape hatch: the empty list already says
+    # exactly that, unambiguously.
+    handoff_agent_names: list[str] | None = None
 
     @field_validator("declared_models")
     @classmethod
@@ -370,6 +388,26 @@ class AgentSettingsUpdate(_BM):
         cls, v: dict[str, str | DeclaredModelSpec] | None
     ) -> dict[str, str | dict[str, Any]] | None:
         return v if v is None else _validate_declared_models(v)
+
+
+class PlaygroundSpawnIn(_BM):
+    """`add-agent-playground`: one playground spawn's prompt/skills/task - mirrors the CLI flags the
+    spawned script itself gains (`reference-agents` delta)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    system_prompt: str | None = None
+    skills: list[str] = []
+    task: str = Field(min_length=1)
+
+
+class PlaygroundEnableIn(_BM):
+    """`add-agent-playground`: the catalog flavor id this agent's script matches (e.g. "chatbot",
+    "reasoning", "router") - validated against the agent's own `kind` at enable time."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    flavor: str = Field(min_length=1, max_length=40)
 
 
 class EvaluateTurnRequest(_BM):
