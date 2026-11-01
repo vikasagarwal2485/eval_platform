@@ -163,7 +163,8 @@ either way (`add-agent-playground`).
    `reasoning`, or `router` - see `agents/catalog.yaml`) that matches its own script. This captures
    a fresh ingest token and mints a gateway virtual key scoped to this agent's own model groups,
    both automatically - nothing to copy-paste.
-3. Write a system prompt (optional - overrides the script's hardcoded default), pick zero or more
+3. Write a system prompt (optional - overrides the chatbot's hardcoded default; for the router it is
+   appended to the built-in routing instructions, never replacing them), pick zero or more
    skills to prepend to it, type a task, and spawn. The platform launches that agent's *real*
    script (`agents/chatbot.py`/`reasoning_agent.py`/`classifier_router_agent.py`) as a one-shot
    subprocess from `agents/.venv` (run `make agents-setup` first if you haven't) - never a
@@ -332,18 +333,181 @@ cases:
 
 ## Configuration
 
-| Variable | Default | |
+Four separate processes read their own environment: the **platform backend** (`make run`), the **LLM
+gateway** (`gateway/`), the **observability stack** (`observability/`) and each **agent process**. A variable
+only reaches the process started from the shell where it was exported, and only if it was exported
+*before* that process started. Restart a process after changing its variables.
+
+### Platform backend (`make run` / `make dev`)
+
+All read once at startup by `backend/app/config.py`, except `EVAL_GATEWAY_ADMIN_KEY`, which is read from the
+environment on every gateway call.
+
+| Variable | Default | Needed for | Purpose |
+|---|---|---|---|
+| `HOST` | `127.0.0.1` | `make run` | Interface uvicorn binds to |
+| `PORT` | `8000` | `make run` | Port serving the API and the built UI |
+| `OLLAMA_BASE_URL` | `http://localhost:11434` | Benchmarks, Playground chatbot | Where Ollama listens; also passed as `--ollama-url` to a spawned chatbot |
+| `EVAL_DB_PATH` | `data/eval_platform.db` | Always | SQLite file (created and migrated on start) |
+| `EVAL_FRONTEND_DIST` | `frontend/dist` | `make run` | Built SPA directory served by FastAPI |
+| `EVAL_REQUEST_TIMEOUT_S` | `300` | Benchmarks | Per-request timeout (can be overridden per run) |
+| `EVAL_MAX_RETRIES` | `2` | Benchmarks | Retries for a dropped Ollama connection before a run is marked failed |
+| `EVAL_RETRY_BACKOFF_S` | `1.0` | Benchmarks | Backoff between those Ollama retries |
+| `EVAL_PROVIDER_MAX_RETRIES` | `4` | Enterprise models | Retries for a rate-limited or failing enterprise-provider request |
+| `EVAL_PROVIDER_BACKOFF_S` | `1.0` | Enterprise models | Starting provider-retry backoff; doubles each attempt, capped at 30 s (or the provider's `Retry-After`) |
+| `EVAL_SECRET_KEY` | unset (Playground off) | **Playground** | Any non-empty passphrase; encrypts each playground-eligible agent's stored ingest token and gateway key |
+| `EVAL_PLATFORM_SELF_URL` | `http://127.0.0.1:8000` | **Playground** | This backend's address, passed as `--platform-url` to every spawned agent |
+| `EVAL_GATEWAY_URL` | unset (gateway sync off) | **Gateway**, Playground reasoning/router | LiteLLM gateway address (e.g. `http://localhost:4000`); syncs model groups, mints virtual keys, passed as `--gateway-url` |
+| `EVAL_GATEWAY_ADMIN_KEY` | unset (sync skipped) | **Gateway**, Playground reasoning/router | `proxy_admin` gateway key for `/model/new` and `/key/generate` (see `gateway/README.md`); never the master key |
+| `EVAL_GATEWAY_SYNC_TIMEOUT_S` | `5.0` | Gateway | Timeout for each backend-to-gateway admin call |
+| `EVAL_OTEL_ENDPOINT` | unset (tracing off) | **OTel traces** | OTLP gRPC collector (e.g. `http://localhost:4317`) for the backend's spans; also passed as `--otel-endpoint` to spawned agents |
+| `EVAL_TEMPO_BASE_URL` | unset (trace view off) | **OTel traces** | Tempo query API (e.g. `http://localhost:3200`) behind the UI's trace-tree view |
+| `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `AZURE_OPENAI_API_KEY` / … | unset | Enterprise models | Provider keys, named by each provider's *Key env* on the Providers page (any name works) |
+
+**Provider API keys are not configured in a fixed variable.** Register a provider on the Providers page by the *name* of the
+environment variable that holds its key (commonly `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, or `AZURE_OPENAI_API_KEY`),
+then export that variable yourself in the environment you start the application from - see *Enterprise model
+providers* above. An `azure-openai` provider additionally needs its Base URL and API version, set on the Providers
+page itself (not as environment variables).
+
+### LLM gateway process (`gateway/`, `litellm --config config.yaml --port 4000`)
+
+| Variable | Example | Purpose |
 |---|---|---|
-| `OLLAMA_BASE_URL` | `http://localhost:11434` | Where Ollama listens |
-| `EVAL_DB_PATH` | `data/eval_platform.db` | SQLite file (created and migrated on start) |
-| `EVAL_REQUEST_TIMEOUT_S` | `300` | Per-request timeout (can be overridden per run) |
-| `EVAL_MAX_RETRIES` | `2` | Retries for a dropped Ollama connection before a run is marked failed |
-| `EVAL_RETRY_BACKOFF_S` | `1.0` | Backoff between those Ollama retries |
-| `EVAL_PROVIDER_MAX_RETRIES` | `4` | Retries for a rate-limited or failing enterprise-provider request, before that request errors |
-| `EVAL_PROVIDER_BACKOFF_S` | `1.0` | Starting backoff for provider retries; doubles each attempt, capped at 30 s (or the provider's own `Retry-After`, if given) |
-| `PORT` / `HOST` | `8000` / `127.0.0.1` | For `make run` |
-| `EVAL_SECRET_KEY` | unset (Playground off) | Encrypts a playground-eligible agent's stored spawn credentials (`add-agent-playground`) - any non-empty passphrase. Unset disables marking any agent playground-eligible, with a clear error naming this variable, rather than storing something that could never be decrypted back. |
-| `EVAL_PLATFORM_SELF_URL` | `http://127.0.0.1:8000` | This backend's own address, passed as `--platform-url` to a spawned agent subprocess - the one a terminal operator would type by hand. Only matters once something is actually spawned from the Playground. |
+| `LITELLM_MASTER_KEY` | `sk-<operator secret>` | Gateway master key; used only to mint the backend's `proxy_admin` key, never given to the backend or agents |
+| `DATABASE_URL` | `postgresql://postgres:litellm@localhost:5540/litellm` | Postgres for virtual keys, spend tracking and dynamic model groups (required for virtual keys) |
+| `STORE_MODEL_IN_DB` | `True` | Lets the backend create and update model groups at runtime (`/model/new`) |
+| `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `AZURE_OPENAI_API_KEY` / … | provider key | The same provider keys the backend uses; the gateway resolves `os.environ/<VAR>` from **its own** environment |
+
+### Observability stack (`observability/`, `docker compose up -d`)
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `GRAFANA_ADMIN_PASSWORD` | `admin` | Grafana admin password (UI on :3000) |
+
+No other variables are needed. The stack exposes the OTLP collector on `:4317` (gRPC) / `:4318` (HTTP) and Tempo's query API on `:3200`.
+
+### Agent processes (CLI or Playground-spawned)
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `EVAL_OTEL_ENDPOINT` | unset (no spans) | Fallback for each reference agent's `--otel-endpoint` flag; a Playground spawn passes the backend's value explicitly |
+
+Agents take everything else as CLI flags (see *Running an agent from the CLI* below). A Playground spawn runs
+`agents/.venv/bin/python`, so run `make agents-setup` once first.
+
+### Example: `make run` with Playground, gateway and traces
+
+```bash
+# 1. observability stack (optional - only for traces)
+(cd observability && docker compose up -d)
+
+# 2. gateway, in its own shell (see gateway/README.md for Postgres and `prisma generate`)
+cd gateway
+export LITELLM_MASTER_KEY="sk-master-change-me"
+export DATABASE_URL="postgresql://postgres:litellm@localhost:5540/litellm"
+export STORE_MODEL_IN_DB=True
+.venv/bin/litellm --config config.yaml --port 4000
+
+# 3. platform backend + UI, in another shell from the repo root
+make agents-setup                                   # once: the venv Playground spawns use
+export EVAL_SECRET_KEY="any-long-random-passphrase" # turns the Playground on
+export EVAL_PLATFORM_SELF_URL="http://127.0.0.1:8000"
+export EVAL_GATEWAY_URL="http://localhost:4000"
+export EVAL_GATEWAY_ADMIN_KEY="<proxy_admin key minted from LITELLM_MASTER_KEY - see gateway/README.md>"
+export EVAL_OTEL_ENDPOINT="http://localhost:4317"
+export EVAL_TEMPO_BASE_URL="http://localhost:3200"
+export OLLAMA_BASE_URL="http://localhost:11434"
+make run                                            # http://127.0.0.1:8000
+```
+
+Without `EVAL_GATEWAY_URL` and `EVAL_GATEWAY_ADMIN_KEY`, only `chatbot`-flavor agents can be spawned:
+`reasoning` and `router` agents need a minted gateway virtual key. The `router` flavor also calls the external
+context-classifier service at the address registered as the agent's `classification` custom model
+(default `http://127.0.0.1:8765`).
+
+## Running an agent from the CLI
+
+The Playground builds exactly these command lines (`backend/app/core/playground_spawn.py`); you can run them
+yourself from `agents/` with `agents/.venv/bin/python -m <module> ...`. Every agent needs `--platform-url` and
+its own `--token` (the ingest token shown once at registration). The `--gateway-key` is that agent's virtual
+key: it is minted automatically when the agent is made playground-eligible, or by hand with `/key/generate`
+(see `gateway/README.md`).
+
+### `chatbot` (`python -m chatbot`) - talks to Ollama directly, no gateway
+
+| Flag | Required | Default | Purpose |
+|---|---|---|---|
+| `--platform-url` | yes | - | Eval platform base URL |
+| `--token` | yes | - | This agent's ingest token |
+| `--model` | no | `qwen3:8b` | Ollama model that answers |
+| `--ollama-url` | no | `http://localhost:11434` | Ollama base URL |
+| `--system-prompt` | no | built-in prompt | Replaces the default system prompt |
+| `--skill NAME` | no | none | Fetches a platform skill and prepends it to the system prompt; repeatable, applied in order |
+| `--task TEXT` | no | interactive REPL | Answers this one message and exits |
+| `--otel-endpoint` | no | `$EVAL_OTEL_ENDPOINT` | OTLP gRPC endpoint for spans |
+
+```bash
+agents/.venv/bin/python -m chatbot --platform-url http://127.0.0.1:8000 --token <TOKEN> \
+  --model qwen3:8b --task "What is the capital of Finland?"
+```
+
+### `reasoning` (`python -m reasoning_agent`) - classify/plan/solve/verify through the gateway
+
+| Flag | Required | Default | Purpose |
+|---|---|---|---|
+| `--platform-url` | yes | - | Eval platform base URL |
+| `--token` | yes | - | This agent's ingest token; also used to discover its own model groups |
+| `--problem TEXT` / `--task TEXT` / `--suite FILE` | one of them | - | One problem (`--task` is an alias), or replay a suite's reasoning cases |
+| `--gateway-url` | no | `http://localhost:4000` | Gateway base URL |
+| `--gateway-key` | yes, unless `--model` | - | This agent's gateway virtual key |
+| `--model` | no | unset | Uses this one literal model for all calls and skips the gateway (local testing only) |
+| `--reasoning-model-group` | no | discovered | Overrides the plan/verify gateway group |
+| `--generation-model-group` | no | discovered | Overrides the solve gateway group |
+| `--classification-model-group` | no | discovered | Overrides the classify gateway group |
+| `--reasoning-fallback-group` | no | unset | Fallback group for plan/verify |
+| `--generation-fallback-group` | no | unset | Fallback group for solve |
+| `--classification-fallback-group` | no | unset | Fallback group for classify |
+| `--system-prompt` | no | unset | System message for the plan/solve/verify calls |
+| `--skill NAME` | no | none | Fetches a platform skill and prepends it to the system prompt; repeatable |
+| `--otel-endpoint` | no | `$EVAL_OTEL_ENDPOINT` | OTLP gRPC endpoint for spans |
+
+```bash
+agents/.venv/bin/python -m reasoning_agent --platform-url http://127.0.0.1:8000 --token <TOKEN> \
+  --gateway-url http://localhost:4000 --gateway-key <VIRTUAL_KEY> --task "Evaluate the integral of 3x^2 from 0 to 2"
+```
+
+### `router` (`python -m classifier_router_agent`) - classify, route, then short-circuit or hand off
+
+| Flag | Required | Default | Purpose |
+|---|---|---|---|
+| `--platform-url` | yes | - | Eval platform base URL |
+| `--token` | yes | - | This router's ingest token; also used to discover its routing group and classifier URL |
+| `--problem TEXT` / `--task TEXT` | one of them | - | The problem to route and answer (`--task` is an alias) |
+| `--gateway-url` | no | `http://localhost:4000` | Gateway base URL |
+| `--gateway-key` | yes | - | This router's gateway virtual key |
+| `--routing-model-group` | no | discovered | Overrides the routing-call gateway group |
+| `--routing-fallback-group` | no | unset | Fallback group for the routing call |
+| `--classifier-url` | no | discovered, else `http://127.0.0.1:8765` | Overrides the context-classifier service address |
+| `--reasoning-agent-token` | for reasoning hand-offs | unset | Ingest token of the reasoning agent it hands off to |
+| `--reasoning-agent-gateway-key` | for reasoning hand-offs | unset | Gateway virtual key of that reasoning agent |
+| `--chatbot-agent-token` | for chatbot hand-offs | unset | Ingest token of the chatbot agent it hands off to |
+| `--chatbot-agent-ollama-url` | no | `http://localhost:11434` | Ollama URL the chatbot hand-off is spawned with |
+| `--system-prompt` | no | unset | Extra instructions appended to the built-in routing prompt |
+| `--skill NAME` | no | none | Fetches a platform skill and adds it to those extra instructions; repeatable |
+| `--otel-endpoint` | no | `$EVAL_OTEL_ENDPOINT` | OTLP gRPC endpoint for spans; also forwarded to the hand-off subprocess |
+
+```bash
+agents/.venv/bin/python -m classifier_router_agent --platform-url http://127.0.0.1:8000 --token <ROUTER_TOKEN> \
+  --gateway-url http://localhost:4000 --gateway-key <ROUTER_VIRTUAL_KEY> \
+  --reasoning-agent-token <REASONING_TOKEN> --reasoning-agent-gateway-key <REASONING_VIRTUAL_KEY> \
+  --chatbot-agent-token <CHATBOT_TOKEN> \
+  --task "What is the capital of Finland?"
+```
+
+A hand-off kind's flags may be left out if no routing rule can choose that kind. If a turn does route to a kind
+whose flags are missing, it ends in a visible error instead of misrouting. A Playground spawn fills these flags in
+from the router's configured hand-off agents, which must themselves be playground-eligible.
 
 **Provider API keys are not configured here.** Register a provider on the Providers page by the *name* of the
 environment variable that holds its key (commonly `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, or `AZURE_OPENAI_API_KEY`),
