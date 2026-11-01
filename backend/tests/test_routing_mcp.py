@@ -28,20 +28,34 @@ def test_routes_yaml_parses_and_has_the_expected_shape():
         "response": "This message looks like spam and was not forwarded to any agent.",
     }
     assert routes["rules"][1] == {
+        "task": "complexity",
+        "label": "simple",
+        "action": "handoff",
+        "target_kind": "chatbot",
+        "target_agent": "chatbot-agent",
+    }
+    assert routes["rules"][2] == {
+        "task": "complexity",
+        "label": "reasoning",
+        "action": "handoff",
+        "target_kind": "reasoning",
+        "target_agent": "reasoning-agent",
+    }
+    assert routes["rules"][3] == {
         "task": "ag_news",
         "label": "Sports",
         "action": "handoff",
         "target_kind": "chatbot",
         "target_agent": "chatbot-agent",
     }
-    assert routes["rules"][2] == {
+    assert routes["rules"][4] == {
         "task": "ag_news",
         "label": "World",
         "action": "handoff",
         "target_kind": "chatbot",
         "target_agent": "chatbot-agent",
     }
-    assert routes["rules"][3] == {
+    assert routes["rules"][5] == {
         "task": "ag_news",
         "label": "*",
         "action": "handoff",
@@ -115,6 +129,24 @@ def test_a_wildcard_rule_matches_any_other_label_for_its_task():
     for label in ("Business", "Sci-Tech"):
         result = resolve({"ag_news": {"label": label, "confidence": 0.5}}, routes)
         assert result == {"action": "handoff", "target_kind": "reasoning", "target_agent": "reasoning-agent"}
+
+
+def test_complexity_overrides_the_news_topic():
+    """'What is the capital of Finland?' classified as Business/Sci-Tech used to fall through to the
+    ag_news wildcard and be handed to the reasoning agent; a `simple` complexity now goes to the chatbot."""
+    routes = load_routes()
+    chatbot = {"action": "handoff", "target_kind": "chatbot", "target_agent": "chatbot-agent"}
+    reasoning = {"action": "handoff", "target_kind": "reasoning", "target_agent": "reasoning-agent"}
+    for topic in ("Business", "Sci-Tech", "World", "Sports"):
+        base = {"ag_news": {"label": topic, "confidence": 0.8}, "spam": {"label": "ham", "confidence": 0.9}}
+        assert resolve({**base, "complexity": {"label": "simple"}}, routes) == chatbot
+        assert resolve({**base, "complexity": {"label": "reasoning"}}, routes) == reasoning
+
+
+def test_spam_still_short_circuits_before_complexity():
+    routes = load_routes()
+    result = resolve({"spam": {"label": "spam", "confidence": 0.95}, "complexity": {"label": "simple"}}, routes)
+    assert result["action"] == "short_circuit"
 
 
 def test_first_match_wins_when_more_than_one_rule_could_apply():

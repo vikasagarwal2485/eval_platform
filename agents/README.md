@@ -304,11 +304,21 @@ error rather than silently misrouting or crashing. `chatbot.py` itself has no se
 so the chatbot branch discovers the target's declared model on its behalf (via `whoami()`, using the target's
 own token) and passes it through explicitly.
 
+**Chatbot vs. reasoning is decided by `complexity`, not by news topic**: the classifier only knows spam and
+`ag_news` topic, neither of which says how much reasoning a problem needs - topic-only routing sent
+"What is the capital of Finland?" (topic `Sci-Tech`/`Business`) to the reasoning agent. So the routing LLM
+now sees the problem text and sets a required `complexity` argument (`simple` or `reasoning`) on its
+`resolve_route` call; if it omits or garbles it, a deterministic heuristic (`heuristic_complexity()`: math
+expressions, reasoning keywords, long or multi-question prompts -> `reasoning`) fills it in. The agent adds
+it to the classification as `complexity: {"label": ..., "source": "routing_llm" | "heuristic"}`, and
+`routes.yaml` matches `complexity` right after the spam rule: `simple` -> chatbot, `reasoning` -> reasoning.
+
 **A note on the classifier's own labels**: the reference `routes.yaml` routes any confidently
-`spam`-labeled result (`min_confidence: 0.8` - see below) to the short-circuit branch, the `ag_news` topics
-`Sports`/`World` to the chatbot hand-off branch, and every other `ag_news` topic (`Business`/`Sci-Tech`) to
-the reasoning hand-off branch - a demonstration split over the only two tasks this classifier loads, not a
-claim that a topic label reliably predicts how much reasoning a problem needs. The classifier is also a
+`spam`-labeled result (`min_confidence: 0.8` - see below) to the short-circuit branch, then routes on
+`complexity` (above). The `ag_news` topic rules after that are only a fallback for callers that don't supply
+`complexity`: `Sports`/`World` go to the chatbot, every other topic (`Business`/`Sci-Tech`) to reasoning -
+a demonstration split, not a claim that a topic label reliably predicts how much reasoning a problem needs.
+The classifier is also a
 real, independently trained model, and its `spam` detector can be noisy in practice - a perfectly ordinary
 sentence can land barely above its 0.5 binary decision boundary (e.g. 0.54) even while the *other* loaded
 task (`ag_news`) classifies it with real confidence. If you want to see the classifier's raw confidence for

@@ -298,6 +298,62 @@ def test_routing_decision_gives_up_after_the_bounded_retry_with_the_models_reply
     assert len(llm.invocations) == router_agent.ROUTING_MAX_ATTEMPTS
 
 
+def test_routing_decision_adds_the_models_complexity_and_shows_it_the_problem():
+    calls = []
+    llm = _SequencedLLM([_FakeAIResponse([{"name": "resolve_route", "id": "1", "args": {
+        "classification": {"ag_news": {"label": "Sci-Tech"}}, "complexity": "simple"}}])])
+    router_agent.routing_decision(
+        llm, {"ag_news": {"label": "Sci-Tech"}}, call_tool=lambda c: calls.append(c) or {"action": "handoff"},
+        problem="What is the capital of Finland?",
+    )
+    assert calls[0]["complexity"] == {"label": "simple", "confidence": 1.0, "source": "routing_llm"}
+    assert calls[0]["ag_news"] == {"label": "Sci-Tech"}
+    assert "What is the capital of Finland?" in llm.invocations[0][1].content
+
+
+@pytest.mark.parametrize(
+    "problem,expected",
+    [
+        ("What is the capital of Finland?", "simple"),
+        ("Who wrote Hamlet?", "simple"),
+        ("Hi there!", "simple"),
+        ("Evaluate the definite integral of 3x^2 from 0 to 2.", "reasoning"),
+        ("What is 17 * 23?", "reasoning"),
+        ("Compare the pros and cons of SQL and NoSQL databases.", "reasoning"),
+        ("If a train leaves at 3pm going 60 mph, how many miles has it gone by 5pm?", "reasoning"),
+    ],
+)
+def test_heuristic_complexity(problem, expected):
+    assert router_agent.heuristic_complexity(problem) == expected
+
+
+@pytest.mark.parametrize("bad", [None, "", "medium"])
+def test_routing_decision_falls_back_to_the_heuristic_when_complexity_is_missing_or_invalid(bad):
+    calls = []
+    args = {"classification": {"ag_news": {"label": "Business"}}}
+    if bad is not None:
+        args["complexity"] = bad
+    llm = _SequencedLLM([_FakeAIResponse([{"name": "resolve_route", "args": args, "id": "1"}])])
+    router_agent.routing_decision(
+        llm, {"ag_news": {"label": "Business"}}, call_tool=lambda c: calls.append(c) or {"action": "handoff"},
+        problem="What is the capital of Finland?",
+    )
+    assert calls[0]["complexity"] == {"label": "simple", "confidence": 1.0, "source": "heuristic"}
+
+
+def test_capital_of_finland_resolves_to_the_chatbot_end_to_end_through_the_real_routes():
+    """The reported bug: topic-only routing sent this to the reasoning agent."""
+    from routing_mcp.server import load_routes, resolve
+
+    llm = _SequencedLLM([_FakeAIResponse([{"name": "resolve_route", "id": "1", "args": {
+        "classification": {"ag_news": {"label": "Sci-Tech", "confidence": 0.6}}}}])])
+    decision, _, _ = router_agent.routing_decision(
+        llm, {"ag_news": {"label": "Sci-Tech", "confidence": 0.6}, "spam": {"label": "ham", "confidence": 0.9}},
+        call_tool=lambda c: resolve(c, load_routes()), problem="What is the capital of Finland?",
+    )
+    assert decision["target_kind"] == "chatbot"
+
+
 def test_routing_decision_falls_back_to_the_classifier_result_when_the_tool_argument_is_empty():
     calls = []
     llm = _SequencedLLM([_FakeAIResponse([{"name": "resolve_route", "args": {"classification": {}}, "id": "1"}])])

@@ -104,9 +104,12 @@ DEFAULT_CLASSIFIER_URL = "http://127.0.0.1:8765"
 
 RESOLVE_ROUTE_TOOL = "resolve_route"
 ROUTING_SYSTEM_PROMPT = (
-    "You are a routing assistant for an AI agent platform. You will be given a context-classifier's result "
-    "for one problem, as a JSON object keyed by classifier task. Call the resolve_route tool exactly once, "
-    "passing that exact JSON object as its `classification` argument, to decide what should happen next. Do "
+    "You are a routing assistant for an AI agent platform. You will be given a problem and a "
+    "context-classifier's result for it, as a JSON object keyed by classifier task. Call the resolve_route "
+    "tool exactly once, passing that exact JSON object as its `classification` argument, and set its "
+    "`complexity` argument to 'simple' if the problem is a factual lookup, definition, greeting or short "
+    "conversational question answerable in one step, or 'reasoning' if it needs math, logic, code, "
+    "multi-step analysis, planning or comparison. Do "
     "not call any other tool, and do not call resolve_route more than once. Do not answer, solve or comment "
     "on the problem itself - your only job is to make that one tool call."
 )
@@ -114,6 +117,7 @@ ROUTING_RETRY_PROMPT = (
     "You did not call the resolve_route tool. Do not reply with text. Call resolve_route now, passing the "
     "classifier result above, unchanged, as its `classification` argument."
 )
+COMPLEXITY_LABELS = ("simple", "reasoning")
 # One normal attempt plus one corrective retry - still bounded, never an open-ended loop.
 ROUTING_MAX_ATTEMPTS = 2
 
@@ -197,6 +201,7 @@ def make_routing_llm(
 
 def routing_decision(
     llm: ChatOpenAI, classification: dict, call_tool=call_resolve_route, *, system_prompt: str | None = None,
+    problem: str | None = None,
 ) -> tuple[dict, str, dict]:
     """The bounded routing step: one LLM call (bound with the `resolve_route` tool, required to call it),
     executing only the first tool call it requests, and using that tool's own return value directly as the
@@ -218,15 +223,24 @@ def routing_decision(
             "description": "Resolve a context-classifier result to a concrete downstream routing action.",
             "parameters": {
                 "type": "object",
-                "properties": {"classification": {"type": "object"}},
-                "required": ["classification"],
+                "properties": {
+                    "classification": {"type": "object"},
+                    "complexity": {
+                        "type": "string",
+                        "enum": list(COMPLEXITY_LABELS),
+                        "description": "'simple' for a factual lookup, definition, greeting or short "
+                        "conversational question answerable in one step; 'reasoning' for math, logic, "
+                        "code, multi-step analysis, planning or comparisons.",
+                    },
+                },
+                "required": ["classification", "complexity"],
             },
         },
     }
-    messages = [
-        SystemMessage(_routing_system_prompt(system_prompt)),
-        HumanMessage(f"Classifier result:\n{json.dumps(classification)}"),
-    ]
+    human = f"Classifier result:\n{json.dumps(classification)}"
+    if problem is not None:
+        human = f"Problem:\n{problem}\n\n{human}"
+    messages = [SystemMessage(_routing_system_prompt(system_prompt)), HumanMessage(human)]
     # `tool_choice=RESOLVE_ROUTE_TOOL` forces the call on providers that honour it (OpenAI, Anthropic, ...).
     # It is NOT enough on its own: the local gateway's `ollama_chat/*` deployments have no `tool_choice`
     # at all - litellm pops it from every `ollama_chat` request (`OllamaChatConfig.map_openai_params`) - so it is silently dropped there and the
@@ -261,9 +275,39 @@ def routing_decision(
         # A model that called the tool but mangled/omitted its argument - the classifier's own result is
         # what the tool is defined to take, so pass that through rather than an empty/garbled object.
         tool_input = classification
+    if problem is not None:
+        # The topic-only classifier says nothing about how much reasoning a problem needs (a factual
+        # "What is the capital of Finland?" can land on any ag_news topic and used to fall through to the
+        # reasoning catch-all). The routing model's own `complexity` judgement - or, if it omitted/garbled
+        # it, a deterministic heuristic - is added as one more classifier-shaped task that routes.yaml
+        # matches on before the topic rules.
+        complexity = args.get("complexity")
+        source = "routing_llm"
+        if complexity not in COMPLEXITY_LABELS:
+            complexity, source = heuristic_complexity(problem), "heuristic"
+        tool_input = {**tool_input, "complexity": {"label": complexity, "confidence": 1.0, "source": source}}
     decision = call_tool(tool_input)
     model = _concrete_model(response, llm.model_name)
     return decision, model, usage_total
+
+
+_REASONING_CUES = re.compile(
+    r"\b(prove|proof|derive|calculate|compute|solve|evaluate|integral|derivative|equation|simplify|"
+    r"step[- ]by[- ]step|explain why|why does|why do|how many|how much|compare|contrast|analy[sz]e|"
+    r"plan|design|optimi[sz]e|algorithm|code|program|function|debug|implement|puzzle|riddle|"
+    r"probability|estimate|trade-?offs?|pros and cons)\b",
+    re.IGNORECASE,
+)
+_MATH_EXPR = re.compile(r"\d\s*[-+*/^=×÷]\s*\d|\d\s*x\b|\bx\s*\^")
+
+
+def heuristic_complexity(problem: str) -> str:
+    """Deterministic fallback for when the routing model doesn't supply `complexity`: 'reasoning' for long
+    problems, arithmetic/algebra, or explicit reasoning cues; 'simple' otherwise."""
+    text = problem.strip()
+    if len(text) > 280 or text.count("?") > 1 or _MATH_EXPR.search(text) or _REASONING_CUES.search(text):
+        return "reasoning"
+    return "simple"
 
 
 def _routing_system_prompt(extra: str | None) -> str:
@@ -470,7 +514,7 @@ def _route_node(state: RouterState) -> dict:
     # `call_resolve_route` and have it actually take effect here.
     decision, model, usage = routing_decision(
         state["llm"], state["classification"], call_tool=call_resolve_route,
-        system_prompt=state.get("system_prompt"),
+        system_prompt=state.get("system_prompt"), problem=state.get("problem"),
     )
     state["turn"].llm_call(
         model=model,
