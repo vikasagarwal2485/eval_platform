@@ -138,18 +138,20 @@ class _FakeBoundLLM:
 
 
 class _FakeLLM:
-    """Stands in for `ChatOpenAI` - `routing_decision()` only ever calls `.bind_tools([...]).invoke(...)` and
-    reads `.model_name`."""
+    """Stands in for `ChatOpenAI` - `routing_decision()` only ever calls
+    `.bind_tools([...], tool_choice=...).invoke(...)` and reads `.model_name`."""
 
     model_name = "classifier-router-agent__routing"
 
     def __init__(self, response):
         self._response = response
         self.bound_tools = None
+        self.bound_tool_choice = None
         self.bound = None
 
-    def bind_tools(self, tools):
+    def bind_tools(self, tools, *, tool_choice=None):
         self.bound_tools = tools
+        self.bound_tool_choice = tool_choice
         self.bound = _FakeBoundLLM(self._response)
         return self.bound
 
@@ -171,6 +173,17 @@ def test_routing_decision_calls_the_tool_and_uses_its_result_directly():
     assert model == "ollama_chat/qwen3:8b"
     assert usage == {"prompt_tokens": 10, "completion_tokens": 5}
     assert calls == [{"spam": {"label": "spam"}}]
+
+
+def test_routing_decision_forces_the_tool_choice_rather_than_leaving_it_optional():
+    """Found live: a genuine calculus problem ("evaluate the definite integral of 3x^2 ...")
+    raised RoutingToolNotCalled - `bind_tools([...])` with no `tool_choice` defaults to "auto",
+    letting the model answer in plain text instead of calling resolve_route at all. The request
+    itself must force it, not just ask for it in the system prompt."""
+    response = _FakeAIResponse([{"name": "resolve_route", "args": {"classification": {"x": 1}}, "id": "1"}])
+    llm = _FakeLLM(response)
+    router_agent.routing_decision(llm, {"x": 1}, call_tool=lambda c: {"action": "short_circuit", "response": "ok"})
+    assert llm.bound_tool_choice == router_agent.RESOLVE_ROUTE_TOOL
 
 
 def test_routing_decision_executes_only_the_first_tool_call_even_if_more_are_requested():

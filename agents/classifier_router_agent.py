@@ -214,7 +214,14 @@ def routing_decision(
         },
     }
     messages = [SystemMessage(system_prompt or ROUTING_SYSTEM_PROMPT), HumanMessage(json.dumps(classification))]
-    response = llm.bind_tools([tool_schema]).invoke(messages)
+    # `tool_choice=RESOLVE_ROUTE_TOOL` (found live: a genuine calculus problem - "evaluate the
+    # definite integral of 3x^2 ... " - hit RoutingToolNotCalled) forces the call, rather than
+    # relying on the system prompt's own "must call resolve_route" instruction alone - `bind_tools`
+    # without an explicit `tool_choice` defaults to "auto", which lets the model answer in plain
+    # text instead of calling any tool at all. This docstring already claimed the tool was
+    # "required" before this fix; now the request itself actually enforces it, for whichever
+    # backing model the gateway routes this call to.
+    response = llm.bind_tools([tool_schema], tool_choice=RESOLVE_ROUTE_TOOL).invoke(messages)
     if not response.tool_calls:
         raise RoutingToolNotCalled("the routing model did not call resolve_route")
     call = response.tool_calls[0]  # only the first requested call is ever executed - never more than one
