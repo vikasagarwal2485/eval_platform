@@ -44,6 +44,24 @@ rules:
     action: short_circuit
     response: "This message looks like spam and was not forwarded to any agent."
 
+  # `complexity` is not produced by the context-classifier (it only knows spam and news topic, neither of
+  # which says how much reasoning a problem needs - "What is the capital of Finland?" used to fall through
+  # to the topic catch-all below and get handed to the reasoning agent). The router agent adds it to the
+  # classification before calling resolve_route: the routing LLM's own simple/reasoning judgement of the
+  # problem text, or a deterministic heuristic if the model omits it. It is matched before the topic rules,
+  # which remain only as a fallback for callers that don't supply `complexity`.
+  - task: complexity
+    label: simple
+    action: handoff
+    target_kind: chatbot
+    target_agent: chatbot-agent
+
+  - task: complexity
+    label: reasoning
+    action: handoff
+    target_kind: reasoning
+    target_agent: reasoning-agent
+
   - task: ag_news
     label: Sports
     action: handoff
