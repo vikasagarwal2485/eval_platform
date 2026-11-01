@@ -204,8 +204,10 @@ def create_agent(body: AgentCreate, request: Request, session: Session = Depends
 
 
 @router.get("")
-def list_agents(session: Session = Depends(get_session)):
-    return [_agent_out(a) for a in repo.list_agents(session)]
+def list_agents(response: Response, limit: int = 50, offset: int = 0, session: Session = Depends(get_session)):
+    # `X-Total-Count` (add-uplift-frontend-ux) - see runs.list_runs for the rationale.
+    response.headers["X-Total-Count"] = str(repo.count_agents(session))
+    return [_agent_out(a) for a in repo.list_agents(session, limit=limit, offset=offset)]
 
 
 # ------------------------------------------------------------------ agent flavor catalog (add-agent-playground)

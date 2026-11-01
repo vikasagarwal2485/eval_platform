@@ -113,7 +113,7 @@ export default function ModelPicker({
       {models && models.length > 0 && (
         <div className="stack" role="group" aria-label="Available models">
           {groupModels(models).map((g) => (
-            <fieldset key={g.key} style={{ margin: 0 }}>
+            <fieldset key={g.key} className="m-0">
               <legend>{g.title}</legend>
               <div className="model-list">
                 {g.models.map((m) => {
@@ -123,8 +123,7 @@ export default function ModelPicker({
                   return (
                     <div
                       key={m.name}
-                      className={`model-card${on ? ' selected' : ''}`}
-                      style={m.available ? undefined : { opacity: 0.75 }}
+                      className={`model-card${on ? ' selected' : ''}${m.available ? '' : ' unavailable'}`}
                     >
                       <label className="check">
                         <input
@@ -148,7 +147,7 @@ export default function ModelPicker({
                             .join(' · ')}
                         </div>
                       )}
-                      <div className="row" style={{ marginTop: 6 }}>
+                      <div className="row mt-sm">
                         {cloud && <span className="badge info">cloud</span>}
                         {m.provider_kind && <span className="badge">{KIND_LABEL[m.provider_kind]}</span>}
                         {(m.thinking || m.reasoning) && <span className="badge info">reasoning</span>}
@@ -167,7 +166,7 @@ export default function ModelPicker({
                         {!m.available && <span className="badge warn">unavailable</span>}
                       </div>
                       {!m.available && (
-                        <div id={reasonId} className="small muted" style={{ marginTop: 4 }}>
+                        <div id={reasonId} className="small muted mt-xs">
                           {m.unavailable_reason}
                         </div>
                       )}

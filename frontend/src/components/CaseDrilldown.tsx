@@ -14,7 +14,7 @@ function CriteriaList({ criteria }: { criteria: Criteria | undefined }) {
   const entries = Object.entries(criteria ?? {});
   if (!entries.length) return null;
   return (
-    <ul style={{ margin: '4px 0', paddingLeft: 18 }}>
+    <ul className="list-tight">
       {entries.map(([name, c]) => (
         <li key={name}>
           <strong>{name}</strong> {c.score}/5 <span className="muted">{c.reason}</span>
@@ -51,7 +51,7 @@ function JudgeBlock({ score, label, open }: { score: ScoreRow; label: string; op
         {label}: {score.outcome === 'judged' ? fmtPct(score.value) : 'all judges failed'} ·
         cross-judged by {ok} of {judgements.length} {judgements.length === 1 ? 'judge' : 'judges'}
       </summary>
-      <ul style={{ margin: '4px 0', paddingLeft: 18 }} aria-label={`${label} by judge`}>
+      <ul className="list-tight" aria-label={`${label} by judge`}>
         {judgements.map((j) => (
           <li key={j.judge_model}>
             <strong>{j.judge_model}</strong>{' '}
@@ -78,7 +78,7 @@ function ScoreDetails({ r }: { r: ResultItem }) {
         <div>
           Predicted: <code>{String(d.predicted ?? dash)}</code>
           {d.ambiguous ? (
-            <span className="badge warn" style={{ marginLeft: 4 }}>
+            <span className="badge warn ml-sm">
               ambiguous
             </span>
           ) : null}
@@ -152,7 +152,7 @@ function Metrics({ r }: { r: ResultItem }) {
         </>
       )}
       {r.is_cold && (
-        <span className="badge warn" style={{ marginLeft: 4 }}>
+        <span className="badge warn ml-sm">
           cold start
         </span>
       )}
@@ -165,7 +165,7 @@ function Metrics({ r }: { r: ResultItem }) {
           )}
           {r.attempts > 1 && <span> · {r.attempts} attempts</span>}
           {r.params_ignored.length > 0 && (
-            <ul style={{ margin: '2px 0 0', paddingLeft: 18 }}>
+            <ul className="list-tight">
               {r.params_ignored.map((p) => (
                 <li key={p.name}>
                   Not applied: <strong>{p.name}</strong> — {p.reason}
@@ -181,8 +181,8 @@ function Metrics({ r }: { r: ResultItem }) {
 
 function ModelResult({ r, multi }: { r: ResultItem; multi: boolean }) {
   return (
-    <div style={{ marginBottom: 12 }}>
-      <div className="row" style={{ marginBottom: 4 }}>
+    <div className="mb-md">
+      <div className="row mb-xs">
         {multi && <span className="muted small">Repeat {r.repeat + 1}</span>}
         <OutcomeBadge outcome={r.primary.outcome} value={r.primary.value} />
       </div>
@@ -231,9 +231,9 @@ export default function CaseDrilldown({ run, results }: { run: Run; results: Res
 
   return (
     <div>
-      <div className="card" style={{ marginBottom: 16 }}>
+      <div className="card mb-md">
         <div className="row">
-          <div className="field" style={{ margin: 0 }}>
+          <div className="field m-0">
             <label htmlFor="f-cat">Category</label>
             <select
               id="f-cat"
@@ -248,7 +248,7 @@ export default function CaseDrilldown({ run, results }: { run: Run; results: Res
               ))}
             </select>
           </div>
-          <div className="field" style={{ margin: 0 }}>
+          <div className="field m-0">
             <label htmlFor="f-model">Model</label>
             <select id="f-model" value={model} onChange={(e) => setModel(e.target.value)}>
               <option value="">All models</option>
@@ -259,7 +259,7 @@ export default function CaseDrilldown({ run, results }: { run: Run; results: Res
               ))}
             </select>
           </div>
-          <label className="check" style={{ alignSelf: 'flex-end', paddingBottom: 6 }}>
+          <label className="check check-field-align">
             <input
               type="checkbox"
               checked={failuresOnly}
@@ -291,7 +291,7 @@ export default function CaseDrilldown({ run, results }: { run: Run; results: Res
             aria-label={`Case: ${c.title || c.prompt.slice(0, 40)}`}
           >
             <div className="card-head">
-              <h2 style={{ margin: 0, fontSize: '1.05rem' }}>{c.title || c.prompt.slice(0, 80)}</h2>
+              <h2 className="card-title-h3">{c.title || c.prompt.slice(0, 80)}</h2>
               <CategoryBadge category={c.category} />
               {c.expected && (
                 <span className="small">
@@ -310,12 +310,12 @@ export default function CaseDrilldown({ run, results }: { run: Run; results: Res
               )}
               {sent && <pre className="output">{sent.sent_prompt}</pre>}
             </details>
-            <div className="grid-2" style={{ marginTop: 12 }}>
+            <div className="grid-2 mt-md">
               {shown.map((m) => {
                 const rs = perModel?.get(m) ?? [];
                 return (
                   <div key={m}>
-                    <h3 style={{ margin: '0 0 6px' }}>
+                    <h3>
                       <ModelChip
                         name={m}
                         source={modelInfo.get(m)?.source}

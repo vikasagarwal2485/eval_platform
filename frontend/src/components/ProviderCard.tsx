@@ -9,6 +9,7 @@ import {
   validateEnvName,
 } from '../lib/providers';
 import { fmtDate } from '../lib/format';
+import { useConfirm } from './ConfirmDialog';
 import { Banner, ErrorBox } from './ui';
 
 function ReasoningEffortCell({
@@ -34,7 +35,7 @@ function ReasoningEffortCell({
       aria-label={`Reasoning effort: ${modelRef}`}
       value={draft}
       placeholder="low"
-      style={{ width: 80 }}
+      className="reasoning-effort-input"
       onChange={(e) => setDraft(e.target.value)}
       onBlur={commit}
     />
@@ -43,6 +44,7 @@ function ReasoningEffortCell({
 
 function ModelsTable({ provider }: { provider: Provider }) {
   const m = useProviderMutations();
+  const confirm = useConfirm();
   const error = m.updateModel.error ?? m.removeModel.error;
   const isAzure = provider.kind === 'azure-openai';
   if (!provider.models.length) return <p className="muted small">No models registered yet.</p>;
@@ -130,8 +132,15 @@ function ModelsTable({ provider }: { provider: Provider }) {
                   <button
                     className="link"
                     aria-label={`Remove ${mo.ref}`}
-                    onClick={() => {
-                      if (window.confirm(`Remove ${mo.ref}? Past runs keep their results.`))
+                    onClick={async () => {
+                      if (
+                        await confirm({
+                          title: `Remove ${mo.ref}?`,
+                          body: 'Past runs keep their results.',
+                          confirmLabel: 'Remove',
+                          danger: true,
+                        })
+                      )
                         m.removeModel.mutate({ providerId: provider.id, modelId: mo.id });
                     }}
                   >
@@ -204,14 +213,13 @@ function AddModels({ provider }: { provider: Provider }) {
   };
 
   return (
-    <div className="stack" style={{ marginTop: 12 }}>
+    <div className="stack mt-md">
       <form
         onSubmit={add}
-        className="row"
+        className="row align-end"
         aria-label={`Add a model to ${provider.name}`}
-        style={{ alignItems: 'flex-end' }}
       >
-        <div className="field" style={{ margin: 0 }}>
+        <div className="field m-0">
           <label htmlFor={`mid-${provider.id}`}>{isAzure ? 'Deployment name' : 'Model id'}</label>
           <input
             id={`mid-${provider.id}`}
@@ -221,7 +229,7 @@ function AddModels({ provider }: { provider: Provider }) {
             onChange={(e) => setModelId(e.target.value)}
           />
         </div>
-        <label className="check" style={{ marginBottom: 6 }}>
+        <label className="check mb-sm">
           <input
             type="checkbox"
             checked={reasoning}
@@ -230,7 +238,7 @@ function AddModels({ provider }: { provider: Provider }) {
           <span>Reasoning model</span>
         </label>
         {reasoning && (
-          <div className="field" style={{ margin: 0 }}>
+          <div className="field m-0">
             <label htmlFor={`mre-${provider.id}`}>
               Reasoning effort <span className="hint">(optional)</span>
             </label>
@@ -243,7 +251,7 @@ function AddModels({ provider }: { provider: Provider }) {
             />
           </div>
         )}
-        <label className="check" style={{ marginBottom: 6 }}>
+        <label className="check mb-sm">
           <input
             type="checkbox"
             checked={classification}
@@ -289,9 +297,9 @@ function AddModels({ provider }: { provider: Provider }) {
         <fieldset>
           <legend>Models offered by {KIND_LABEL[provider.kind]}</legend>
           {available.length === 0 && <p className="muted">The provider returned no models.</p>}
-          <div style={{ maxHeight: 240, overflow: 'auto' }}>
+          <div className="available-models-list">
             {available.map((a) => (
-              <label key={a.id} className="check" style={{ marginBottom: 4 }}>
+              <label key={a.id} className="check mb-xs">
                 <input
                   type="checkbox"
                   disabled={a.already_added}
@@ -309,7 +317,7 @@ function AddModels({ provider }: { provider: Provider }) {
               </label>
             ))}
           </div>
-          <div className="row" style={{ marginTop: 8 }}>
+          <div className="row mt-sm">
             <button
               className="primary"
               type="button"
@@ -360,7 +368,7 @@ function EditProvider({ provider, onDone }: { provider: Provider; onDone: () => 
     <form onSubmit={save} className="stack" aria-label={`Edit ${provider.name}`} noValidate>
       <div className="row">
         {!noKey && (
-          <div className="field" style={{ margin: 0 }}>
+          <div className="field m-0">
             <label htmlFor={`ee-${provider.id}`}>API key environment variable</label>
             <input
               id={`ee-${provider.id}`}
@@ -371,20 +379,20 @@ function EditProvider({ provider, onDone }: { provider: Provider; onDone: () => 
             />
           </div>
         )}
-        <div className="field" style={{ margin: 0, flex: 1 }}>
+        <div className="field field-grow">
           <label htmlFor={`eu-${provider.id}`}>
             {isOllama ? 'Ollama server URL' : isCustom ? 'Service base URL' : 'Base URL'}
           </label>
           <input
             id={`eu-${provider.id}`}
             type="text"
-            style={{ width: '100%' }}
+            className="w-full"
             value={url}
             onChange={(e) => setUrl(e.target.value)}
           />
         </div>
         {isAzure && (
-          <div className="field" style={{ margin: 0 }}>
+          <div className="field m-0">
             <label htmlFor={`eav-${provider.id}`}>API version</label>
             <input
               id={`eav-${provider.id}`}
@@ -415,6 +423,7 @@ function EditProvider({ provider, onDone }: { provider: Provider; onDone: () => 
 
 export default function ProviderCard({ provider }: { provider: Provider }) {
   const m = useProviderMutations();
+  const confirm = useConfirm();
   const [result, setResult] = useState<ConnectionTest | null>(null);
   const [editing, setEditing] = useState(false);
   const status = result ? STATUS_LABEL[result.status] : null;
@@ -443,11 +452,14 @@ export default function ProviderCard({ provider }: { provider: Provider }) {
         <button
           className="danger"
           aria-label={`Remove provider ${provider.name}`}
-          onClick={() => {
+          onClick={async () => {
             if (
-              window.confirm(
-                `Remove provider “${provider.name}” and its ${provider.models.length} models? Past runs keep their results.`,
-              )
+              await confirm({
+                title: `Remove provider “${provider.name}”?`,
+                body: `Its ${provider.models.length} models will be removed too. Past runs keep their results.`,
+                confirmLabel: 'Remove',
+                danger: true,
+              })
             )
               m.remove.mutate(provider.id);
           }}
@@ -455,7 +467,7 @@ export default function ProviderCard({ provider }: { provider: Provider }) {
           Remove
         </button>
       </div>
-      <p className="small muted" style={{ marginTop: 0 }}>
+      <p className="small muted mt-0">
         {isOllama ? (
           <>Server URL <code>{provider.base_url || 'http://localhost:11434 (default)'}</code></>
         ) : isCustom ? (
@@ -499,12 +511,12 @@ export default function ProviderCard({ provider }: { provider: Provider }) {
       )}
       {!!m.test.error && <ErrorBox error={m.test.error} />}
       {result && status && (
-        <div role="status" className="small" style={{ marginBottom: 8 }}>
+        <div role="status" className="small mb-sm">
           Connection: <span className={`badge ${status.kind}`}>{status.text}</span> {result.message}
         </div>
       )}
       {editing && (
-        <div style={{ marginBottom: 12 }}>
+        <div className="mb-md">
           <EditProvider provider={provider} onDone={() => setEditing(false)} />
         </div>
       )}

@@ -1,9 +1,10 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { ApiError } from '../api/client';
-import { useAgents, useCreateAgent, useModels } from '../api/hooks';
+import { useAgents, useAgentsPage, useCreateAgent, useModels } from '../api/hooks';
 import type { Agent, AgentKind, DeclaredModels, GatewaySyncResult, ModelInfo } from '../api/types';
 import DeclaredModelPicker from '../components/agents/DeclaredModelPicker';
+import Pagination, { usePagination } from '../components/Pagination';
 import { Banner, Empty, ErrorBox, Spinner } from '../components/ui';
 import { DECLARED_MODELS_HINT, TASK_TYPE_OPTIONS } from '../lib/declaredModelTasks';
 
@@ -22,7 +23,7 @@ function AgentCard({ agent }: { agent: Agent }) {
   return (
     <Link to={`/agents/${agent.id}`} className="card agent-card">
       <div className="card-head">
-        <h2 style={{ margin: 0, fontSize: '1.05rem' }}>{agent.name}</h2>
+        <h2>{agent.name}</h2>
         <span className="badge">{agent.kind}</span>
         <LivenessBadge agent={agent} />
         {agent.playground_eligible && <span className="badge info">playground</span>}
@@ -47,7 +48,7 @@ function GatewaySyncStatus({ result }: { result: GatewaySyncResult | undefined }
   const notable = Object.entries(result).filter(([, r]) => r.status !== 'ok');
   if (!notable.length) return null;
   return (
-    <div className="small muted" style={{ marginTop: 8 }} role="status">
+    <div className="small muted mt-sm" role="status">
       {notable.map(([taskType, r]) => (
         <div key={taskType}>
           Gateway sync {r.status}
@@ -90,18 +91,16 @@ function DeclaredModelsFields({
   return (
     <div className="field">
       <span id="declared-models-label">Declared models</span>
-      <p className="small muted" style={{ marginTop: 0 }}>
-        {DECLARED_MODELS_HINT}
-      </p>
+      <p className="small muted mt-0">{DECLARED_MODELS_HINT}</p>
       <div className="stack" aria-labelledby="declared-models-label">
         {rows.map((row, i) => (
-          <div className="stack" key={i} style={{ gap: 4 }}>
+          <div className="stack gap-sm" key={i}>
             <div className="row">
               <select
                 aria-label={`Task type for declared model ${i + 1}`}
                 value={row.key}
                 onChange={(e) => update(i, { key: e.target.value })}
-                style={{ maxWidth: 220 }}
+                className="declared-model-task-select"
               >
                 <option value="" disabled>
                   Select a task…
@@ -132,7 +131,7 @@ function DeclaredModelsFields({
                 step={0.1}
                 value={row.temperature}
                 onChange={(e) => update(i, { temperature: e.target.value })}
-                style={{ maxWidth: 160 }}
+                className="declared-model-temperature"
               />
               <button
                 type="button"
@@ -144,7 +143,7 @@ function DeclaredModelsFields({
                 Remove
               </button>
             </div>
-            <div className="row" style={{ paddingLeft: 232 }}>
+            <div className="row declared-model-fallback-row">
               <span className="muted small">Fallback (optional):</span>
               <DeclaredModelPicker
                 ariaLabel={`Fallback model for declared model ${i + 1}`}
@@ -309,11 +308,11 @@ function CreateAgentForm() {
       {kind === 'router' && (
         <div className="field">
           <span>Hand-off agents</span>
-          <p className="small muted" style={{ marginTop: 0 }}>
+          <p className="small muted mt-0">
             One or more separate, independently registered agents this router may hand problems off
             to - any kind - at least one is required.
           </p>
-          <div className="stack" role="group" aria-label="Hand-off agents" style={{ gap: 4 }}>
+          <div className="stack gap-sm" role="group" aria-label="Hand-off agents">
             {handoffCandidates.map((a) => (
               <label key={a.id} className="check">
                 <input
@@ -364,7 +363,9 @@ function CreateAgentForm() {
 }
 
 export default function AgentsPage() {
-  const { data: agents, isLoading, error } = useAgents();
+  const { page, pageSize, setPage, setPageSize, offset, limit } = usePagination();
+  const { data, isLoading, error } = useAgentsPage({ limit, offset });
+  const agents = data?.items;
 
   return (
     <>
@@ -398,21 +399,26 @@ export default function AgentsPage() {
         )}
 
         {agents && agents.length > 0 && (
-          <ul
-            className="stack"
-            aria-label="Agents"
-            style={{ listStyle: 'none', margin: 0, padding: 0 }}
-          >
-            {agents.map((a) => (
-              <li key={a.id}>
-                <AgentCard agent={a} />
-              </li>
-            ))}
-          </ul>
+          <>
+            <ul className="stack list-reset" aria-label="Agents">
+              {agents.map((a) => (
+                <li key={a.id}>
+                  <AgentCard agent={a} />
+                </li>
+              ))}
+            </ul>
+            <Pagination
+              page={page}
+              pageSize={pageSize}
+              total={data?.total ?? 0}
+              onPageChange={setPage}
+              onPageSizeChange={setPageSize}
+            />
+          </>
         )}
       </section>
 
-      <div style={{ marginTop: 16 }}>
+      <div className="mt-md">
         <CreateAgentForm />
       </div>
     </>

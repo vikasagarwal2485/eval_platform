@@ -100,7 +100,7 @@ export default function CaseForm({
   return (
     <form onSubmit={submit} className="stack" aria-label="Test case">
       <div className="row">
-        <div className="field" style={{ margin: 0 }}>
+        <div className="field m-0">
           <label htmlFor="cf-cat">Category</label>
           <select
             id="cf-cat"
@@ -112,14 +112,14 @@ export default function CaseForm({
             ))}
           </select>
         </div>
-        <div className="field grow" style={{ margin: 0, flex: 1 }}>
+        <div className="field field-grow">
           <label htmlFor="cf-title">
             Title <span className="hint">(optional)</span>
           </label>
           <input
             id="cf-title"
             type="text"
-            style={{ width: '100%' }}
+            className="w-full"
             value={title}
             onChange={(e) => setTitle(e.target.value)}
           />
@@ -137,7 +137,7 @@ export default function CaseForm({
           <input
             id="cf-labels"
             type="text"
-            style={{ width: '100%' }}
+            className="w-full"
             value={labels}
             onChange={(e) => setLabels(e.target.value)}
           />
@@ -145,7 +145,7 @@ export default function CaseForm({
       )}
       {category === 'reasoning' && (
         <div className="row">
-          <div className="field" style={{ margin: 0 }}>
+          <div className="field m-0">
             <label htmlFor="cf-cmp">Compare answers as</label>
             <select
               id="cf-cmp"
@@ -157,7 +157,7 @@ export default function CaseForm({
             </select>
           </div>
           {comparison === 'numeric' && (
-            <div className="field" style={{ margin: 0 }}>
+            <div className="field m-0">
               <label htmlFor="cf-tol">
                 Tolerance <span className="hint">(absolute)</span>
               </label>
@@ -183,7 +183,7 @@ export default function CaseForm({
         <input
           id="cf-exp"
           type="text"
-          style={{ width: '100%' }}
+          className="w-full"
           value={expected}
           onChange={(e) => setExpected(e.target.value)}
         />
@@ -193,7 +193,7 @@ export default function CaseForm({
           <fieldset>
             <legend>Constraints (checked deterministically)</legend>
             <div className="row">
-              <div className="field" style={{ margin: 0 }}>
+              <div className="field m-0">
                 <label htmlFor="cf-max">Max words</label>
                 <input
                   id="cf-max"
@@ -203,7 +203,7 @@ export default function CaseForm({
                   onChange={(e) => setMaxWords(e.target.value)}
                 />
               </div>
-              <div className="field" style={{ margin: 0 }}>
+              <div className="field m-0">
                 <label htmlFor="cf-min">Min words</label>
                 <input
                   id="cf-min"
@@ -214,14 +214,14 @@ export default function CaseForm({
                 />
               </div>
             </div>
-            <div className="field" style={{ marginTop: 8 }}>
+            <div className="field mt-sm">
               <label htmlFor="cf-req">
                 Required keywords <span className="hint">(comma-separated)</span>
               </label>
               <input
                 id="cf-req"
                 type="text"
-                style={{ width: '100%' }}
+                className="w-full"
                 value={required}
                 onChange={(e) => setRequired(e.target.value)}
               />
@@ -233,7 +233,7 @@ export default function CaseForm({
               <input
                 id="cf-forb"
                 type="text"
-                style={{ width: '100%' }}
+                className="w-full"
                 value={forbidden}
                 onChange={(e) => setForbidden(e.target.value)}
               />

@@ -5,7 +5,7 @@ export default function ClassificationDetails({ rows }: { rows: LeaderRow[] }) {
   const withCls = rows.filter((r) => r.classification && r.classification.n > 0);
   if (!withCls.length) return null;
   return (
-    <section className="card" aria-labelledby="cls-h" style={{ marginTop: 16 }}>
+    <section className="card mt-md" aria-labelledby="cls-h">
       <h2 id="cls-h">Classification details</h2>
       <p className="small muted">
         Accuracy counts unparseable answers as wrong. Precision, recall and F1 are per label across
@@ -23,7 +23,7 @@ export default function ClassificationDetails({ rows }: { rows: LeaderRow[] }) {
                   accuracy {fmtPct(c.accuracy)} ({c.n} cases)
                 </span>
                 {c.unparseable > 0 && (
-                  <span className="badge warn" style={{ marginLeft: 4 }}>
+                  <span className="badge warn ml-sm">
                     {c.unparseable} unparseable
                   </span>
                 )}
@@ -53,7 +53,7 @@ export default function ClassificationDetails({ rows }: { rows: LeaderRow[] }) {
                 </table>
               </div>
               {c.confusion && (
-                <div className="table-wrap" style={{ marginTop: 8 }}>
+                <div className="table-wrap mt-sm">
                   <table aria-label={`Confusion matrix for ${r.model}`}>
                     <thead>
                       <tr>

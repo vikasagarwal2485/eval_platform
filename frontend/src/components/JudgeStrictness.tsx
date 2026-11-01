@@ -13,7 +13,7 @@ export default function JudgeStrictness({
   const hasReasoning = judges.some((j) => j.reasoning_mean_score !== null);
   const hasSkillAdherence = judges.some((j) => j.skill_adherence_mean_score !== null);
   return (
-    <section className="card" aria-labelledby="strict-h" style={{ marginTop: 16 }}>
+    <section className="card mt-md" aria-labelledby="strict-h">
       <h2 id="strict-h">Judge strictness</h2>
       <p className="small muted">
         {mode === 'cross_model'

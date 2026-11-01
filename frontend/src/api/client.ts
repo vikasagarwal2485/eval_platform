@@ -67,3 +67,38 @@ export const api = {
   patch: <T>(path: string, body: unknown) => request<T>('PATCH', path, body),
   delete: <T = void>(path: string) => request<T>('DELETE', path),
 };
+
+/** For the handful of list endpoints that paginate (`GET /runs`/`/agents`/`/skills`/`/suites`,
+ * add-uplift-frontend-ux design.md D1) - reads the `X-Total-Count` response header alongside the
+ * page of items, which the generic `api.get` above has no way to surface (it returns only the
+ * parsed body). Kept separate from `request()` rather than changing its signature, so every other
+ * (non-paginated) `api.get` call site is untouched. */
+export async function getPaginated<T>(
+  path: string,
+  { limit, offset }: { limit: number; offset: number },
+): Promise<{ items: T[]; total: number }> {
+  const qs = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+  let res: Response;
+  try {
+    res = await fetch(`/api${path}?${qs}`);
+  } catch {
+    throw new ApiError(0, 'Cannot reach the evaluation backend', { code: 'backend_unreachable' });
+  }
+  const text = await res.text();
+  let data: unknown;
+  try {
+    data = text ? JSON.parse(text) : undefined;
+  } catch {
+    data = text;
+  }
+  if (!res.ok)
+    throw new ApiError(
+      res.status,
+      describeError(res.status, data),
+      (data as { detail?: unknown } | undefined)?.detail,
+    );
+  const items = (data as T[]) ?? [];
+  const totalHeader = res.headers.get('x-total-count');
+  const total = totalHeader !== null ? Number(totalHeader) : items.length;
+  return { items, total };
+}

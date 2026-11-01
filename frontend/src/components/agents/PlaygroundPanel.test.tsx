@@ -1,10 +1,12 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render as rtlRender, screen } from '@testing-library/react';
+import { render as rtlRender, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { ReactElement } from 'react';
 import { FakeEventSource } from '../../test/fakeEventSource';
 import { mockApi } from '../../test/utils';
 import type { Agent } from '../../api/types';
+import { ConfirmProvider } from '../ConfirmDialog';
+import { ToastProvider } from '../Toast';
 import PlaygroundPanel from './PlaygroundPanel';
 
 beforeEach(() => {
@@ -18,7 +20,13 @@ afterEach(() => {
 
 function render(ui: ReactElement) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
-  return rtlRender(<QueryClientProvider client={qc}>{ui}</QueryClientProvider>);
+  return rtlRender(
+    <QueryClientProvider client={qc}>
+      <ToastProvider>
+        <ConfirmProvider>{ui}</ConfirmProvider>
+      </ToastProvider>
+    </QueryClientProvider>,
+  );
 }
 
 const CATALOG = [
@@ -174,12 +182,12 @@ describe('PlaygroundPanel', () => {
   });
 
   it('disables the Playground when confirmed', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(true);
     const { user, calls } = setup(
       { 'POST /agents/1/playground/disable': agent({ playground_eligible: false }) },
       agent({ playground_eligible: true, flavor: 'chatbot', playground_gateway_key_configured: true }),
     );
     await user.click(await screen.findByRole('button', { name: 'Disable Playground' }));
+    await user.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Disable' }));
     expect(calls.some((c) => c.path === '/agents/1/playground/disable')).toBe(true);
   });
 });

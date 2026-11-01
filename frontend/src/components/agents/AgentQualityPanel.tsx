@@ -17,7 +17,7 @@ export default function AgentQualityPanel({ agentId }: { agentId: number }) {
   return (
     <div className="stack">
       <div className="row">
-        <div className="field" style={{ margin: 0 }}>
+        <div className="field m-0">
           <label htmlFor="quality-window">Window</label>
           <select id="quality-window" value={window} onChange={(e) => setWindow(e.target.value)}>
             {WINDOWS.map((w) => (
@@ -39,7 +39,7 @@ export default function AgentQualityPanel({ agentId }: { agentId: number }) {
             <div className="grid-2">
               <div>
                 <div className="muted small">Quality (mean)</div>
-                <div style={{ fontSize: '1.5rem' }}>{fmtPct(summary.quality.mean)}</div>
+                <div className="text-display">{fmtPct(summary.quality.mean)}</div>
                 <div className="small muted">
                   {summary.quality.evaluated} evaluated · {summary.quality.below_threshold} below
                   threshold
@@ -47,17 +47,17 @@ export default function AgentQualityPanel({ agentId }: { agentId: number }) {
               </div>
               <div>
                 <div className="muted small">Latency</div>
-                <div style={{ fontSize: '1.5rem' }}>{fmtMs(summary.latency_ms.p95)} p95</div>
+                <div className="text-display">{fmtMs(summary.latency_ms.p95)} p95</div>
                 <div className="small muted">p50 {fmtMs(summary.latency_ms.p50)}</div>
               </div>
               <div>
                 <div className="muted small">Error rate</div>
-                <div style={{ fontSize: '1.5rem' }}>{fmtPct(summary.error_rate)}</div>
+                <div className="text-display">{fmtPct(summary.error_rate)}</div>
                 <div className="small muted">{summary.turns.total} turns</div>
               </div>
               <div>
                 <div className="muted small">Tokens</div>
-                <div style={{ fontSize: '1.5rem' }}>{summary.tokens.completion}</div>
+                <div className="text-display">{summary.tokens.completion}</div>
                 <div className="small muted">{summary.tokens.prompt} prompt</div>
               </div>
             </div>
@@ -129,7 +129,7 @@ export default function AgentQualityPanel({ agentId }: { agentId: number }) {
             {!attention || attention.length === 0 ? (
               <Empty title="Nothing below the threshold right now" />
             ) : (
-              <ul style={{ margin: 0, paddingLeft: 18 }}>
+              <ul className="list-plain">
                 {attention.map((a) => (
                   <li key={a.turn_id}>
                     <strong>{fmtPct(a.value)}</strong> - {a.input?.slice(0, 80) || dash}

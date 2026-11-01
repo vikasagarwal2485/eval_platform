@@ -43,6 +43,20 @@ function suitesSetup(extra: Record<string, unknown> = {}) {
 }
 
 describe('9.9 suites page', () => {
+  it('paginates: shows a pager reflecting the real total, independent of this page\'s own size', async () => {
+    const { user } = suitesSetup({
+      'GET /suites': () =>
+        new Response(JSON.stringify([SUITES[0]]), {
+          status: 200,
+          headers: { 'X-Total-Count': '60' },
+        }),
+    });
+    await screen.findByRole('region', { name: 'Suite Starter suite' });
+    expect(screen.getByText('Showing 1-50 of 60')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Next' }));
+    expect(screen.getByText('Page 2 of 2')).toBeInTheDocument();
+  });
+
   it('shows the built-in suite as read-only but duplicable and exportable', async () => {
     const { user, calls } = suitesSetup({
       'POST /suites/1/duplicate': { ...USER_DETAIL, id: 3, name: 'Starter suite (copy)' },
@@ -164,10 +178,6 @@ describe('9.9 suites page', () => {
   });
 
   it('edits and deletes cases and deletes the suite after confirmation', async () => {
-    vi.stubGlobal(
-      'confirm',
-      vi.fn(() => true),
-    );
     const { user, calls } = suitesSetup({
       'PUT /cases/20': USER_DETAIL.cases[0],
       'DELETE /cases/20': new Response(null, { status: 204 }),
@@ -184,10 +194,12 @@ describe('9.9 suites page', () => {
     expect(calls.find((c) => c.method === 'PUT')!.body.prompt).toBe('Fantastic!');
 
     await user.click(within(suite).getByRole('button', { name: 'Delete case Tone' }));
+    await user.click(await screen.findByRole('button', { name: 'Delete' })); // the confirm dialog's own button
     await waitFor(() =>
       expect(calls.some((c) => c.method === 'DELETE' && c.path === '/cases/20')).toBe(true),
     );
     await user.click(within(suite).getByRole('button', { name: 'Delete suite Mine' }));
+    await user.click(await screen.findByRole('button', { name: 'Delete' }));
     await waitFor(() =>
       expect(calls.some((c) => c.method === 'DELETE' && c.path === '/suites/2')).toBe(true),
     );
@@ -284,15 +296,16 @@ describe('9.9 history page', () => {
   });
 
   it('deletes only after confirmation', async () => {
-    const confirm = vi.fn(() => false);
-    vi.stubGlobal('confirm', confirm);
     const { user, calls } = historySetup([runRow(1)], {
       'DELETE /runs/1': new Response(null, { status: 204 }),
     });
     await user.click(await screen.findByRole('button', { name: 'Delete' }));
+    const dialog = await screen.findByRole('dialog');
+    await user.click(within(dialog).getByRole('button', { name: 'Cancel' }));
     expect(calls.some((c) => c.method === 'DELETE')).toBe(false);
-    confirm.mockReturnValue(true);
+
     await user.click(screen.getByRole('button', { name: 'Delete' }));
+    await user.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Delete' }));
     await waitFor(() =>
       expect(calls.some((c) => c.method === 'DELETE' && c.path === '/runs/1')).toBe(true),
     );
@@ -486,5 +499,25 @@ describe('9.9 history page', () => {
       );
     expect(screen.getByRole('checkbox', { name: 'Select run 1 for comparison' })).not.toBeChecked();
     expect(screen.getByRole('button', { name: /Compare selected \(2\/2\)/ })).toBeEnabled();
+  });
+
+  it('paginates: shows only the current page and a working pager reflecting the real total', async () => {
+    const { user } = historySetup([], {
+      'GET /runs': () =>
+        new Response(JSON.stringify([runRow(1)]), {
+          status: 200,
+          headers: { 'X-Total-Count': '120' },
+        }),
+    });
+    const table = await screen.findByRole('table', { name: 'Runs' });
+    expect(within(table).getAllByRole('row')).toHaveLength(2); // header + the one row this page returned
+    // the displayed range is computed from page/pageSize/total, not from how many rows this
+    // particular (deliberately thin) fixture actually returned
+    expect(screen.getByText('Showing 1-50 of 120')).toBeInTheDocument();
+    expect(screen.getByText('Page 1 of 3')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Previous' })).toBeDisabled();
+
+    await user.click(screen.getByRole('button', { name: 'Next' }));
+    await waitFor(() => expect(screen.getByText('Page 2 of 3')).toBeInTheDocument());
   });
 });

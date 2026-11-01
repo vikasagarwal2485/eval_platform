@@ -1,14 +1,19 @@
 import { Fragment, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { ACTIVE_STATUSES, useRunMutations, useRuns } from '../api/hooks';
+import { ACTIVE_STATUSES, useRunMutations, useRunsPage } from '../api/hooks';
 import ComparePanel from '../components/ComparePanel';
+import { useConfirm } from '../components/ConfirmDialog';
 import ModelChip from '../components/ModelChip';
+import Pagination, { usePagination } from '../components/Pagination';
 import { Empty, ErrorBox, Spinner, StatusBadge } from '../components/ui';
 import { fmtDate, fmtDuration } from '../lib/format';
 
 export default function HistoryPage() {
   const navigate = useNavigate();
-  const { data: runs, isLoading, error } = useRuns();
+  const confirm = useConfirm();
+  const { page, pageSize, setPage, setPageSize, offset, limit } = usePagination();
+  const { data, isLoading, error } = useRunsPage({ limit, offset });
+  const runs = data?.items;
   const { rerun, remove } = useRunMutations();
   const [picked, setPicked] = useState<number[]>([]);
   const [comparing, setComparing] = useState<[number, number] | null>(null);
@@ -133,9 +138,14 @@ export default function HistoryPage() {
                       <button
                         className="link"
                         disabled={active || remove.isPending}
-                        onClick={() => {
+                        onClick={async () => {
                           if (
-                            window.confirm(`Delete run #${r.id} “${r.name}” and all its results?`)
+                            await confirm({
+                              title: `Delete run #${r.id}?`,
+                              body: `“${r.name}” and all its results will be permanently deleted.`,
+                              confirmLabel: 'Delete',
+                              danger: true,
+                            })
                           ) {
                             remove.mutate(r.id);
                             setPicked((p) => p.filter((x) => x !== r.id));
@@ -150,14 +160,17 @@ export default function HistoryPage() {
               })}
             </tbody>
           </table>
+          <Pagination
+            page={page}
+            pageSize={pageSize}
+            total={data?.total ?? 0}
+            onPageChange={setPage}
+            onPageSizeChange={setPageSize}
+          />
         </div>
       )}
 
-      {comparing && (
-        <div style={{ marginTop: 16 }}>
-          <ComparePanel a={comparing[0]} b={comparing[1]} />
-        </div>
-      )}
+      {comparing && <ComparePanel a={comparing[0]} b={comparing[1]} />}
     </>
   );
 }

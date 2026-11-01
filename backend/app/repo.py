@@ -111,8 +111,13 @@ def get_suite(session: Session, suite_id: int) -> Suite:
     return suite
 
 
-def list_suites(session: Session) -> list[Suite]:
-    return list(session.scalars(select(Suite).order_by(Suite.is_builtin.desc(), Suite.name)))
+def list_suites(session: Session, *, limit: int = 50, offset: int = 0) -> list[Suite]:
+    q = select(Suite).order_by(Suite.is_builtin.desc(), Suite.name).offset(offset).limit(limit)
+    return list(session.scalars(q))
+
+
+def count_suites(session: Session) -> int:
+    return session.scalar(select(func.count()).select_from(Suite)) or 0
 
 
 def update_suite(session: Session, suite_id: int, *, name: str | None, description: str | None) -> Suite:
@@ -165,8 +170,13 @@ def get_skill_by_name(session: Session, name: str) -> Skill | None:
     return session.scalar(select(Skill).where(Skill.name == name))
 
 
-def list_skills(session: Session) -> list[Skill]:
-    return list(session.scalars(select(Skill).order_by(Skill.name)))
+def list_skills(session: Session, *, limit: int = 50, offset: int = 0) -> list[Skill]:
+    q = select(Skill).order_by(Skill.name).offset(offset).limit(limit)
+    return list(session.scalars(q))
+
+
+def count_skills(session: Session) -> int:
+    return session.scalar(select(func.count()).select_from(Skill)) or 0
 
 
 def skills_by_ids(session: Session, skill_ids: list[int]) -> list[Skill]:
@@ -318,8 +328,13 @@ def get_run(session: Session, run_id: int) -> Run:
     return run
 
 
-def list_runs(session: Session) -> list[Run]:
-    return list(session.scalars(select(Run).order_by(Run.id.desc())))
+def list_runs(session: Session, *, limit: int = 50, offset: int = 0) -> list[Run]:
+    q = select(Run).order_by(Run.id.desc()).offset(offset).limit(limit)
+    return list(session.scalars(q))
+
+
+def count_runs(session: Session) -> int:
+    return session.scalar(select(func.count()).select_from(Run)) or 0
 
 
 def delete_run(session: Session, run_id: int) -> None:
@@ -784,8 +799,13 @@ def get_agent_by_name(session: Session, name: str) -> Agent | None:
     return session.scalar(select(Agent).where(Agent.name == name))
 
 
-def list_agents(session: Session) -> list[Agent]:
-    return list(session.scalars(select(Agent).order_by(Agent.name)))
+def list_agents(session: Session, *, limit: int = 50, offset: int = 0) -> list[Agent]:
+    q = select(Agent).order_by(Agent.name).offset(offset).limit(limit)
+    return list(session.scalars(q))
+
+
+def count_agents(session: Session) -> int:
+    return session.scalar(select(func.count()).select_from(Agent)) or 0
 
 
 def update_agent_settings(session: Session, agent_id: int, body: AgentSettingsUpdate) -> Agent:

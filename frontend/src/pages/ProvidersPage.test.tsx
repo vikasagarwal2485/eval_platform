@@ -358,16 +358,17 @@ describe('managing models', () => {
   });
 
   it('removes a model only after confirmation', async () => {
-    const confirm = vi.fn(() => false);
-    vi.stubGlobal('confirm', confirm);
     const { user, calls } = setup([provider()], {
       'DELETE /providers/1/models/10': new Response(null, { status: 204 }),
     });
     const c = await card();
     await user.click(within(c).getByRole('button', { name: 'Remove @oa/gpt-4o' }));
+    const dialog = await screen.findByRole('dialog');
+    await user.click(within(dialog).getByRole('button', { name: 'Cancel' }));
     expect(posted(calls, '/providers/1/models/10', 'DELETE')).toHaveLength(0);
-    confirm.mockReturnValue(true);
+
     await user.click(within(c).getByRole('button', { name: 'Remove @oa/gpt-4o' }));
+    await user.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Remove' }));
     await waitFor(() => expect(posted(calls, '/providers/1/models/10', 'DELETE')).toHaveLength(1));
   });
 });
@@ -455,8 +456,6 @@ describe('editing and removing a provider', () => {
   });
 
   it('removes a provider after confirmation and shows why it cannot while a run uses it', async () => {
-    const confirm = vi.fn(() => true);
-    vi.stubGlobal('confirm', confirm);
     const { user } = setup([provider()], {
       'DELETE /providers/1': () =>
         jsonError(
@@ -465,7 +464,9 @@ describe('editing and removing a provider', () => {
         ),
     });
     await user.click(within(await card()).getByRole('button', { name: 'Remove provider oa' }));
-    expect(confirm).toHaveBeenCalledWith(expect.stringContaining('Past runs keep their results'));
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByText(/Past runs keep their results/)).toBeInTheDocument();
+    await user.click(within(dialog).getByRole('button', { name: 'Remove' }));
     expect(await screen.findByText(/queued or running run/)).toBeInTheDocument();
   });
 });

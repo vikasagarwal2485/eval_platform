@@ -32,7 +32,7 @@ const catCell = (cat: 'classification' | 'reasoning' | 'generation') => (r: Row)
       </span>
       {(cat === 'generation' && (r.self_judged || r.judgeMode === 'cross_model')) ||
       c.errors > 0 ? (
-        <div style={{ marginTop: 2 }}>
+        <div className="mt-xs">
           {cat === 'generation' && r.judgeMode === 'cross_model' && (
             <span
               className="badge info"
@@ -50,7 +50,7 @@ const catCell = (cat: 'classification' | 'reasoning' | 'generation') => (r: Row)
             </span>
           )}
           {c.errors > 0 && (
-            <span className="badge bad" style={{ marginLeft: 4 }}>
+            <span className="badge bad ml-sm">
               {c.errors} err
             </span>
           )}

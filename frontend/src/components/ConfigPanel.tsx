@@ -134,7 +134,7 @@ export default function ConfigPanel({
               selected model. Run the same setup once with and once without a skill to compare their
               effect on quality, latency and tokens/sec.
             </p>
-            <div className="stack" style={{ gap: 8 }}>
+            <div className="stack gap-md">
               {skills.map((s) => (
                 <label className="check" key={s.id}>
                   <input
@@ -165,7 +165,7 @@ export default function ConfigPanel({
             )}
           </Banner>
         )}
-        <div role="radiogroup" aria-label="Judging mode" className="stack" style={{ gap: 8 }}>
+        <div role="radiogroup" aria-label="Judging mode" className="stack gap-md">
           {MODES.map((m) => {
             const disabled = m.value === 'cross_model' && !canCross;
             const helpId = `judge-mode-${m.value}-help`;
@@ -183,7 +183,7 @@ export default function ConfigPanel({
                   />
                   <span>{m.label}</span>
                 </label>
-                <div id={helpId} className="small muted" style={{ marginLeft: 24 }}>
+                <div id={helpId} className="small muted ml-lg">
                   {m.help}
                   {disabled && ' Needs at least two selected models.'}
                 </div>
@@ -193,7 +193,7 @@ export default function ConfigPanel({
         </div>
 
         {judgeMode === 'single' && (
-          <div className="field" style={{ marginTop: 12 }}>
+          <div className="field mt-md">
             <label htmlFor="judge">Judge model</label>
             <select
               id="judge"
@@ -207,7 +207,7 @@ export default function ConfigPanel({
                 </option>
               ))}
             </select>
-            <p className="small muted" style={{ margin: '4px 0 0' }}>
+            <p className="small muted note-xs">
               Any available local or enterprise model can judge, including one that is not being
               evaluated.
             </p>
@@ -215,13 +215,13 @@ export default function ConfigPanel({
         )}
 
         {selfJudge && (
-          <div style={{ marginTop: 12 }}>
+          <div className="mt-md">
             <Banner kind="warn">
               <strong>{judgeModel}</strong> is both judge and one of the models being evaluated.
               Models tend to favour their own output, so its judged scores will be labelled as
               self-judged.
               {canCross && (
-                <div style={{ marginTop: 8 }}>
+                <div className="mt-sm">
                   <button
                     type="button"
                     onClick={() => {
@@ -237,7 +237,7 @@ export default function ConfigPanel({
           </div>
         )}
         {judgeMode === 'none' && hasGeneration && (
-          <div style={{ marginTop: 12 }}>
+          <div className="mt-md">
             <Banner kind="info">
               No judge selected: generation cases will be shown as unscored and excluded from
               composites.
@@ -245,13 +245,13 @@ export default function ConfigPanel({
           </div>
         )}
         {judgeMode === 'cross_model' && (
-          <div style={{ marginTop: 12 }}>
+          <div className="mt-md">
             <Banner kind="info">
               Models never grade themselves. Judges can differ in strictness, so scores from
               different judges are informative but not perfectly like-for-like. Each judge’s average
               is shown in the results so you can check.
               {judgedCases > 0 && n >= 2 && (
-                <div className="small" style={{ marginTop: 6 }} data-testid="judge-estimate">
+                <div className="small mt-sm" data-testid="judge-estimate">
                   About {judgements} judgements ({answers} answers × {n - 1} other{' '}
                   {n - 1 === 1 ? 'model' : 'models'}), one judge model at a time after generation.
                 </div>
@@ -261,10 +261,10 @@ export default function ConfigPanel({
         )}
 
         {reasons.size > 0 && (
-          <div style={{ marginTop: 12 }}>
+          <div className="mt-md">
             <Banner kind="warn" role="status">
               <strong>This run will send data to:</strong>
-              <ul style={{ margin: '4px 0 0', paddingLeft: 18 }}>
+              <ul className="list-tight">
                 {[...reasons.entries()].map(([provider, why]) => (
                   <li key={provider}>
                     {destinationLabel(provider, models)} — as {[...why].join(' and ')}
@@ -276,7 +276,7 @@ export default function ConfigPanel({
         )}
 
         {showBreakdown && (
-          <div className="small muted" style={{ marginTop: 8 }} data-testid="request-breakdown">
+          <div className="small muted mt-sm" data-testid="request-breakdown">
             Estimated requests:{' '}
             {[...destCounts.entries()]
               .map(([dest, count]) => `${destinationLabel(dest, models)}: ${count}`)
@@ -284,7 +284,7 @@ export default function ConfigPanel({
           </div>
         )}
 
-        <label className="check" style={{ marginTop: 12 }}>
+        <label className="check mt-md">
           <input
             type="checkbox"
             checked={config.judge_reasoning}
@@ -294,7 +294,7 @@ export default function ConfigPanel({
           <span>Also judge the quality of reasoning traces</span>
         </label>
 
-        <label className="check" style={{ marginTop: 8 }}>
+        <label className="check mt-sm">
           <input
             type="checkbox"
             checked={config.judge_skill_adherence}
@@ -304,7 +304,7 @@ export default function ConfigPanel({
           />
           <span>Also judge whether the response followed the attached skill(s)</span>
         </label>
-        <div id="skill-adherence-help" className="small muted" style={{ marginLeft: 24 }}>
+        <div id="skill-adherence-help" className="small muted ml-lg">
           {config.skill_ids.length === 0
             ? 'Attach a skill above to enable this.'
             : 'Adds a judge call per answer asking whether it visibly followed the skill’s instructions - shown per model in the leaderboard.'}
@@ -368,7 +368,7 @@ export default function ConfigPanel({
           />
           <span>Enable thinking on thinking-capable models</span>
         </label>
-        <label className="check" style={{ marginTop: 8 }}>
+        <label className="check mt-sm">
           <input
             type="checkbox"
             checked={config.warmup}

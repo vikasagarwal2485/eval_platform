@@ -13,7 +13,7 @@ function CriteriaList({
   const entries = Object.entries(criteria ?? {});
   if (!entries.length) return null;
   return (
-    <ul style={{ margin: '4px 0', paddingLeft: 18 }}>
+    <ul className="list-tight">
       {entries.map(([name, c]) => (
         <li key={name}>
           <strong>{name}</strong> {c.score}/5 <span className="muted">{c.reason}</span>
@@ -52,7 +52,7 @@ function EvaluationBlock({ evaluation, open }: { evaluation: AgentEvaluation; op
         {judgements.length > 1 ? ` · ${ok} of ${judgements.length} evaluators judged` : ''}
         {evaluation.detail.self_judged ? ' · self-judged' : ''}
       </summary>
-      <ul style={{ margin: '4px 0', paddingLeft: 18 }} aria-label="By evaluator">
+      <ul className="list-tight" aria-label="By evaluator">
         {judgements.map((j: AgentJudgement) => (
           <li key={j.judge_model}>
             <strong>{j.judge_model}</strong>{' '}
@@ -84,7 +84,7 @@ export default function AgentTurnDrilldown({
 
   return (
     <div>
-      <div className="row" style={{ marginBottom: 4 }}>
+      <div className="row mb-xs">
         <OutcomeBadge outcome={turn.status === 'ok' ? 'pass' : turn.status} />
         <span className="muted small">{fmtDate(turn.ended_at)}</span>
         <span className="spacer" />
@@ -92,7 +92,7 @@ export default function AgentTurnDrilldown({
       </div>
 
       {turn.system_prompt && (
-        <details className="small" style={{ marginBottom: 4 }}>
+        <details className="small mb-xs">
           <summary>System prompt</summary>
           <pre className="output">{turn.system_prompt}</pre>
         </details>
@@ -121,7 +121,7 @@ export default function AgentTurnDrilldown({
         <details>
           <summary>Spans ({turn.spans.length}) · recorded before live tracing</summary>
           {turn.spans.map((s) => (
-            <div key={s.id} className="small" style={{ marginBottom: 8 }}>
+            <div key={s.id} className="small mb-sm">
               <div className="row">
                 <span className="badge">{s.kind}</span>
                 {s.model && <code>{s.model}</code>}
@@ -140,20 +140,20 @@ export default function AgentTurnDrilldown({
         </details>
       )}
 
-      <h2 style={{ margin: '12px 0 4px', fontSize: '1rem' }}>Evaluation</h2>
+      <h2 className="eval-heading">Evaluation</h2>
       {evaluations.length === 0 && <div className="muted">Not evaluated yet.</div>}
       {evaluations.map((e, i) => (
         <EvaluationBlock key={e.id} evaluation={e} open={i === 0} />
       ))}
 
       {turn.status === 'ok' && (
-        <div className="row" style={{ marginTop: 8 }}>
+        <div className="row mt-sm">
           <input
             aria-label="Evaluators for re-evaluation (comma-separated, optional)"
             placeholder="Evaluators (comma-separated; leave blank to reuse the agent's current ones)"
             value={evaluators}
             onChange={(e) => setEvaluators(e.target.value)}
-            style={{ minWidth: 320 }}
+            className="min-w-320"
           />
           <button
             type="button"

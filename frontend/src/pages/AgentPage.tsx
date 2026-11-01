@@ -6,6 +6,7 @@ import AgentQualityPanel from '../components/agents/AgentQualityPanel';
 import AgentSettingsPanel from '../components/agents/AgentSettingsPanel';
 import AgentTurnsPanel from '../components/agents/AgentTurnsPanel';
 import PlaygroundPanel from '../components/agents/PlaygroundPanel';
+import Breadcrumb from '../components/Breadcrumb';
 import { ErrorBox, Spinner } from '../components/ui';
 
 /** The model reference out of one declared_models entry, whichever shape it is (mirrors the backend's
@@ -36,6 +37,7 @@ export default function AgentPage() {
 
   return (
     <>
+      <Breadcrumb listLabel="Agents" listPath="/agents" current={agent.name} />
       <div className="page-head">
         <div className="grow">
           <h1>
@@ -54,7 +56,7 @@ export default function AgentPage() {
                 return taskType === 'default' ? model : `${taskType}: ${model}`;
               })
               .map((label, i) => (
-                <code key={i} style={{ marginRight: 8 }}>
+                <code key={i} className="mr-sm">
                   {label}
                 </code>
               ))}

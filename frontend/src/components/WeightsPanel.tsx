@@ -18,7 +18,7 @@ export default function WeightsPanel({ weights, onChange, present }: Props) {
         {CATEGORIES.map((c) => {
           const missing = !present.includes(c);
           return (
-            <div className="field" key={c} style={{ margin: 0 }}>
+            <div className="field m-0" key={c}>
               <label htmlFor={`w-${c}`}>
                 {titleCase(c)}
                 {missing && <span className="hint"> (no cases)</span>}
@@ -38,7 +38,7 @@ export default function WeightsPanel({ weights, onChange, present }: Props) {
                 }
                 onChange={(e) => onChange({ ...weights, [c]: Number(e.target.value) })}
               />
-              <output htmlFor={`w-${c}`} className="small muted" style={{ marginLeft: 6 }}>
+              <output htmlFor={`w-${c}`} className="small muted ml-md">
                 {weights[c]}
                 {total > 0 && !missing ? ` · ${Math.round((weights[c] / total) * 100)}%` : ''}
               </output>
@@ -49,7 +49,7 @@ export default function WeightsPanel({ weights, onChange, present }: Props) {
           Reset to equal
         </button>
       </div>
-      <p className="small muted" style={{ margin: '6px 0 0' }}>
+      <p className="small muted note">
         Composite = weighted mean of the category scores. Changing weights re-ranks instantly; no
         models are re-run.
       </p>

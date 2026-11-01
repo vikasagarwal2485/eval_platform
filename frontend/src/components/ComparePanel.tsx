@@ -57,7 +57,7 @@ export default function ComparePanel({ a, b }: { a: number; b: number }) {
           {data.b.id} used{' '}
           {data.skills.b.length ? data.skills.b.map((s) => s.name).join(', ') : 'none'}
           {!data.skills.same && (
-            <span className="badge warn" style={{ marginLeft: 4 }}>
+            <span className="badge warn ml-sm">
               different skills
             </span>
           )}
@@ -103,9 +103,9 @@ export default function ComparePanel({ a, b }: { a: number; b: number }) {
                   <td>
                     <DeltaCell d={m.performance.latency_ms} kind="ms" />
                     {m.performance_notes.length > 0 && (
-                      <details className="small muted" style={{ marginTop: 2 }}>
+                      <details className="small muted mt-xs">
                         <summary>Why?</summary>
-                        <ul style={{ margin: '4px 0 0', paddingLeft: 18 }}>
+                        <ul className="list-tight">
                           {m.performance_notes.map((n, i) => (
                             <li key={i}>{n}</li>
                           ))}
@@ -142,7 +142,7 @@ export default function ComparePanel({ a, b }: { a: number; b: number }) {
         </p>
       )}
       {data.cases.some((c) => c.delta !== null && Math.abs(c.delta) > 1e-9) && (
-        <details style={{ marginTop: 8 }}>
+        <details className="mt-sm">
           <summary>Cases that changed</summary>
           <div className="table-wrap">
             <table aria-label="Case changes">

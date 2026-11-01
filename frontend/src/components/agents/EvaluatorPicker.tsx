@@ -39,7 +39,7 @@ export default function EvaluatorPicker({
   return (
     <div className="stack" role="group" aria-label="Evaluators">
       {groupModels(models).map((g) => (
-        <fieldset key={g.key} style={{ margin: 0 }}>
+        <fieldset key={g.key} className="m-0">
           <legend>{g.title}</legend>
           <div className="model-list">
             {g.models.map((m) => {
@@ -65,7 +65,7 @@ export default function EvaluatorPicker({
                   <div className="small muted">
                     <code>{m.name}</code>
                   </div>
-                  <div className="row" style={{ marginTop: 6 }}>
+                  <div className="row mt-sm">
                     {m.source === 'cloud' && <span className="badge info">cloud</span>}
                     {isSelf && (
                       <span className="badge warn">one of this agent&apos;s own models</span>
@@ -76,17 +76,17 @@ export default function EvaluatorPicker({
                     )}
                   </div>
                   {isSelf && (
-                    <div id={reasonId} className="small muted" style={{ marginTop: 4 }}>
+                    <div id={reasonId} className="small muted mt-xs">
                       An agent cannot evaluate any of its own declared models.
                     </div>
                   )}
                   {!isSelf && !m.available && (
-                    <div id={reasonId} className="small muted" style={{ marginTop: 4 }}>
+                    <div id={reasonId} className="small muted mt-xs">
                       {m.unavailable_reason}
                     </div>
                   )}
                   {!isSelf && needsAck && m.available && (
-                    <div id={reasonId} className="small muted" style={{ marginTop: 4 }}>
+                    <div id={reasonId} className="small muted mt-xs">
                       Acknowledge data sharing with {m.provider} below before adding it as an
                       evaluator.
                     </div>

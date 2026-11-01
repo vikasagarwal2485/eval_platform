@@ -65,6 +65,17 @@ const es = () => FakeEventSource.instances.at(-1)!;
 afterEach(() => vi.unstubAllGlobals());
 
 describe('9.5 live run view', () => {
+  it('shows a breadcrumb back to History naming this run', async () => {
+    setup();
+    await screen.findByRole('button', { name: 'Cancel run' }); // only rendered once the run has loaded
+    const breadcrumb = screen.getByRole('navigation', { name: 'Breadcrumb' });
+    expect(within(breadcrumb).getByRole('link', { name: 'History' })).toHaveAttribute(
+      'href',
+      '/history',
+    );
+    expect(within(breadcrumb).getByText('Smoke')).toBeInTheDocument();
+  });
+
   it('shows progress, the current model/case, streaming preview and results as events arrive', async () => {
     setup();
     await screen.findByRole('progressbar', { name: 'Run progress' });

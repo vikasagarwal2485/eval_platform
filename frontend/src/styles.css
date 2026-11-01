@@ -3,8 +3,10 @@
   --surface: #ffffff;
   --surface-2: #f0f2f5;
   --border: #d9dde3;
+  --border-strong: #c3c9d2;
   --text: #1a1f29;
   --text-muted: #5b6472;
+  --text-faint: #8b93a0;
   --accent: #2557d6;
   --accent-contrast: #ffffff;
   --accent-soft: #e6edfc;
@@ -17,6 +19,30 @@
   --focus: #2557d6;
   --radius: 8px;
   --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  /* elevation/overlay - for surfaces that float above the page (dialog, toast, tooltip) rather
+     than sit flat on it like a card */
+  --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.12);
+  --shadow-lg:
+    0 16px 48px rgba(0, 0, 0, 0.18),
+    0 4px 12px rgba(0, 0, 0, 0.12);
+  --overlay: rgba(0, 0, 0, 0.4);
+  /* type scale - six steps, named by role rather than size, so every view draws from the same
+     set instead of picking a one-off value (add-uplift-frontend-ux) */
+  --font-size-display: 1.5rem; /* page titles only, one per page */
+  --font-size-h2: 1.15rem; /* card/section headers */
+  --font-size-h3: 1rem; /* sub-section headers */
+  --font-size-body: 15px; /* default */
+  --font-size-small: 0.85rem; /* metadata, captions, muted text */
+  --font-size-micro: 0.72rem; /* badges, uppercase labels, pagination counts */
+  /* spacing scale - seven steps; every gap/padding/margin in this file is one of these, never a
+     freehand value (add-uplift-frontend-ux) */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
   color-scheme: light;
 }
 @media (prefers-color-scheme: dark) {
@@ -25,8 +51,10 @@
     --surface: #1a1e26;
     --surface-2: #232833;
     --border: #333a48;
+    --border-strong: #454e60;
     --text: #e8ebf0;
     --text-muted: #9aa4b5;
+    --text-faint: #717b8c;
     --accent: #7ea2ff;
     --accent-contrast: #0e1522;
     --accent-soft: #223056;
@@ -37,8 +65,31 @@
     --warn: #f0c060;
     --warn-soft: #3d2f10;
     --focus: #7ea2ff;
+    --overlay: rgba(0, 0, 0, 0.6);
     color-scheme: dark;
   }
+}
+:root[data-theme='dark'] {
+  --bg: #12151b;
+  --surface: #1a1e26;
+  --surface-2: #232833;
+  --border: #333a48;
+  --border-strong: #454e60;
+  --text: #e8ebf0;
+  --text-muted: #9aa4b5;
+  --text-faint: #717b8c;
+  --accent: #7ea2ff;
+  --accent-contrast: #0e1522;
+  --accent-soft: #223056;
+  --good: #5fd08a;
+  --good-soft: #163524;
+  --bad: #ff8a80;
+  --bad-soft: #43201d;
+  --warn: #f0c060;
+  --warn-soft: #3d2f10;
+  --focus: #7ea2ff;
+  --overlay: rgba(0, 0, 0, 0.6);
+  color-scheme: dark;
 }
 * {
   box-sizing: border-box;
@@ -51,26 +102,32 @@ body {
   background: var(--bg);
   color: var(--text);
   font:
-    15px/1.5 system-ui,
+    var(--font-size-body) / 1.5 system-ui,
     -apple-system,
     'Segoe UI',
     Roboto,
     sans-serif;
+  /* Tabular (fixed-width) digits everywhere by default, not hunted down per view - safe on
+     prose, since it only affects digit glyphs (add-uplift-frontend-ux). */
+  font-variant-numeric: tabular-nums;
 }
 h1 {
-  font-size: 1.5rem;
-  margin: 0 0 0.25rem;
+  font-size: var(--font-size-display);
+  font-weight: 700;
+  margin: 0 0 var(--space-1);
 }
 h2 {
-  font-size: 1.15rem;
-  margin: 0 0 0.75rem;
+  font-size: var(--font-size-h2);
+  font-weight: 600;
+  margin: 0 0 var(--space-3);
 }
 h3 {
-  font-size: 1rem;
-  margin: 0 0 0.5rem;
+  font-size: var(--font-size-h3);
+  font-weight: 600;
+  margin: 0 0 var(--space-2);
 }
 p {
-  margin: 0 0 0.75rem;
+  margin: 0 0 var(--space-3);
 }
 a {
   color: var(--accent);
@@ -100,33 +157,61 @@ pre {
   left: -999px;
 }
 .skip-link:focus {
-  left: 8px;
-  top: 8px;
+  left: var(--space-2);
+  top: var(--space-2);
   background: var(--surface);
-  padding: 8px;
+  padding: var(--space-2);
   z-index: 10;
 }
-
 /* layout */
 .app-header {
   display: flex;
   align-items: center;
-  gap: 24px;
+  gap: var(--space-5);
   flex-wrap: wrap;
-  padding: 10px 24px;
+  padding: var(--space-2) var(--space-5);
   background: var(--surface);
   border-bottom: 1px solid var(--border);
 }
 .brand {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
   font-weight: 700;
   letter-spacing: -0.01em;
 }
+.brand-mark {
+  display: inline-flex;
+  color: var(--accent);
+}
+/* Rendered as ordinary page content (inside <main>'s own padding, at the top of a drilled-into
+   page), not a full-width bar below the header - a simple nav line above that page's own
+   .page-head. */
+.breadcrumb {
+  margin-bottom: var(--space-3);
+  font-size: var(--font-size-small);
+  color: var(--text-muted);
+}
+.breadcrumb a {
+  color: var(--text-muted);
+}
+.breadcrumb a:hover {
+  color: var(--accent);
+}
+.breadcrumb .current {
+  color: var(--text);
+  font-weight: 600;
+}
+.theme-toggle {
+  padding: var(--space-2);
+  line-height: 1;
+}
 .nav {
   display: flex;
-  gap: 4px;
+  gap: var(--space-1);
 }
 .nav a {
-  padding: 6px 12px;
+  padding: var(--space-2) var(--space-3);
   border-radius: var(--radius);
   text-decoration: none;
   color: var(--text-muted);
@@ -145,14 +230,14 @@ pre {
 main {
   max-width: 1280px;
   margin: 0 auto;
-  padding: 24px;
+  padding: var(--space-5);
 }
 .page-head {
   display: flex;
   align-items: flex-start;
-  gap: 16px;
+  gap: var(--space-4);
   flex-wrap: wrap;
-  margin-bottom: 20px;
+  margin-bottom: var(--space-5);
 }
 .page-head .grow {
   flex: 1;
@@ -161,24 +246,27 @@ main {
 .muted {
   color: var(--text-muted);
 }
+.faint {
+  color: var(--text-faint);
+}
 .small {
-  font-size: 0.85rem;
+  font-size: var(--font-size-small);
 }
 .row {
   display: flex;
-  gap: 12px;
+  gap: var(--space-3);
   flex-wrap: wrap;
   align-items: center;
 }
 .stack {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--space-3);
 }
 .grid-2 {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
-  gap: 16px;
+  gap: var(--space-4);
 }
 
 /* surfaces */
@@ -186,16 +274,16 @@ main {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  padding: 16px;
+  padding: var(--space-4);
 }
 .card + .card {
-  margin-top: 16px;
+  margin-top: var(--space-4);
 }
 .card-head {
   display: flex;
   align-items: center;
-  gap: 12px;
-  margin-bottom: 12px;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
   flex-wrap: wrap;
 }
 .card-head h2 {
@@ -208,10 +296,11 @@ button,
   font: inherit;
   cursor: pointer;
   border-radius: var(--radius);
-  padding: 7px 14px;
+  padding: var(--space-2) var(--space-4);
   border: 1px solid var(--border);
   background: var(--surface);
   color: var(--text);
+  text-decoration: none; /* .btn is often an <a> styled as a button - never underlined */
 }
 button:hover:not(:disabled) {
   background: var(--surface-2);
@@ -238,7 +327,7 @@ button.link {
   border: 0;
   background: none;
   color: var(--accent);
-  padding: 2px 4px;
+  padding: var(--space-1);
   text-decoration: underline;
 }
 input[type='text'],
@@ -246,7 +335,7 @@ input[type='number'],
 select,
 textarea {
   font: inherit;
-  padding: 7px 10px;
+  padding: var(--space-2) var(--space-3);
   border-radius: var(--radius);
   border: 1px solid var(--border);
   background: var(--surface);
@@ -261,48 +350,48 @@ textarea {
 label {
   display: block;
   font-weight: 500;
-  margin-bottom: 4px;
+  margin-bottom: var(--space-1);
 }
 .field {
-  margin-bottom: 12px;
+  margin-bottom: var(--space-3);
 }
 .field .hint {
   color: var(--text-muted);
-  font-size: 0.85rem;
+  font-size: var(--font-size-small);
   font-weight: 400;
 }
 .field-error {
   color: var(--bad);
-  font-size: 0.85rem;
-  margin-top: 4px;
+  font-size: var(--font-size-small);
+  margin-top: var(--space-1);
 }
 .check {
   display: flex;
-  gap: 8px;
+  gap: var(--space-2);
   align-items: flex-start;
   font-weight: 400;
   margin: 0;
 }
 .check input {
-  margin-top: 4px;
+  margin-top: var(--space-1);
 }
 fieldset {
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  padding: 12px;
-  margin: 0 0 12px;
+  padding: var(--space-3);
+  margin: 0 0 var(--space-3);
 }
 legend {
-  padding: 0 6px;
+  padding: 0 var(--space-2);
   font-weight: 600;
 }
 
 /* badges & banners */
 .badge {
   display: inline-block;
-  padding: 1px 8px;
+  padding: var(--space-1) var(--space-2);
   border-radius: 999px;
-  font-size: 0.78rem;
+  font-size: var(--font-size-micro);
   font-weight: 600;
   background: var(--surface-2);
   color: var(--text-muted);
@@ -330,10 +419,10 @@ legend {
   border-color: transparent;
 }
 .banner {
-  padding: 10px 14px;
+  padding: var(--space-3) var(--space-4);
   border-radius: var(--radius);
   border: 1px solid var(--border);
-  margin-bottom: 16px;
+  margin-bottom: var(--space-4);
 }
 .banner.error {
   background: var(--bad-soft);
@@ -352,7 +441,7 @@ legend {
 }
 .empty {
   text-align: center;
-  padding: 40px 16px;
+  padding: var(--space-7) var(--space-4);
   color: var(--text-muted);
 }
 .empty h3 {
@@ -390,20 +479,19 @@ table {
 th,
 td {
   text-align: left;
-  padding: 8px 10px;
+  padding: var(--space-2) var(--space-3);
   border-bottom: 1px solid var(--border);
   vertical-align: top;
 }
 th {
   font-weight: 600;
   color: var(--text-muted);
-  font-size: 0.85rem;
+  font-size: var(--font-size-small);
   white-space: nowrap;
 }
 td.num,
 th.num {
   text-align: right;
-  font-variant-numeric: tabular-nums;
 }
 th button.sort {
   border: 0;
@@ -420,6 +508,42 @@ th button.sort:hover {
 }
 tr.best td {
   background: var(--good-soft);
+}
+
+/* pagination */
+.pagination {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  flex-wrap: wrap;
+  justify-content: space-between;
+  padding-top: var(--space-3);
+  margin-top: var(--space-3);
+  border-top: 1px solid var(--border);
+}
+.pagination-count {
+  color: var(--text-muted);
+  font-size: var(--font-size-small);
+}
+.pagination-controls {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.pagination-controls .page-label {
+  color: var(--text-muted);
+  font-size: var(--font-size-small);
+  padding: 0 var(--space-1);
+}
+.pagination-size {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--font-size-small);
+  color: var(--text-muted);
+}
+.pagination-size select {
+  padding: var(--space-1) var(--space-2);
 }
 
 /* progress */
@@ -440,17 +564,20 @@ tr.best td {
 .model-list {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
-  gap: 12px;
+  gap: var(--space-3);
 }
 .model-card {
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  padding: 12px;
+  padding: var(--space-3);
   background: var(--surface);
 }
 .model-card.selected {
   border-color: var(--accent);
   background: var(--accent-soft);
+}
+.model-card.unavailable {
+  opacity: 0.75;
 }
 .model-card .check {
   font-weight: 600;
@@ -462,10 +589,27 @@ pre.output {
   word-break: break-word;
   background: var(--surface-2);
   border-radius: var(--radius);
-  padding: 10px;
-  margin: 6px 0;
+  padding: var(--space-3);
+  margin: var(--space-2) 0;
   max-height: 320px;
   overflow: auto;
+}
+/* trace tree (SpanTree.tsx, shared by the case and agent-turn drill-downs): span names and
+   attribute values are raw strings with no natural break points - ids, URLs, serialized args -
+   and the span name sits in a `.row` flex item, which by default won't shrink below its content's
+   width. Without this, one long token pushed the whole drill-down panel (and the page under it)
+   wider than the window instead of wrapping or scrolling in place - found live. `overflow-wrap`
+   gives the text a break point so the flex item can actually shrink; `overflow-x: auto` is the
+   backstop for deep nesting (`marginLeft: depth * 16`) eating into the available width. */
+.trace {
+  max-width: 100%;
+  overflow-x: auto;
+}
+.trace code {
+  overflow-wrap: anywhere;
+}
+.trace-attrs {
+  overflow-wrap: anywhere;
 }
 details > summary {
   cursor: pointer;
@@ -473,9 +617,9 @@ details > summary {
 }
 .tabs {
   display: flex;
-  gap: 4px;
+  gap: var(--space-1);
   border-bottom: 1px solid var(--border);
-  margin-bottom: 16px;
+  margin-bottom: var(--space-4);
   flex-wrap: wrap;
 }
 .tabs button {
@@ -494,26 +638,80 @@ details > summary {
 }
 .legend {
   display: flex;
-  gap: 16px;
+  gap: var(--space-4);
   flex-wrap: wrap;
-  font-size: 0.85rem;
-  margin-top: 8px;
+  font-size: var(--font-size-small);
+  margin-top: var(--space-2);
 }
 .swatch {
   display: inline-block;
   width: 12px;
   height: 12px;
   border-radius: 3px;
-  margin-right: 6px;
+  margin-right: var(--space-2);
   vertical-align: -1px;
+}
+
+/* dialog (add-uplift-frontend-ux: native <dialog>, styled with the shared token set) */
+dialog.modal {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: var(--space-5);
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--shadow-lg);
+  max-width: 420px;
+  width: calc(100% - var(--space-5) * 2);
+}
+dialog.modal::backdrop {
+  background: var(--overlay);
+}
+dialog.modal h2 {
+  margin: 0 0 var(--space-2);
+}
+dialog.modal .modal-body {
+  color: var(--text-muted);
+  margin-bottom: var(--space-4);
+}
+dialog.modal .modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+/* toast (add-uplift-frontend-ux: one fixed-position stack, mounted once near the app root) */
+.toast-stack {
+  position: fixed;
+  right: var(--space-4);
+  bottom: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  z-index: 20;
+  max-width: 360px;
+}
+.toast {
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
+  padding: var(--space-3) var(--space-4);
+  font-size: var(--font-size-small);
+}
+.toast.success {
+  border-color: var(--good);
+}
+.toast.error {
+  border-color: var(--bad);
 }
 
 @media (max-width: 640px) {
   main {
-    padding: 16px;
+    padding: var(--space-4);
   }
   .app-header {
-    padding: 10px 16px;
+    padding: var(--space-2) var(--space-4);
   }
 }
 
@@ -575,28 +773,28 @@ details > summary {
   color: var(--viz-ink);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  padding: 16px;
+  padding: var(--space-4);
 }
 .viz-root + .viz-root {
-  margin-top: 16px;
+  margin-top: var(--space-4);
 }
 .viz-title {
-  font-size: 1rem;
+  font-size: var(--font-size-h3);
   font-weight: 600;
   margin: 0;
 }
 .viz-sub {
   color: var(--viz-ink-2);
-  font-size: 0.85rem;
-  margin: 2px 0 10px;
+  font-size: var(--font-size-small);
+  margin: var(--space-1) 0 var(--space-3);
 }
 .viz-legend {
   display: flex;
-  gap: 16px;
+  gap: var(--space-4);
   flex-wrap: wrap;
-  font-size: 0.85rem;
+  font-size: var(--font-size-small);
   color: var(--viz-ink-2);
-  margin: 0 0 8px;
+  margin: 0 0 var(--space-2);
   padding: 0;
   list-style: none;
 }
@@ -645,40 +843,49 @@ details > summary {
   color: var(--viz-ink);
   border: 1px solid var(--viz-axis);
   border-radius: 6px;
-  padding: 6px 10px;
+  padding: var(--space-2) var(--space-3);
   font-size: 0.8rem;
   line-height: 1.4;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+  box-shadow: var(--shadow-sm);
   white-space: nowrap;
-  transform: translate(-50%, calc(-100% - 8px));
+  transform: translate(-50%, calc(-100% - var(--space-2)));
 }
 .viz-tip strong {
   display: block;
 }
 .viz-table {
-  margin-top: 10px;
+  margin-top: var(--space-3);
 }
 .viz-table summary {
   color: var(--viz-ink-2);
 }
 .viz-table table {
-  font-size: 0.85rem;
-  margin-top: 8px;
+  font-size: var(--font-size-small);
+  margin-top: var(--space-2);
 }
 .viz-ctrl {
   display: flex;
-  gap: 16px;
+  gap: var(--space-4);
   align-items: center;
   flex-wrap: wrap;
-  margin-bottom: 8px;
-  font-size: 0.85rem;
+  margin-bottom: var(--space-2);
+  font-size: var(--font-size-small);
 }
 .viz-ctrl label {
   display: inline-flex;
-  gap: 6px;
+  gap: var(--space-2);
   align-items: center;
   margin: 0;
   font-weight: 400;
+}
+
+/* providers */
+.reasoning-effort-input {
+  width: 80px;
+}
+.available-models-list {
+  max-height: 240px;
+  overflow: auto;
 }
 
 /* agents */
@@ -690,20 +897,35 @@ details > summary {
 .agent-card:hover {
   border-color: var(--accent);
 }
+.agent-card h2 {
+  margin: 0;
+  font-size: var(--font-size-h3);
+}
+/* declared-model form row - page-specific widths, not spacing-scale concepts, so they stay named
+   classes rather than forcing an arbitrary width into the shared token set */
+.declared-model-task-select {
+  max-width: 220px;
+}
+.declared-model-temperature {
+  max-width: 160px;
+}
+.declared-model-fallback-row {
+  padding-left: 232px;
+}
 .turn-list {
   list-style: none;
   margin: 0;
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-2);
   max-height: 70vh;
   overflow: auto;
 }
 .turn-row {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--space-1);
   width: 100%;
   text-align: left;
   align-items: flex-start;
@@ -712,3 +934,175 @@ details > summary {
   border-color: var(--accent);
   background: var(--accent-soft);
 }
+
+/* ---- utilities (add-uplift-frontend-ux) ----
+   Deliberately last in the file: every rule above is a base element or a named component class,
+   several of which (`.row`'s/`.stack`'s own `gap`, `.field`'s own `margin-bottom`, heading
+   defaults, etc.) these utilities exist specifically to override on one element at a time. Two
+   single-class selectors have equal specificity, so CSS breaks the tie by source order - a utility
+   defined earlier than the component rule it's meant to override would silently lose every time
+   (found live: every `.field m-0` combination up to this point had no effect at all, since `.field`
+   itself was defined later in the file). Every page draws its one-off margins/gaps/etc. from here
+   rather than an inline style; add a step here, never a bare pixel value in a page, and never move
+   this block earlier than the rules it overrides. */
+.micro {
+  font-size: var(--font-size-micro);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+.text-display {
+  font-size: var(--font-size-display);
+}
+.eval-heading {
+  margin: var(--space-3) 0 var(--space-1);
+  font-size: var(--font-size-h3);
+}
+.card-title-h3 {
+  margin: 0;
+  font-size: var(--font-size-h3);
+}
+.mt-0 {
+  margin-top: 0;
+}
+.mt-xs {
+  margin-top: var(--space-1);
+}
+.mt-sm {
+  margin-top: var(--space-2);
+}
+.mt-md {
+  margin-top: var(--space-4);
+}
+.mb-0 {
+  margin-bottom: 0;
+}
+.mb-xs {
+  margin-bottom: var(--space-1);
+}
+.mb-sm {
+  margin-bottom: var(--space-2);
+}
+.mb-md {
+  margin-bottom: var(--space-4);
+}
+.mr-sm {
+  margin-right: var(--space-2);
+}
+.ml-sm {
+  margin-left: var(--space-1);
+}
+.ml-md {
+  margin-left: var(--space-2);
+}
+.ml-lg {
+  margin-left: var(--space-5);
+}
+.m-0 {
+  margin: 0;
+}
+.note {
+  margin: var(--space-2) 0 0;
+}
+.note-xs {
+  margin: var(--space-1) 0 0;
+}
+.gap-sm {
+  gap: var(--space-1);
+}
+.gap-md {
+  gap: var(--space-2);
+}
+.align-start {
+  align-items: flex-start;
+}
+.align-center {
+  align-items: center;
+}
+.align-end {
+  align-items: flex-end;
+}
+.flex-1 {
+  flex: 1;
+}
+.w-160 {
+  max-width: 160px;
+}
+.w-220 {
+  max-width: 220px;
+}
+.field-grow {
+  margin: 0;
+  flex: 1;
+}
+.w-full {
+  width: 100%;
+}
+.relative {
+  position: relative;
+}
+.inline-flex {
+  display: inline-flex;
+}
+/* a fieldset used as a plain grouping wrapper, not a visually bordered group */
+.fieldset-plain {
+  border: 0;
+  padding: 0;
+}
+.pre-wrap {
+  white-space: pre-wrap;
+}
+/* the master-detail layout shared by Skills and Suites: a narrow list on the left, the selected
+   record's detail on the right */
+.master-detail {
+  display: grid;
+  grid-template-columns: minmax(220px, 300px) 1fr;
+  gap: var(--space-4);
+}
+.list-item-btn {
+  width: 100%;
+  text-align: left;
+}
+/* a plain (non-reset) list's own standard bullet indent, not a spacing-scale concept */
+.list-indent {
+  padding-left: 18px;
+}
+.self-end {
+  align-self: flex-end;
+}
+/* a checkbox label sharing a row with labeled fields - aligns with their input baseline, not
+   their label text */
+.check-field-align {
+  align-self: flex-end;
+  padding-bottom: 6px;
+}
+.list-reset {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+/* a reset list with a small top margin instead of none - a dedicated combination rather than
+   stacking .list-reset with a margin utility alone, since source order between two equal-
+   specificity single-class rules would otherwise decide it */
+.list-reset-mt {
+  list-style: none;
+  margin: var(--space-2) 0 0;
+  padding: 0;
+}
+/* a plain (bulleted) list with no extra margin, keeping its standard indent */
+.list-plain {
+  margin: 0;
+  padding-left: 18px;
+}
+/* a nested bulleted list (inside a <details>/<li>) - tight vertical margin, standard indent */
+.list-tight {
+  margin: var(--space-1) 0;
+  padding-left: 18px;
+}
+.min-w-320 {
+  min-width: 320px;
+}
+.placeholder-dimmed {
+  opacity: 0.6;
+}
+

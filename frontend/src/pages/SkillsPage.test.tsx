@@ -121,13 +121,10 @@ describe('skills page', () => {
   });
 
   it('deletes a skill after confirmation', async () => {
-    vi.stubGlobal(
-      'confirm',
-      vi.fn(() => true),
-    );
     const { user, calls, skills } = skillsSetup([SKILL_A]);
     const detail = await screen.findByRole('region', { name: 'Skill step-by-step' });
     await user.click(within(detail).getByRole('button', { name: 'Delete skill step-by-step' }));
+    await user.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Delete' }));
     await waitFor(() =>
       expect(calls.some((c) => c.method === 'DELETE' && c.path === '/skills/1')).toBe(true),
     );

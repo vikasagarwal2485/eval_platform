@@ -57,6 +57,17 @@ describe('agents list', () => {
     const link = await screen.findByRole('link', { name: /demo-chatbot/ });
     expect(link).toHaveAttribute('href', '/agents/1');
   });
+
+  it('paginates: shows a pager reflecting the real total, independent of this page\'s own size', async () => {
+    const { user } = setup([], {
+      'GET /agents': () =>
+        new Response(JSON.stringify([agent()]), { status: 200, headers: { 'X-Total-Count': '75' } }),
+    });
+    await screen.findByText('demo-chatbot');
+    expect(screen.getByText('Showing 1-50 of 75')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Next' }));
+    expect(screen.getByText('Page 2 of 2')).toBeInTheDocument();
+  });
 });
 
 describe('registration', () => {

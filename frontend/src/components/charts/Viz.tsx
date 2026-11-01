@@ -123,13 +123,13 @@ export function ChartFrame({
   containerRef?: React.RefObject<HTMLDivElement>;
 }) {
   return (
-    <figure className="viz-root" style={{ margin: 0 }}>
+    <figure className="viz-root m-0">
       <figcaption>
         <h3 className="viz-title">{title}</h3>
         {subtitle && <p className="viz-sub">{subtitle}</p>}
       </figcaption>
       {legend}
-      <div ref={containerRef} style={{ position: 'relative' }}>
+      <div ref={containerRef} className="relative">
         {children}
         <TipBox tip={tip} />
       </div>

@@ -45,6 +45,17 @@ describe('composite()', () => {
 });
 
 describe('9.6 leaderboard', () => {
+  it('shows a breadcrumb back to History naming this run', async () => {
+    setup();
+    await screen.findByRole('table', { name: 'Model leaderboard' });
+    const breadcrumb = screen.getByRole('navigation', { name: 'Breadcrumb' });
+    expect(within(breadcrumb).getByRole('link', { name: 'History' })).toHaveAttribute(
+      'href',
+      '/history',
+    );
+    expect(within(breadcrumb).getByText('Smoke')).toBeInTheDocument();
+  });
+
   it('ranks models by composite and shows category scores, speed and scored counts', async () => {
     setup();
     await screen.findByRole('table', { name: 'Model leaderboard' });

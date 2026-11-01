@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, renderHook } from '@testing-library/react';
 import type { ReactNode } from 'react';
-import { ApiError, api, describeError } from './client';
+import { ApiError, api, describeError, getPaginated } from './client';
 import { FakeEventSource } from '../test/fakeEventSource';
 import { initialLive, liveReducer, useRunEvents } from './useRunEvents';
 
@@ -202,5 +202,39 @@ describe('api client', () => {
       '/api/runs',
       expect.objectContaining({ method: 'POST', body: '{"a":1}' }),
     );
+  });
+
+  // ------------------------------------------------------------------ getPaginated (add-uplift-frontend-ux)
+  it('getPaginated passes limit/offset and reads the X-Total-Count header', async () => {
+    const f = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify([{ id: 1 }, { id: 2 }]), {
+        status: 200,
+        headers: { 'X-Total-Count': '120' },
+      }),
+    );
+    vi.stubGlobal('fetch', f);
+    const { items, total } = await getPaginated('/runs', { limit: 50, offset: 50 });
+    expect(f).toHaveBeenCalledWith('/api/runs?limit=50&offset=50');
+    expect(items).toEqual([{ id: 1 }, { id: 2 }]);
+    expect(total).toBe(120);
+  });
+
+  it('getPaginated falls back to the returned item count when the header is absent', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(new Response(JSON.stringify([{ id: 1 }]), { status: 200 })),
+    );
+    const { total } = await getPaginated('/skills', { limit: 50, offset: 0 });
+    expect(total).toBe(1);
+  });
+
+  it('getPaginated throws ApiError on a non-2xx response', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(new Response(JSON.stringify({ detail: 'nope' }), { status: 500 })),
+    );
+    const err = await getPaginated('/agents', { limit: 50, offset: 0 }).catch((e) => e);
+    expect(err).toBeInstanceOf(ApiError);
+    expect(err).toMatchObject({ status: 500, message: 'nope' });
   });
 });

@@ -18,7 +18,7 @@ function unavailableReason(error: unknown): string {
 function SpanRow({ node, depth }: { node: SpanNode; depth: number }) {
   const attrs = Object.entries(node.attributes);
   return (
-    <div style={{ marginLeft: depth * 16, marginTop: depth === 0 ? 0 : 6 }}>
+    <div className={depth === 0 ? undefined : 'mt-sm'} style={{ marginLeft: depth * 16 }}>
       <div className="row">
         <code>{node.name}</code>
         {node.kind && (
@@ -28,9 +28,9 @@ function SpanRow({ node, depth }: { node: SpanNode; depth: number }) {
         {node.statusCode === 'STATUS_CODE_ERROR' && <span className="badge bad">error</span>}
       </div>
       {attrs.length > 0 && (
-        <div className="small muted" style={{ marginLeft: 4 }}>
+        <div className="small muted ml-sm trace-attrs">
           {attrs.map(([k, v]) => (
-            <span key={k} style={{ marginRight: 10 }}>
+            <span key={k} className="mr-sm">
               {k}={String(v)}
             </span>
           ))}
@@ -53,8 +53,7 @@ export default function SpanTree({ traceId }: { traceId: string | null }) {
 
   return (
     <details
-      className="small"
-      style={{ marginTop: 8 }}
+      className="small mt-sm"
       onToggle={(e) => setOpen((e.target as HTMLDetailsElement).open)}
     >
       <summary>Trace</summary>
@@ -62,7 +61,7 @@ export default function SpanTree({ traceId }: { traceId: string | null }) {
       {traceId && isLoading && <Spinner label="Loading trace" />}
       {traceId && error && <div className="muted">{unavailableReason(error)}</div>}
       {traceId && data && (
-        <div style={{ marginTop: 4 }}>
+        <div className="mt-xs trace">
           {(() => {
             const roots = parseTrace(data);
             return roots.length === 0 ? (

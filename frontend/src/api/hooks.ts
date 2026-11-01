@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { api } from './client';
+import { api, getPaginated } from './client';
 import type {
   CaseIn,
   CaseOut,
@@ -36,14 +36,27 @@ import type {
 
 export const ACTIVE_STATUSES = ['queued', 'running'];
 
+/** The limit passed by every call site that wants "effectively everything" (pickers: hand-off
+ * agent selection, suite/skill multi-select, etc.) now that `/runs`/`/agents`/`/skills`/`/suites`
+ * default to a 50-row page (add-uplift-frontend-ux) - a generous ceiling, not a cap any real
+ * picker use case should ever actually hit. */
+const UNPAGINATED_LIMIT = 1000;
+
 export const keys = {
   health: ['health'] as const,
   models: ['models'] as const,
   suites: ['suites'] as const,
+  // Nested under the same 'suites' prefix (not a sibling top-level key) so the existing
+  // `invalidateQueries({ queryKey: keys.suites })` after a create/update/delete also invalidates
+  // this paginated variant via react-query's default prefix matching - found live: a separate
+  // top-level key silently never refetched the list view after a mutation.
+  suitesPage: (limit: number, offset: number) => ['suites', 'page', limit, offset] as const,
   suite: (id: number) => ['suite', id] as const,
   skills: ['skills'] as const,
+  skillsPage: (limit: number, offset: number) => ['skills', 'page', limit, offset] as const,
   providers: ['providers'] as const,
   agents: ['agents'] as const,
+  agentsPage: (limit: number, offset: number) => ['agents', 'page', limit, offset] as const,
   agent: (id: number) => ['agent', id] as const,
   agentTurns: (id: number, sessionId?: string | null, status?: string | null) =>
     ['agent-turns', id, sessionId ?? '', status ?? ''] as const,
@@ -52,6 +65,7 @@ export const keys = {
   agentAttention: (id: number, window: string) => ['agent-attention', id, window] as const,
   agentCatalog: ['agent-catalog'] as const,
   runs: ['runs'] as const,
+  runsPage: (limit: number, offset: number) => ['runs', 'page', limit, offset] as const,
   run: (id: number) => ['run', id] as const,
   summary: (id: number, w?: string, cold?: boolean, attempt?: number | null) =>
     ['summary', id, w ?? '', !!cold, attempt ?? null] as const,
@@ -90,7 +104,20 @@ export function useRefreshModels() {
 }
 
 export const useSuites = () =>
-  useQuery({ queryKey: keys.suites, queryFn: () => api.get<Suite[]>('/suites') });
+  useQuery({
+    queryKey: keys.suites,
+    queryFn: () => api.get<Suite[]>(`/suites?limit=${UNPAGINATED_LIMIT}`),
+  });
+
+/** The Suites *list view*'s own paginated page, distinct from `useSuites()` above - every picker
+ * (`SuitePicker`, `SaveToSuite`) needs the full list to choose from, so it keeps using
+ * `useSuites()`; only the dedicated list view paginates (spec `frontend-design-system`). */
+export const useSuitesPage = ({ limit, offset }: { limit: number; offset: number }) =>
+  useQuery({
+    queryKey: keys.suitesPage(limit, offset),
+    queryFn: () => getPaginated<Suite>('/suites', { limit, offset }),
+    placeholderData: (prev) => prev,
+  });
 
 export const useSuite = (id: number | null) =>
   useQuery({
@@ -102,9 +129,21 @@ export const useSuite = (id: number | null) =>
 export const useRuns = () =>
   useQuery({
     queryKey: keys.runs,
-    queryFn: () => api.get<Run[]>('/runs'),
+    queryFn: () => api.get<Run[]>(`/runs?limit=${UNPAGINATED_LIMIT}`),
     refetchInterval: (q) =>
       q.state.data?.some((r) => ACTIVE_STATUSES.includes(r.status)) ? 3000 : false,
+  });
+
+/** The History page's own paginated page (spec `frontend-design-system`) - `useRuns()` above is
+ * `/runs`'s only other consumer, and it genuinely wants everything (to compute "is anything
+ * active" for its own polling), so it keeps its high explicit limit rather than paginating too. */
+export const useRunsPage = ({ limit, offset }: { limit: number; offset: number }) =>
+  useQuery({
+    queryKey: keys.runsPage(limit, offset),
+    queryFn: () => getPaginated<Run>('/runs', { limit, offset }),
+    placeholderData: (prev) => prev,
+    refetchInterval: (q) =>
+      q.state.data?.items.some((r) => ACTIVE_STATUSES.includes(r.status)) ? 3000 : false,
   });
 
 /** Polls while the run is active: the DB is the source of truth, SSE only adds immediacy. */
@@ -256,7 +295,20 @@ export function useSuiteMutations() {
 
 // ---------------------------------------------------------------- skills (add-run-skills)
 export const useSkills = () =>
-  useQuery({ queryKey: keys.skills, queryFn: () => api.get<Skill[]>('/skills') });
+  useQuery({
+    queryKey: keys.skills,
+    queryFn: () => api.get<Skill[]>(`/skills?limit=${UNPAGINATED_LIMIT}`),
+  });
+
+/** The Skills list view's own paginated page - every picker (`RunSetupPage`, `PlaygroundPanel`)
+ * needs the full list to choose from, so it keeps using `useSkills()` above; only the dedicated
+ * list view paginates (spec `frontend-design-system`). */
+export const useSkillsPage = ({ limit, offset }: { limit: number; offset: number }) =>
+  useQuery({
+    queryKey: keys.skillsPage(limit, offset),
+    queryFn: () => getPaginated<Skill>('/skills', { limit, offset }),
+    placeholderData: (prev) => prev,
+  });
 
 export function useSkillMutations() {
   const qc = useQueryClient();
@@ -378,8 +430,19 @@ export function useProviderMutations() {
 export const useAgents = () =>
   useQuery({
     queryKey: keys.agents,
-    queryFn: () => api.get<Agent[]>('/agents'),
+    queryFn: () => api.get<Agent[]>(`/agents?limit=${UNPAGINATED_LIMIT}`),
     refetchInterval: 15_000, // rolling status/quality figures drift slowly; no SSE on the list page
+  });
+
+/** The Agents list view's own paginated page - the hand-off-agent picker (`AgentsPage`'s
+ * registration form, `AgentSettingsPanel`) needs the full list to choose from, so it keeps using
+ * `useAgents()` above; only the dedicated list view paginates (spec `frontend-design-system`). */
+export const useAgentsPage = ({ limit, offset }: { limit: number; offset: number }) =>
+  useQuery({
+    queryKey: keys.agentsPage(limit, offset),
+    queryFn: () => getPaginated<Agent>('/agents', { limit, offset }),
+    placeholderData: (prev) => prev,
+    refetchInterval: 15_000,
   });
 
 export const useAgent = (id: number) =>

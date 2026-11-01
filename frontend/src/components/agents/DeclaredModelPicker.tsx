@@ -46,7 +46,7 @@ export default function DeclaredModelPicker({
 
   if (customMode || list.length === 0) {
     return (
-      <div className="row" style={{ flex: 1 }}>
+      <div className="row flex-1">
         <input
           aria-label={ariaLabel}
           placeholder="e.g. qwen3:8b or @provider/model"
@@ -64,7 +64,7 @@ export default function DeclaredModelPicker({
 
   const groups = groupModels(list);
   return (
-    <div className="row" style={{ flex: 1, alignItems: 'center' }}>
+    <div className="row flex-1 align-center">
       <select
         aria-label={ariaLabel}
         value={known ? value : ''}

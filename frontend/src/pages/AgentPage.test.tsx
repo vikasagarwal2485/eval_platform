@@ -199,6 +199,17 @@ describe('header', () => {
     expect(await screen.findByRole('heading', { level: 1 })).toHaveTextContent('demo-chatbot');
     expect(screen.getByText('author:1')).toBeInTheDocument();
   });
+
+  it('shows a breadcrumb back to the Agents list', async () => {
+    setup();
+    await screen.findByRole('heading', { level: 1 });
+    const breadcrumb = screen.getByRole('navigation', { name: 'Breadcrumb' });
+    expect(within(breadcrumb).getByRole('link', { name: 'Agents' })).toHaveAttribute(
+      'href',
+      '/agents',
+    );
+    expect(within(breadcrumb).getByText('demo-chatbot')).toBeInTheDocument();
+  });
 });
 
 describe('live tab', () => {

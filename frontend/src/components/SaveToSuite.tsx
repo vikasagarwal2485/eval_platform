@@ -26,7 +26,7 @@ export default function SaveToSuite({ item }: { item: CaseIn }) {
         : { case: item, suite_id: Number(target) },
     );
   return (
-    <span className="row" style={{ display: 'inline-flex' }}>
+    <span className="row inline-flex">
       <select aria-label="Target suite" value={target} onChange={(e) => setTarget(e.target.value)}>
         <option value="__new__">New suite…</option>
         {writable.map((s) => (

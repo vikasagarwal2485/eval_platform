@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import func, select
@@ -208,8 +208,11 @@ async def create_run(body: RunCreate, request: Request, session: Session = Depen
 
 
 @router.get("/runs")
-def list_runs(session: Session = Depends(get_session)):
-    return [run_out(session, r) for r in repo.list_runs(session)]
+def list_runs(response: Response, limit: int = 50, offset: int = 0, session: Session = Depends(get_session)):
+    # `X-Total-Count` (add-uplift-frontend-ux) - the unpaginated total, for a page-based UI
+    # pager; the body stays the bare array every existing caller already expects (design.md D1).
+    response.headers["X-Total-Count"] = str(repo.count_runs(session))
+    return [run_out(session, r) for r in repo.list_runs(session, limit=limit, offset=offset)]
 
 
 @router.get("/runs/{run_id}")

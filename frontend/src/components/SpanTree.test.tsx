@@ -76,6 +76,45 @@ describe('SpanTree', () => {
     expect(screen.getByText(/gen_ai.request.model=gpt-4o/)).toBeInTheDocument();
   });
 
+  it('keeps a long, unbroken span name or attribute value from forcing the tree wider than its container', async () => {
+    // found live: a flex-row `<code>` (span name) or a plain-text attribute value with no spaces -
+    // an id, URL, or serialized blob - has no break point, so it pushed the whole drill-down panel
+    // past the window instead of wrapping or scrolling in place. `.trace`/`.trace-attrs` (styles.css)
+    // give it one via `overflow-wrap: anywhere`, plus an `overflow-x: auto` backstop on `.trace`.
+    const longToken = 'x'.repeat(300);
+    const longTrace: TempoTrace = {
+      batches: [
+        {
+          resource: { attributes: [] },
+          scopeSpans: [
+            {
+              scope: { name: 'eval_agent_sdk' },
+              spans: [
+                {
+                  traceId: 'xjfjx9KzqckZvNJERZSY1g==',
+                  spanId: 'root==',
+                  name: longToken,
+                  kind: 'SPAN_KIND_INTERNAL',
+                  startTimeUnixNano: '1000000000',
+                  endTimeUnixNano: '5000000000',
+                  attributes: [{ key: 'blob', value: { stringValue: longToken } }],
+                  status: { code: 'STATUS_CODE_OK' },
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+    mockApi({ [`GET /traces/${TRACE_ID}`]: longTrace });
+    const { container } = render(<SpanTree traceId={TRACE_ID} />);
+    const user = userEvent.setup();
+    await user.click(screen.getByText('Trace'));
+    expect(await screen.findByText(longToken)).toBeInTheDocument();
+    expect(container.querySelector('.trace')).toBeTruthy();
+    expect(container.querySelector('.trace-attrs')).toBeTruthy();
+  });
+
   it('shows a clear message for a trace that cannot be found', async () => {
     mockApi({
       [`GET /traces/${TRACE_ID}`]: jsonError(404, { code: 'trace_not_found', message: 'no trace' }),

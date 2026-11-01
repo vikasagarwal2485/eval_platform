@@ -11,6 +11,7 @@ import {
 } from '../api/hooks';
 import type { JudgeMode, Weights } from '../api/types';
 import { useRunEvents } from '../api/useRunEvents';
+import Breadcrumb from '../components/Breadcrumb';
 import CaseDrilldown from '../components/CaseDrilldown';
 import ClassificationDetails from '../components/ClassificationDetails';
 import JudgeStrictness from '../components/JudgeStrictness';
@@ -71,6 +72,7 @@ export default function ResultsPage() {
   if (run.isLoading)
     return (
       <>
+        <Breadcrumb listLabel="History" listPath="/history" current={`Run #${id}`} />
         {heading}
         <Spinner label="Loading run" />
       </>
@@ -78,6 +80,7 @@ export default function ResultsPage() {
   if (run.error)
     return (
       <>
+        <Breadcrumb listLabel="History" listPath="/history" current={`Run #${id}`} />
         {heading}
         <ErrorBox error={run.error} title="Could not load the run." />
       </>
@@ -89,6 +92,7 @@ export default function ResultsPage() {
 
   return (
     <>
+      <Breadcrumb listLabel="History" listPath="/history" current={r.name} />
       <div className="page-head">
         <div className="grow">
           {heading}
@@ -191,14 +195,13 @@ export default function ResultsPage() {
           {s && rows.length > 0 && (
             <>
               <section
-                className="card"
+                className={`card ${summary.isPlaceholderData ? 'placeholder-dimmed' : ''}`}
                 aria-label="Leaderboard"
-                style={{ opacity: summary.isPlaceholderData ? 0.6 : 1 }}
               >
                 <div className="card-head">
                   <h2>Leaderboard</h2>
                   <span className="spacer" />
-                  <label className="check" style={{ fontWeight: 400 }}>
+                  <label className="check">
                     <input
                       type="checkbox"
                       checked={includeCold}
@@ -213,7 +216,7 @@ export default function ResultsPage() {
                   present={s.categories_present}
                 />
                 <Leaderboard rows={rows} judgeMode={s.judging.mode} />
-                <p className="small muted" style={{ marginTop: 8 }}>
+                <p className="small muted mt-sm">
                   Speed figures use warm requests only; model load time is reported separately.
                   Scores show scored/total cases; unscored cases are excluded, failed requests count
                   as 0.
@@ -221,18 +224,18 @@ export default function ResultsPage() {
               </section>
               <JudgeStrictness mode={s.judging.mode} judges={s.judging.judges} />
               <ClassificationDetails rows={rows} />
-              <div style={{ marginTop: 16 }}>
+              <div className="mt-md">
                 <ChartsSection rows={rows} categories={s.categories_present} />
               </div>
             </>
           )}
 
           {s && (
-            <section className="card" aria-label="Scoring" style={{ marginTop: 16 }}>
+            <section className="card mt-md" aria-label="Scoring">
               <h2>Scoring</h2>
               <div className="row">
                 {attempts.length > 1 && (
-                  <div className="field" style={{ margin: 0 }}>
+                  <div className="field m-0">
                     <label htmlFor="attempt">Scoring attempt</label>
                     <select
                       id="attempt"
@@ -248,7 +251,7 @@ export default function ResultsPage() {
                     </select>
                   </div>
                 )}
-                <div className="field" style={{ margin: 0 }}>
+                <div className="field m-0">
                   <label htmlFor="rescore-mode">Re-score with</label>
                   <select
                     id="rescore-mode"
@@ -264,7 +267,7 @@ export default function ResultsPage() {
                   </select>
                 </div>
                 {rescoreMode === 'single' && (
-                  <div className="field" style={{ margin: 0 }}>
+                  <div className="field m-0">
                     <label htmlFor="rejudge">Judge model</label>
                     <select id="rejudge" value={judge} onChange={(e) => setJudge(e.target.value)}>
                       <option value="">Choose a judge…</option>
@@ -277,7 +280,7 @@ export default function ResultsPage() {
                   </div>
                 )}
                 <button
-                  style={{ alignSelf: 'flex-end' }}
+                  className="self-end"
                   disabled={busy || rescore.isPending || (rescoreMode === 'single' && !judge)}
                   onClick={() =>
                     rescore.mutate(
@@ -293,11 +296,11 @@ export default function ResultsPage() {
                 </button>
               </div>
               {!canCross && (
-                <p id="rescore-cross-hint" className="small muted" style={{ margin: '8px 0 0' }}>
+                <p id="rescore-cross-hint" className="small muted note">
                   Cross-model judging is unavailable: this run evaluated only one model.
                 </p>
               )}
-              <p className="small muted" style={{ margin: '8px 0 0' }}>
+              <p className="small muted note">
                 Re-scoring never regenerates outputs or changes performance numbers; earlier
                 attempts stay available.
               </p>

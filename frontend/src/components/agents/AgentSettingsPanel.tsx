@@ -9,6 +9,7 @@ import type {
   ModelInfo,
   RubricCriterion,
 } from '../../api/types';
+import { useConfirm } from '../ConfirmDialog';
 import DeclaredModelPicker from './DeclaredModelPicker';
 import EvaluatorPicker from './EvaluatorPicker';
 import { Banner, ErrorBox } from '../ui';
@@ -78,18 +79,16 @@ function DeclaredModelsEditor({
   return (
     <div className="field">
       <span id="declared-models-label">Declared models</span>
-      <p className="small muted" style={{ marginTop: 0 }}>
-        {DECLARED_MODELS_HINT}
-      </p>
+      <p className="small muted mt-0">{DECLARED_MODELS_HINT}</p>
       <div className="stack" aria-labelledby="declared-models-label">
         {rows.map((row, i) => (
-          <div className="stack" key={i} style={{ gap: 4 }}>
+          <div className="stack gap-sm" key={i}>
             <div className="row">
               <select
                 aria-label={`Task type for declared model ${i + 1}`}
                 value={row.key}
                 onChange={(e) => update(i, { key: e.target.value })}
-                style={{ maxWidth: 220 }}
+                className="w-220"
               >
                 <option value="" disabled>
                   Select a task…
@@ -120,7 +119,7 @@ function DeclaredModelsEditor({
                 step={0.1}
                 value={row.temperature}
                 onChange={(e) => update(i, { temperature: e.target.value })}
-                style={{ maxWidth: 160 }}
+                className="w-160"
               />
               <button
                 type="button"
@@ -132,7 +131,7 @@ function DeclaredModelsEditor({
                 Remove
               </button>
             </div>
-            <div className="row" style={{ paddingLeft: 232 }}>
+            <div className="row declared-model-fallback-row">
               <span className="muted small">Fallback (optional):</span>
               <DeclaredModelPicker
                 ariaLabel={`Fallback model for declared model ${i + 1}`}
@@ -169,7 +168,7 @@ function GatewaySyncStatus({ result }: { result: GatewaySyncResult | undefined }
   const notable = Object.entries(result).filter(([, r]) => r.status !== 'ok');
   if (!notable.length) return null;
   return (
-    <div className="small muted" style={{ marginTop: 8 }} role="status">
+    <div className="small muted mt-sm" role="status">
       {notable.map(([taskType, r]) => (
         <div key={taskType}>
           Gateway sync {r.status}
@@ -191,7 +190,7 @@ function RubricEditor({
   return (
     <div>
       {rubric.map((c, i) => (
-        <div key={i} className="row" style={{ marginBottom: 6 }}>
+        <div key={i} className="row mb-sm">
           <input
             aria-label={`Criterion ${i + 1} name`}
             placeholder="Name"
@@ -199,7 +198,7 @@ function RubricEditor({
             onChange={(e) =>
               onChange(rubric.map((r, j) => (j === i ? { ...r, name: e.target.value } : r)))
             }
-            style={{ maxWidth: 160 }}
+            className="w-160"
           />
           <input
             aria-label={`Criterion ${i + 1} description`}
@@ -208,7 +207,7 @@ function RubricEditor({
             onChange={(e) =>
               onChange(rubric.map((r, j) => (j === i ? { ...r, description: e.target.value } : r)))
             }
-            style={{ flex: 1 }}
+            className="flex-1"
           />
           <button
             type="button"
@@ -230,6 +229,7 @@ export default function AgentSettingsPanel({ agent }: { agent: Agent }) {
   const { data: models, isLoading, error: modelsError } = useModels();
   const { data: allAgents } = useAgents();
   const { update, pause, resume, rotateToken, remove } = useAgentMutations(agent.id);
+  const confirm = useConfirm();
 
   const [kind, setKind] = useState<AgentKind>(agent.kind);
   const [declaredModelRows, setDeclaredModelRows] = useState<DeclaredModelRow[]>(
@@ -308,7 +308,7 @@ export default function AgentSettingsPanel({ agent }: { agent: Agent }) {
             id="agent-kind"
             value={kind}
             onChange={(e) => setKind(e.target.value as AgentKind)}
-            style={{ maxWidth: 220 }}
+            className="w-220"
           >
             <option value="chatbot">Chatbot</option>
             <option value="reasoning">Reasoning</option>
@@ -333,14 +333,14 @@ export default function AgentSettingsPanel({ agent }: { agent: Agent }) {
         {kind === 'router' && (
           <div className="field">
             <span>Hand-off agents</span>
-            <p className="small muted" style={{ marginTop: 0 }}>
+            <p className="small muted mt-0">
               One or more separate, independently registered agents this router may hand problems
               off to - any kind (its own registered kind is purely descriptive; nothing in the
               spawn mechanism depends on it). At least one is required for a router-kind agent; the
               platform places no limit on how many, though today&apos;s reference router script
               only ever uses the first.
             </p>
-            <div className="stack" role="group" aria-label="Hand-off agents" style={{ gap: 4 }}>
+            <div className="stack gap-sm" role="group" aria-label="Hand-off agents">
               {(allAgents ?? [])
                 .filter((a) => a.id !== agent.id)
                 .map((a) => (
@@ -404,11 +404,14 @@ export default function AgentSettingsPanel({ agent }: { agent: Agent }) {
           <button
             type="button"
             className="link"
-            onClick={() => {
+            onClick={async () => {
               if (
-                confirm(
-                  `Delete agent "${agent.name}"? This removes all of its turns and evaluations.`,
-                )
+                await confirm({
+                  title: `Delete agent "${agent.name}"?`,
+                  body: 'This removes all of its turns and evaluations.',
+                  confirmLabel: 'Delete',
+                  danger: true,
+                })
               )
                 remove.mutate();
             }}
@@ -436,7 +439,7 @@ export default function AgentSettingsPanel({ agent }: { agent: Agent }) {
           acknowledgedProviders={[...agent.provider_acks, ...pendingAcks]}
         />
 
-        <div className="grid-2" style={{ marginTop: 12 }}>
+        <div className="grid-2 mt-md">
           <div className="field">
             <label htmlFor="sample-rate">Sample rate</label>
             <input

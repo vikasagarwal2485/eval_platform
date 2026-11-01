@@ -1,6 +1,8 @@
 import { useState } from 'react';
-import { useSkillMutations, useSkills } from '../api/hooks';
+import { useSkillMutations, useSkillsPage } from '../api/hooks';
 import type { Skill } from '../api/types';
+import { useConfirm } from '../components/ConfirmDialog';
+import Pagination, { usePagination } from '../components/Pagination';
 import { Empty, ErrorBox, Spinner } from '../components/ui';
 
 function UploadPanel({ onDone }: { onDone: (id: number) => void }) {
@@ -41,7 +43,7 @@ function UploadPanel({ onDone }: { onDone: (id: number) => void }) {
       </div>
       {fileName && <p className="small muted">Selected: {fileName}</p>}
       {importSkill.error && (
-        <div style={{ marginTop: 12 }}>
+        <div className="mt-md">
           <ErrorBox error={importSkill.error} title="Upload failed; nothing was created." />
         </div>
       )}
@@ -121,6 +123,7 @@ function SkillForm({
 
 function SkillDetailView({ skill, onDeleted }: { skill: Skill; onDeleted: () => void }) {
   const m = useSkillMutations();
+  const confirm = useConfirm();
   const [editing, setEditing] = useState(false);
   const err = m.update.error ?? m.remove.error;
 
@@ -151,11 +154,14 @@ function SkillDetailView({ skill, onDeleted }: { skill: Skill; onDeleted: () => 
         <button
           className="danger"
           aria-label={`Delete skill ${skill.name}`}
-          onClick={() => {
+          onClick={async () => {
             if (
-              window.confirm(
-                `Delete skill “${skill.name}”? Past runs keep the exact instructions they used.`,
-              )
+              await confirm({
+                title: `Delete skill “${skill.name}”?`,
+                body: 'Past runs keep the exact instructions they used.',
+                confirmLabel: 'Delete',
+                danger: true,
+              })
             )
               m.remove.mutate(skill.id, { onSuccess: onDeleted });
           }}
@@ -165,15 +171,15 @@ function SkillDetailView({ skill, onDeleted }: { skill: Skill; onDeleted: () => 
       </div>
       {!!err && <ErrorBox error={err} />}
       {skill.description && <p className="muted">{skill.description}</p>}
-      <pre className="card" style={{ whiteSpace: 'pre-wrap' }}>
-        {skill.instructions}
-      </pre>
+      <pre className="card pre-wrap">{skill.instructions}</pre>
     </section>
   );
 }
 
 export default function SkillsPage() {
-  const { data: skills, isLoading, error } = useSkills();
+  const { page, pageSize, setPage, setPageSize, offset, limit } = usePagination();
+  const { data, isLoading, error } = useSkillsPage({ limit, offset });
+  const skills = data?.items;
   const { create } = useSkillMutations();
   const [selected, setSelected] = useState<number | null>(null);
   const [showUpload, setShowUpload] = useState(false);
@@ -207,37 +213,32 @@ export default function SkillsPage() {
       {isLoading && <Spinner label="Loading skills" />}
       {!!error && <ErrorBox error={error} title="Could not load skills." />}
       {skills && (
-        <div
-          style={{
-            display: 'grid',
-            gridTemplateColumns: 'minmax(220px, 300px) 1fr',
-            gap: 16,
-            marginTop: showUpload ? 16 : 0,
-          }}
-        >
+        <div className={`master-detail ${showUpload ? 'mt-md' : ''}`}>
           <section aria-label="Skill list" className="stack">
-            <ul style={{ listStyle: 'none', padding: 0, margin: 0 }} className="stack">
+            <ul className="stack list-reset">
               {skills.map((s) => (
                 <li key={s.id}>
                   <button
-                    style={{ width: '100%', textAlign: 'left' }}
+                    className={`list-item-btn ${s.id === current ? 'primary' : ''}`}
                     aria-current={s.id === current ? 'true' : undefined}
-                    className={s.id === current ? 'primary' : undefined}
                     onClick={() => {
                       setSelected(s.id);
                       setShowNew(false);
                     }}
                   >
                     <strong>{s.name}</strong>
-                    {s.description && (
-                      <div className="small" style={{ opacity: 0.85 }}>
-                        {s.description}
-                      </div>
-                    )}
+                    {s.description && <div className="small muted">{s.description}</div>}
                   </button>
                 </li>
               ))}
             </ul>
+            <Pagination
+              page={page}
+              pageSize={pageSize}
+              total={data?.total ?? 0}
+              onPageChange={setPage}
+              onPageSizeChange={setPageSize}
+            />
             {!showNew ? (
               <button className="primary" onClick={() => setShowNew(true)}>
                 New skill

@@ -43,8 +43,10 @@ def _writable(suite: Suite) -> Suite:
 
 
 @router.get("/suites", response_model=list[SuiteOut])
-def list_suites(session: Session = Depends(get_session)):
-    return [_suite_out(s) for s in repo.list_suites(session)]
+def list_suites(response: Response, limit: int = 50, offset: int = 0, session: Session = Depends(get_session)):
+    # `X-Total-Count` (add-uplift-frontend-ux) - see runs.list_runs for the rationale.
+    response.headers["X-Total-Count"] = str(repo.count_suites(session))
+    return [_suite_out(s) for s in repo.list_suites(session, limit=limit, offset=offset)]
 
 
 @router.post("/suites", response_model=SuiteDetail, status_code=201)

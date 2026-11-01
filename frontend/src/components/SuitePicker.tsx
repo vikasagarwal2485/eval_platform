@@ -24,7 +24,7 @@ function SuiteCases({
   const allIds = data?.cases.map((c) => c.id) ?? [];
   return (
     <>
-      <div className="row" style={{ marginTop: 8, gap: 8 }}>
+      <div className="row mt-sm gap-md">
         <span className="small muted" aria-live="polite">
           {allIds.length - excluded.length} of {allIds.length} selected
         </span>
@@ -46,7 +46,7 @@ function SuiteCases({
           Unselect all cases
         </button>
       </div>
-      <ul style={{ listStyle: 'none', padding: 0, margin: '8px 0 0' }}>
+      <ul className="list-reset-mt">
         {data?.cases.map((c) => (
           <li key={c.id}>
             <label className="check">

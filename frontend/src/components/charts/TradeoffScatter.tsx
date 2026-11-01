@@ -80,7 +80,7 @@ export default function TradeoffScatter({
         />
       }
     >
-      <fieldset className="viz-ctrl" style={{ border: 0, padding: 0 }}>
+      <fieldset className="viz-ctrl fieldset-plain">
         <legend className="sr-only">Speed measure</legend>
         {(Object.keys(X_OPTS) as XKey[]).map((k) => (
           <label key={k}>

@@ -1,7 +1,9 @@
 import { useState } from 'react';
-import { useSuite, useSuiteMutations, useSuites } from '../api/hooks';
+import { useSuite, useSuiteMutations, useSuitesPage } from '../api/hooks';
 import type { CaseIn, CaseOut } from '../api/types';
 import CaseForm from '../components/CaseForm';
+import { useConfirm } from '../components/ConfirmDialog';
+import Pagination, { usePagination } from '../components/Pagination';
 import { CategoryBadge, Empty, ErrorBox, Spinner } from '../components/ui';
 
 function ImportPanel({ onDone }: { onDone: (id: number) => void }) {
@@ -52,7 +54,7 @@ function ImportPanel({ onDone }: { onDone: (id: number) => void }) {
         Import suite
       </button>
       {importSuite.error && (
-        <div style={{ marginTop: 12 }}>
+        <div className="mt-md">
           <ErrorBox error={importSuite.error} title="Import failed; nothing was created." />
         </div>
       )}
@@ -63,6 +65,7 @@ function ImportPanel({ onDone }: { onDone: (id: number) => void }) {
 function SuiteDetailView({ id, onDeleted }: { id: number; onDeleted: () => void }) {
   const { data: suite, isLoading, error } = useSuite(id);
   const m = useSuiteMutations();
+  const confirm = useConfirm();
   const [editing, setEditing] = useState<number | 'new' | null>(null);
   const [renaming, setRenaming] = useState(false);
   const [name, setName] = useState('');
@@ -133,11 +136,14 @@ function SuiteDetailView({ id, onDeleted }: { id: number; onDeleted: () => void 
           <button
             className="danger"
             aria-label={`Delete suite ${suite.name}`}
-            onClick={() => {
+            onClick={async () => {
               if (
-                window.confirm(
-                  `Delete suite “${suite.name}”? Past runs keep their own copy of these cases.`,
-                )
+                await confirm({
+                  title: `Delete suite “${suite.name}”?`,
+                  body: 'Past runs keep their own copy of these cases.',
+                  confirmLabel: 'Delete',
+                  danger: true,
+                })
               )
                 m.remove.mutate(id, { onSuccess: onDeleted });
             }}
@@ -193,8 +199,14 @@ function SuiteDetailView({ id, onDeleted }: { id: number; onDeleted: () => void 
                       <button
                         className="link"
                         aria-label={`Delete case ${c.title || c.prompt.slice(0, 30)}`}
-                        onClick={() => {
-                          if (window.confirm('Delete this case?'))
+                        onClick={async () => {
+                          if (
+                            await confirm({
+                              title: 'Delete this case?',
+                              confirmLabel: 'Delete',
+                              danger: true,
+                            })
+                          )
                             m.deleteCase.mutate({ id: c.id, suiteId: id });
                         }}
                       >
@@ -213,14 +225,14 @@ function SuiteDetailView({ id, onDeleted }: { id: number; onDeleted: () => void 
       )}
 
       {!ro && editing === null && (
-        <p style={{ marginTop: 12 }}>
+        <p className="mt-md">
           <button className="primary" onClick={() => setEditing('new')}>
             Add case
           </button>
         </p>
       )}
       {!ro && editing !== null && (
-        <div className="card" style={{ marginTop: 12 }}>
+        <div className="card mt-md">
           <h3>{editing === 'new' ? 'New case' : 'Edit case'}</h3>
           <CaseForm
             key={String(editing)}
@@ -239,7 +251,9 @@ function SuiteDetailView({ id, onDeleted }: { id: number; onDeleted: () => void 
 }
 
 export default function SuitesPage() {
-  const { data: suites, isLoading, error } = useSuites();
+  const { page, pageSize, setPage, setPageSize, offset, limit } = usePagination();
+  const { data, isLoading, error } = useSuitesPage({ limit, offset });
+  const suites = data?.items;
   const { create } = useSuiteMutations();
   const [selected, setSelected] = useState<number | null>(null);
   const [newName, setNewName] = useState('');
@@ -269,32 +283,31 @@ export default function SuitesPage() {
       {isLoading && <Spinner label="Loading suites" />}
       {!!error && <ErrorBox error={error} title="Could not load suites." />}
       {suites && (
-        <div
-          style={{
-            display: 'grid',
-            gridTemplateColumns: 'minmax(220px, 300px) 1fr',
-            gap: 16,
-            marginTop: showImport ? 16 : 0,
-          }}
-        >
+        <div className={`master-detail ${showImport ? 'mt-md' : ''}`}>
           <section aria-label="Suite list" className="stack">
-            <ul style={{ listStyle: 'none', padding: 0, margin: 0 }} className="stack">
+            <ul className="stack list-reset">
               {suites.map((s) => (
                 <li key={s.id}>
                   <button
-                    style={{ width: '100%', textAlign: 'left' }}
+                    className={`list-item-btn ${s.id === current ? 'primary' : ''}`}
                     aria-current={s.id === current ? 'true' : undefined}
-                    className={s.id === current ? 'primary' : undefined}
                     onClick={() => setSelected(s.id)}
                   >
                     <strong>{s.name}</strong>
-                    <div className="small" style={{ opacity: 0.85 }}>
+                    <div className="small muted">
                       {s.case_count} cases{s.is_builtin ? ' · built-in' : ''}
                     </div>
                   </button>
                 </li>
               ))}
             </ul>
+            <Pagination
+              page={page}
+              pageSize={pageSize}
+              total={data?.total ?? 0}
+              onPageChange={setPage}
+              onPageSizeChange={setPageSize}
+            />
             <form
               className="card"
               onSubmit={(e) => {

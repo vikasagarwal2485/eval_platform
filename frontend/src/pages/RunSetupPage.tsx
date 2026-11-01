@@ -149,7 +149,7 @@ export default function RunSetupPage() {
         refreshing={refresh.isPending}
       />
 
-      <section className="card" aria-labelledby="inputs-h" style={{ marginTop: 16 }}>
+      <section className="card mt-md" aria-labelledby="inputs-h">
         <div className="card-head">
           <h2 id="inputs-h">2. What to send</h2>
           <span className="badge" aria-live="polite">
@@ -172,7 +172,7 @@ export default function RunSetupPage() {
             <div>
               <h3>Prompts in this run</h3>
               {!adhoc.length && <p className="muted">None yet.</p>}
-              <ul style={{ paddingLeft: 18 }}>
+              <ul className="list-indent">
                 {adhoc.map((c, i) => (
                   <li key={i}>
                     <span className="badge info">{c.category}</span> {c.prompt.slice(0, 90)}
@@ -193,7 +193,7 @@ export default function RunSetupPage() {
         )}
       </section>
 
-      <div style={{ marginTop: 16 }}>
+      <div className="mt-md">
         <ConfigPanel
           config={config}
           onChange={setConfig}
@@ -211,9 +211,9 @@ export default function RunSetupPage() {
         />
       </div>
 
-      <section className="card" style={{ marginTop: 16 }} aria-label="Start">
+      <section className="card mt-md" aria-label="Start">
         <div className="row">
-          <div className="field" style={{ margin: 0 }}>
+          <div className="field m-0">
             <label htmlFor="run-name">Run name (optional)</label>
             <input
               id="run-name"
@@ -238,14 +238,14 @@ export default function RunSetupPage() {
           </button>
         </div>
         {blockers.length > 0 && (
-          <ul className="small muted" style={{ margin: '8px 0 0', paddingLeft: 18 }}>
+          <ul className="small muted note list-indent">
             {blockers.map((b) => (
               <li key={b}>{b}</li>
             ))}
           </ul>
         )}
         {create.error && (
-          <div style={{ marginTop: 12 }}>
+          <div className="mt-md">
             <ErrorBox error={create.error} title="Could not start the run." />
           </div>
         )}

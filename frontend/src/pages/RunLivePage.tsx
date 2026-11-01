@@ -2,6 +2,7 @@ import { useMemo } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { ACTIVE_STATUSES, useResults, useRun, useRunActions } from '../api/hooks';
 import { useRunEvents } from '../api/useRunEvents';
+import Breadcrumb from '../components/Breadcrumb';
 import ModelChip from '../components/ModelChip';
 import { Banner, ErrorBox, OutcomeBadge, Spinner, StatusBadge } from '../components/ui';
 import { fmtMs, fmtNum } from '../lib/format';
@@ -79,6 +80,7 @@ export default function RunLivePage() {
   if (run.isLoading)
     return (
       <>
+        <Breadcrumb listLabel="History" listPath="/history" current={`Run #${id}`} />
         {heading}
         <Spinner label="Loading run" />
       </>
@@ -86,6 +88,7 @@ export default function RunLivePage() {
   if (run.error)
     return (
       <>
+        <Breadcrumb listLabel="History" listPath="/history" current={`Run #${id}`} />
         {heading}
         <ErrorBox error={run.error} title="Could not load the run." />
       </>
@@ -102,6 +105,7 @@ export default function RunLivePage() {
 
   return (
     <>
+      <Breadcrumb listLabel="History" listPath="/history" current={r.name} />
       <div className="page-head">
         <div className="grow">
           <h1>Live run</h1>
@@ -122,7 +126,7 @@ export default function RunLivePage() {
           </button>
         )}
         {finished && r.status !== 'queued' && (
-          <Link className="btn primary" to={`/runs/${r.id}`} style={{ textDecoration: 'none' }}>
+          <Link className="btn primary" to={`/runs/${r.id}`}>
             <button className="primary" type="button">
               View results
             </button>
@@ -146,7 +150,7 @@ export default function RunLivePage() {
       ))}
 
       <section className="card" aria-label="Progress">
-        <div className="row" style={{ marginBottom: 8 }}>
+        <div className="row mb-sm">
           <strong>
             {progress.completed} / {progress.total}
           </strong>
@@ -162,10 +166,11 @@ export default function RunLivePage() {
           aria-valuemax={progress.total}
           aria-valuenow={progress.completed}
         >
+          {/* dynamic, data-driven width - inherently inline, not a candidate for a static token */}
           <div style={{ width: `${pct}%` }} />
         </div>
         {active && (
-          <p className="small" style={{ margin: '10px 0 0' }} aria-live="polite">
+          <p className="small note" aria-live="polite">
             {r.status === 'queued' && !current.model ? (
               'Waiting for the run queue…'
             ) : scoring ? (
@@ -248,7 +253,7 @@ export default function RunLivePage() {
                       <td>
                         <OutcomeBadge outcome={row.outcome} value={row.value} />
                         {row.cold && (
-                          <span className="badge warn" style={{ marginLeft: 4 }}>
+                          <span className="badge warn ml-sm">
                             cold
                           </span>
                         )}

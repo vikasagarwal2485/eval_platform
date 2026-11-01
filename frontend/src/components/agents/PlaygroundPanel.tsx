@@ -1,6 +1,8 @@
 import { useState } from 'react';
 import { useAgentCatalog, usePlaygroundMutations, useSkills } from '../../api/hooks';
 import type { Agent, PlaygroundSpawnResult } from '../../api/types';
+import { useConfirm } from '../ConfirmDialog';
+import { useToast } from '../Toast';
 import { Banner, Empty, ErrorBox, Spinner } from '../ui';
 import AgentTurnsPanel from './AgentTurnsPanel';
 
@@ -12,6 +14,8 @@ export default function PlaygroundPanel({ agent }: { agent: Agent }) {
   const { data: catalog, isLoading: catalogLoading, error: catalogError } = useAgentCatalog();
   const { data: skills } = useSkills();
   const { enable, disable, rotate, spawn } = usePlaygroundMutations(agent.id);
+  const confirm = useConfirm();
+  const toast = useToast();
 
   const [selectedFlavor, setSelectedFlavor] = useState('');
   const [systemPrompt, setSystemPrompt] = useState('');
@@ -118,7 +122,7 @@ export default function PlaygroundPanel({ agent }: { agent: Agent }) {
 
           <div className="field">
             <span id="pg-skills-label">Skills (optional)</span>
-            <div className="stack" aria-labelledby="pg-skills-label" style={{ gap: 4 }}>
+            <div className="stack gap-sm" aria-labelledby="pg-skills-label">
               {(skills ?? []).length === 0 && <p className="small muted">No skills registered yet.</p>}
               {(skills ?? []).map((s) => (
                 <label key={s.id} className="check">
@@ -190,7 +194,13 @@ export default function PlaygroundPanel({ agent }: { agent: Agent }) {
             <button
               type="button"
               onClick={() =>
-                rotate.mutate(undefined, { onSuccess: (a) => setShownToken(a.token ?? null) })
+                rotate.mutate(undefined, {
+                  onSuccess: (a) => {
+                    setShownToken(a.token ?? null);
+                    toast.success('Playground credentials rotated.');
+                  },
+                  onError: () => toast.error('Could not rotate playground credentials.'),
+                })
               }
               disabled={rotate.isPending}
             >
@@ -199,8 +209,15 @@ export default function PlaygroundPanel({ agent }: { agent: Agent }) {
             <button
               type="button"
               className="link"
-              onClick={() => {
-                if (confirm('Disable the Playground for this agent? It can be re-enabled later.'))
+              onClick={async () => {
+                if (
+                  await confirm({
+                    title: 'Disable the Playground for this agent?',
+                    body: 'It can be re-enabled later.',
+                    confirmLabel: 'Disable',
+                    danger: true,
+                  })
+                )
                   disable.mutate();
               }}
               disabled={disable.isPending}

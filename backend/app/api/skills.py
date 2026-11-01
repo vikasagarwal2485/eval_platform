@@ -28,8 +28,10 @@ def _skill_out(s: Skill) -> SkillOut:
 
 
 @router.get("/skills", response_model=list[SkillOut])
-def list_skills(session: Session = Depends(get_session)):
-    return [_skill_out(s) for s in repo.list_skills(session)]
+def list_skills(response: Response, limit: int = 50, offset: int = 0, session: Session = Depends(get_session)):
+    # `X-Total-Count` (add-uplift-frontend-ux) - see runs.list_runs for the rationale.
+    response.headers["X-Total-Count"] = str(repo.count_skills(session))
+    return [_skill_out(s) for s in repo.list_skills(session, limit=limit, offset=offset)]
 
 
 @router.post("/skills", response_model=SkillOut, status_code=201)

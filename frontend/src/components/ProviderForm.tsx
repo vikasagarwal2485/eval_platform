@@ -103,7 +103,7 @@ export default function ProviderForm({ onDone }: { onDone?: () => void }) {
           </>
         )}
       </p>
-      <div className="row" style={{ alignItems: 'flex-start' }}>
+      <div className="row align-start">
         <div className="field">
           <label htmlFor="pv-kind">Provider</label>
           <select
@@ -163,8 +163,8 @@ export default function ProviderForm({ onDone }: { onDone?: () => void }) {
           </div>
         )}
       </div>
-      <div className="row" style={{ alignItems: 'flex-start' }}>
-        <div className="field" style={{ flex: 1 }}>
+      <div className="row align-start">
+        <div className="field flex-1">
           <label htmlFor="pv-url">
             {isOllama ? 'Ollama server URL' : isCustom ? 'Service base URL' : 'Base URL'}{' '}
             <span className="hint">
@@ -180,7 +180,7 @@ export default function ProviderForm({ onDone }: { onDone?: () => void }) {
           <input
             id="pv-url"
             type="text"
-            style={{ width: '100%' }}
+            className="w-full"
             value={baseUrl}
             placeholder={
               isAzure
@@ -242,7 +242,7 @@ export default function ProviderForm({ onDone }: { onDone?: () => void }) {
               {KIND_LABEL[kind]}.
             </span>
           </label>
-          <div id="pv-ack-help" className="small muted" style={{ marginLeft: 24 }}>
+          <div id="pv-ack-help" className="small muted ml-lg">
             Required. It is recorded with the provider.
           </div>
           {errors.ack && (
@@ -253,11 +253,11 @@ export default function ProviderForm({ onDone }: { onDone?: () => void }) {
         </>
       )}
       {create.error && (
-        <div style={{ marginTop: 12 }}>
+        <div className="mt-md">
           <ErrorBox error={create.error} title="Could not register the model provider." />
         </div>
       )}
-      <p style={{ marginBottom: 0 }}>
+      <p className="mb-0">
         <button className="primary" type="submit" disabled={create.isPending}>
           {create.isPending ? 'Registering…' : 'Register'}
         </button>

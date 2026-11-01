@@ -124,4 +124,14 @@ describe('routing', () => {
     );
     expect(within(mainNav).getByRole('link', { name: 'Skills' })).toHaveAttribute('aria-current', 'page');
   });
+
+  it.each(['/', '/agents'])('shows the product mark and the theme toggle at %s', (path) => {
+    renderAt(path);
+    const header = screen.getByRole('banner');
+    const brand = within(header).getByText('Model Eval Platform');
+    expect(brand.querySelector('svg')).toBeInTheDocument();
+    expect(
+      within(header).getByRole('button', { name: /switch to (dark|light) theme/i }),
+    ).toBeInTheDocument();
+  });
 });

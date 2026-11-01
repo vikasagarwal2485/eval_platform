@@ -1,5 +1,5 @@
 import axe from 'axe-core';
-import { screen, waitFor } from '@testing-library/react';
+import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import App from './App';
 import { FakeEventSource } from './test/fakeEventSource';
@@ -627,5 +627,128 @@ describe('live agent evaluation accessibility (6.6)', () => {
     await screen.findByRole('group', { name: 'Evaluators' });
     for (const b of screen.getAllByRole('button')) expect(b).toHaveAccessibleName();
     for (const c of screen.getAllByRole('checkbox')) expect(c).toHaveAccessibleName();
+  });
+});
+
+describe('dark theme accessibility (5.1)', () => {
+  afterEach(() => document.documentElement.removeAttribute('data-theme'));
+
+  it('results page with the new primitives in view has no axe violations in dark mode', async () => {
+    document.documentElement.setAttribute('data-theme', 'dark');
+    app('/history');
+    await screen.findByRole('table', { name: 'Runs' });
+    expect(await audit()).toEqual([]);
+  });
+
+  it('a page using the confirm dialog and pagination has no axe violations in dark mode', async () => {
+    document.documentElement.setAttribute('data-theme', 'dark');
+    const user = userEvent.setup();
+    vi.stubGlobal('EventSource', FakeEventSource);
+    const { calls } = mockApi(routes);
+    renderApp(<App />, { route: '/history', path: '*', stubLive: false });
+    await screen.findByRole('table', { name: 'Runs' });
+    await user.click(screen.getByRole('button', { name: 'Delete' }));
+    const dialog = await screen.findByRole('dialog');
+    expect(await audit()).toEqual([]); // dialog open, still in dark mode, still clean
+    await user.click(within(dialog).getByRole('button', { name: 'Delete' }));
+    await waitFor(() => expect(calls.some((c) => c.method === 'DELETE')).toBe(true));
+  });
+});
+
+// ---------------------------------------------------------------- 5.2 keyboard-only, cross-primitive flow
+describe('keyboard-only flow exercising every new shared primitive (5.2)', () => {
+  const flowAgent = (over = {}) => ({
+    id: 1,
+    name: 'demo-chatbot',
+    kind: 'chatbot',
+    declared_models: { default: 'qwen3:8b' },
+    status: 'active',
+    liveness: 'idle',
+    token_prefix: 'abcd1234',
+    playground_eligible: true,
+    flavor: 'chatbot',
+    playground_gateway_key_configured: true,
+    handoff_agent_names: [],
+    eval_config: {
+      evaluators: [],
+      sample_rate: 1,
+      quiet_period_s: 20,
+      context_turns: 4,
+      attention_threshold: 0.5,
+      abandon_after_s: 600,
+      retention_days: null,
+    },
+    rubric: null,
+    provider_acks: [],
+    last_seen_at: '2026-01-01T00:00:00Z',
+    created_at: '2026-01-01T00:00:00Z',
+    ...over,
+  });
+
+  const flowRoutes = {
+    ...baseRoutes,
+    'GET /agents': () =>
+      new Response(JSON.stringify([flowAgent()]), { status: 200, headers: { 'X-Total-Count': '75' } }),
+    'GET /agents/1': flowAgent(),
+    'GET /agents/1/turns': [],
+    'GET /agents/1/summary': null,
+    'GET /agents/1/attention': [],
+    'GET /agents/catalog': [{ kind: 'chatbot', flavor: 'chatbot', entry_point: 'agents.chatbot' }],
+    'GET /skills': [],
+    'POST /agents/1/playground/rotate': { token: 'NEW-RAW-TOKEN' },
+    'DELETE /agents/1': new Response(null, { status: 204 }),
+  };
+
+  it('breadcrumb -> pagination -> rotate (toast) -> delete (confirm dialog), keyboard only', async () => {
+    vi.stubGlobal('EventSource', FakeEventSource);
+    const { calls } = mockApi(flowRoutes);
+    const user = userEvent.setup();
+    renderApp(<App />, { route: '/agents', path: '*', stubLive: false });
+
+    // pagination: the mocked total (75) exceeds the default page size, so the pager renders
+    await screen.findByText('demo-chatbot');
+    expect(screen.getByText('Showing 1-50 of 75')).toBeInTheDocument();
+    const next = screen.getByRole('button', { name: 'Next' });
+    next.focus();
+    await user.keyboard('{Enter}');
+    expect(screen.getByText('Page 2 of 2')).toBeInTheDocument();
+
+    // navigate into the agent detail page by keyboard alone
+    const agentLink = screen.getByRole('link', { name: /demo-chatbot/ });
+    agentLink.focus();
+    await user.keyboard('{Enter}');
+
+    // breadcrumb: back-link to the list plus the current record, rendered as plain text
+    const breadcrumbCurrent = await screen.findByText('demo-chatbot', {
+      selector: '.breadcrumb .current',
+    });
+    const breadcrumbNav = breadcrumbCurrent.closest('.breadcrumb') as HTMLElement;
+    expect(within(breadcrumbNav).getByRole('link', { name: 'Agents' })).toHaveAttribute(
+      'href',
+      '/agents',
+    );
+
+    // toast: rotate the Playground credentials from the Playground tab
+    const playgroundTab = screen.getByRole('tab', { name: 'Playground' });
+    playgroundTab.focus();
+    await user.keyboard('{Enter}');
+    const rotateButton = await screen.findByRole('button', { name: 'Rotate credentials' });
+    rotateButton.focus();
+    await user.keyboard('{Enter}');
+    expect(await screen.findByText('Playground credentials rotated.')).toBeInTheDocument();
+
+    // confirm dialog: delete the agent from the Settings tab
+    const settingsTab = screen.getByRole('tab', { name: 'Settings' });
+    settingsTab.focus();
+    await user.keyboard('{Enter}');
+    const deleteButton = await screen.findByRole('button', { name: 'Delete agent' });
+    deleteButton.focus();
+    await user.keyboard('{Enter}');
+    const dialog = await screen.findByRole('dialog');
+    within(dialog).getByRole('button', { name: 'Delete' }).focus();
+    await user.keyboard('{Enter}');
+    await waitFor(() =>
+      expect(calls.some((c) => c.method === 'DELETE' && c.path === '/agents/1')).toBe(true),
+    );
   });
 });
