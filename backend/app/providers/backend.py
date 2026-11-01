@@ -227,7 +227,10 @@ class ModelRouter:
             return ModelInfo(
                 name=ref,
                 digest="",  # providers publish no digest; the resolved model version is recorded per result
-                source="cloud",
+                # An `ollama`-kind provider's models run locally - tagged "local" exactly as the model listing
+                # (`api/health.py`'s `_registered_ollama_models`) already does, so a run's snapshot doesn't
+                # mislabel them "cloud".
+                source="local" if provider.kind == "ollama" else "cloud",
                 provider=provider.name,
                 provider_kind=provider.kind,
                 display_name=model.display_name or model.model_id,

@@ -114,6 +114,17 @@ def test_registered_ollama_model_is_tagged_local_not_cloud(client):
     assert entry["available"] is True
 
 
+def test_run_snapshot_of_a_registered_ollama_model_is_local_not_cloud(client):
+    """A run's own model snapshot used to tag every `@provider/model` ref "cloud", so History/Results
+    labelled a local Ollama model "cloud · <provider>" even though `/api/models` said "local"."""
+    pid = ollama_provider(client).json()["id"]
+    client.post(f"/api/providers/{pid}/models", json={"model_id": "qwen3:8b"})
+    info = client.app.state.router.model_info("@ollama-main/qwen3:8b")
+    assert info is not None
+    assert info.source == "local"
+    assert info.provider_kind == "ollama"
+
+
 def test_registering_a_model_suppresses_its_bare_duplicate(client):
     """`add-ollama-model-registration-required`: once `qwen3:8b` is registered as `@ollama-main/qwen3:8b`, the
     bare name no longer appears separately - there is exactly one entry for this model, not two."""
