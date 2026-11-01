@@ -219,13 +219,90 @@ def test_routing_decision_uses_hardcoded_prompt_by_default():
     assert llm.bound.invoked_with[0].content == router_agent.ROUTING_SYSTEM_PROMPT
 
 
-def test_routing_decision_system_prompt_override_replaces_the_default():
+def test_routing_decision_system_prompt_is_appended_never_replacing_the_routing_contract():
+    """A playground --system-prompt/--skill used to replace ROUTING_SYSTEM_PROMPT outright, leaving the model
+    with no instruction to call resolve_route - and so reliably raising RoutingToolNotCalled."""
     response = _FakeAIResponse([{"name": "resolve_route", "args": {"classification": {"x": 1}}, "id": "1"}])
     llm = _FakeLLM(response)
     router_agent.routing_decision(
         llm, {"x": 1}, call_tool=lambda c: {"action": "short_circuit", "response": "ok"}, system_prompt="be terse",
     )
-    assert llm.bound.invoked_with[0].content == "be terse"
+    prompt = llm.bound.invoked_with[0].content
+    assert prompt.startswith(router_agent.ROUTING_SYSTEM_PROMPT)
+    assert "be terse" in prompt
+
+
+class _SequencedLLM(_FakeLLM):
+    """Returns each response in turn on successive `.invoke()` calls."""
+
+    def __init__(self, responses):
+        super().__init__(None)
+        self._responses = list(responses)
+        self.invocations = []
+
+    def bind_tools(self, tools, *, tool_choice=None):
+        self.bound_tool_choice = tool_choice
+        outer = self
+
+        class _Bound:
+            def invoke(self, messages):
+                outer.invocations.append(list(messages))
+                return outer._responses.pop(0)
+
+        return _Bound()
+
+
+def _text_response(text):
+    r = _FakeAIResponse([])
+    r.content = text
+    return r
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        '<think>route it</think>\n<tool_call>\n{"name": "resolve_route", "arguments": '
+        '{"classification": {"spam": {"label": "ham"}}}}\n</tool_call>',
+        '```json\n{"name": "resolve_route", "arguments": {"classification": {"spam": {"label": "ham"}}}}\n```',
+        '{"name": "resolve_route", "parameters": {"classification": {"spam": {"label": "ham"}}}}',
+        '{"name": "resolve_route", "arguments": "{\\"classification\\": {\\"spam\\": {\\"label\\": \\"ham\\"}}}"}',
+    ],
+)
+def test_routing_decision_recovers_a_tool_call_written_as_text(text):
+    """Ollama-backed gateway groups ignore tool_choice (dropped by the gateway's drop_params), and qwen-style
+    models often write the call as text instead of a structured tool call."""
+    calls = []
+    llm = _SequencedLLM([_text_response(text)])
+    decision, _, _ = router_agent.routing_decision(
+        llm, {"spam": {"label": "ham"}}, call_tool=lambda c: calls.append(c) or {"action": "handoff"},
+    )
+    assert decision == {"action": "handoff"}
+    assert calls == [{"spam": {"label": "ham"}}]
+    assert len(llm.invocations) == 1
+
+
+def test_routing_decision_retries_once_with_a_corrective_message_then_succeeds():
+    ok = _FakeAIResponse([{"name": "resolve_route", "args": {"classification": {"x": 1}}, "id": "1"}])
+    llm = _SequencedLLM([_text_response("The integral evaluates to 26."), ok])
+    decision, _, usage = router_agent.routing_decision(llm, {"x": 1}, call_tool=lambda c: {"action": "handoff"})
+    assert decision == {"action": "handoff"}
+    assert len(llm.invocations) == 2
+    assert llm.invocations[1][-1].content == router_agent.ROUTING_RETRY_PROMPT
+    assert usage == {"prompt_tokens": 20, "completion_tokens": 10}  # summed across both attempts
+
+
+def test_routing_decision_gives_up_after_the_bounded_retry_with_the_models_reply_in_the_error():
+    llm = _SequencedLLM([_text_response("26"), _text_response("still 26")])
+    with pytest.raises(router_agent.RoutingToolNotCalled, match="still 26"):
+        router_agent.routing_decision(llm, {"x": 1}, call_tool=lambda c: {"action": "error"})
+    assert len(llm.invocations) == router_agent.ROUTING_MAX_ATTEMPTS
+
+
+def test_routing_decision_falls_back_to_the_classifier_result_when_the_tool_argument_is_empty():
+    calls = []
+    llm = _SequencedLLM([_FakeAIResponse([{"name": "resolve_route", "args": {"classification": {}}, "id": "1"}])])
+    router_agent.routing_decision(llm, {"x": 1}, call_tool=lambda c: calls.append(c) or {"action": "error"})
+    assert calls == [{"x": 1}]
 
 
 # ------------------------------------------------------------------ add-agent-playground: system-prompt/skill/task

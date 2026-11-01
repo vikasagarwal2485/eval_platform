@@ -77,6 +77,7 @@ import argparse
 import asyncio
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -84,7 +85,7 @@ from typing import Any, TypedDict
 
 import httpx
 import openai
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 from langgraph.graph import END, StateGraph
 from mcp import ClientSession, StdioServerParameters
@@ -106,8 +107,15 @@ ROUTING_SYSTEM_PROMPT = (
     "You are a routing assistant for an AI agent platform. You will be given a context-classifier's result "
     "for one problem, as a JSON object keyed by classifier task. Call the resolve_route tool exactly once, "
     "passing that exact JSON object as its `classification` argument, to decide what should happen next. Do "
-    "not call any other tool, and do not call resolve_route more than once."
+    "not call any other tool, and do not call resolve_route more than once. Do not answer, solve or comment "
+    "on the problem itself - your only job is to make that one tool call."
 )
+ROUTING_RETRY_PROMPT = (
+    "You did not call the resolve_route tool. Do not reply with text. Call resolve_route now, passing the "
+    "classifier result above, unchanged, as its `classification` argument."
+)
+# One normal attempt plus one corrective retry - still bounded, never an open-ended loop.
+ROUTING_MAX_ATTEMPTS = 2
 
 
 class RoutingToolNotCalled(RuntimeError):
@@ -199,8 +207,10 @@ def routing_decision(
     Returns `(decision, concrete_model, usage)` - the concrete model and usage are this one LLM call's,
     recorded as the turn's single "routing" span; `call_tool` is injectable for tests.
 
-    `system_prompt` (`add-agent-playground`) overrides the hardcoded `ROUTING_SYSTEM_PROMPT` when
-    given - unset by default, matching this agent's behavior before this parameter existed."""
+    `system_prompt` (`add-agent-playground`) is appended to the hardcoded `ROUTING_SYSTEM_PROMPT` as
+    additional instructions - never replacing it, since the routing contract (call resolve_route) must
+    survive any playground prompt/skill. A model that answers in text is given one corrective retry; a
+    tool call written out as text (common for local Ollama models) is recovered rather than rejected."""
     tool_schema = {
         "type": "function",
         "function": {
@@ -213,21 +223,114 @@ def routing_decision(
             },
         },
     }
-    messages = [SystemMessage(system_prompt or ROUTING_SYSTEM_PROMPT), HumanMessage(json.dumps(classification))]
-    # `tool_choice=RESOLVE_ROUTE_TOOL` (found live: a genuine calculus problem - "evaluate the
-    # definite integral of 3x^2 ... " - hit RoutingToolNotCalled) forces the call, rather than
-    # relying on the system prompt's own "must call resolve_route" instruction alone - `bind_tools`
-    # without an explicit `tool_choice` defaults to "auto", which lets the model answer in plain
-    # text instead of calling any tool at all. This docstring already claimed the tool was
-    # "required" before this fix; now the request itself actually enforces it, for whichever
-    # backing model the gateway routes this call to.
-    response = llm.bind_tools([tool_schema], tool_choice=RESOLVE_ROUTE_TOOL).invoke(messages)
-    if not response.tool_calls:
-        raise RoutingToolNotCalled("the routing model did not call resolve_route")
-    call = response.tool_calls[0]  # only the first requested call is ever executed - never more than one
-    decision = call_tool(call["args"].get("classification", classification))
+    messages = [
+        SystemMessage(_routing_system_prompt(system_prompt)),
+        HumanMessage(f"Classifier result:\n{json.dumps(classification)}"),
+    ]
+    # `tool_choice=RESOLVE_ROUTE_TOOL` forces the call on providers that honour it (OpenAI, Anthropic, ...).
+    # It is NOT enough on its own: the local gateway's `ollama_chat/*` deployments have no `tool_choice`
+    # at all - litellm pops it from every `ollama_chat` request (`OllamaChatConfig.map_openai_params`) - so it is silently dropped there and the
+    # model is free to answer in plain text (or, for qwen-style models, to write the call as text inside
+    # `<tool_call>` tags instead of as a structured tool call). Hence the text-recovery and the one
+    # bounded corrective retry below.
+    bound = llm.bind_tools([tool_schema], tool_choice=RESOLVE_ROUTE_TOOL)
+    usage_total = {"prompt_tokens": None, "completion_tokens": None}
+    response = None
+    call = None
+    for attempt in range(ROUTING_MAX_ATTEMPTS):
+        response = bound.invoke(messages)
+        _add_usage(usage_total, _usage(response))
+        call = _first_resolve_route_call(response)
+        if call is not None:
+            break
+        if attempt + 1 < ROUTING_MAX_ATTEMPTS:
+            messages = [
+                *messages,
+                AIMessage(_text_content(response)),
+                HumanMessage(ROUTING_RETRY_PROMPT),
+            ]
+    if call is None:
+        snippet = _text_content(response).strip()[:300]
+        raise RoutingToolNotCalled(
+            f"the routing model did not call resolve_route after {ROUTING_MAX_ATTEMPTS} attempt(s)"
+            + (f"; it replied: {snippet!r}" if snippet else "")
+        )
+    args = call.get("args") or {}
+    tool_input = args.get("classification")
+    if not isinstance(tool_input, dict) or not tool_input:
+        # A model that called the tool but mangled/omitted its argument - the classifier's own result is
+        # what the tool is defined to take, so pass that through rather than an empty/garbled object.
+        tool_input = classification
+    decision = call_tool(tool_input)
     model = _concrete_model(response, llm.model_name)
-    return decision, model, _usage(response)
+    return decision, model, usage_total
+
+
+def _routing_system_prompt(extra: str | None) -> str:
+    """The routing contract (`ROUTING_SYSTEM_PROMPT`) is always kept. A playground `--system-prompt`/`--skill`
+    used to *replace* it outright, leaving the model with no instruction to call resolve_route at all - so a
+    custom prompt (e.g. "be a helpful assistant") reliably produced RoutingToolNotCalled. Extra instructions
+    are now appended as additional context instead."""
+    if not extra or extra.strip() == ROUTING_SYSTEM_PROMPT:
+        return ROUTING_SYSTEM_PROMPT
+    return f"{ROUTING_SYSTEM_PROMPT}\n\nAdditional instructions:\n{extra}"
+
+
+def _text_content(response) -> str:
+    content = getattr(response, "content", "") or ""
+    if isinstance(content, list):  # content blocks
+        return "".join(b.get("text", "") if isinstance(b, dict) else str(b) for b in content)
+    return str(content)
+
+
+_THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
+_TOOL_CALL_TAG_RE = re.compile(r"<tool_call>\s*(.*?)\s*(?:</tool_call>|$)", re.DOTALL)
+_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
+
+
+def _first_resolve_route_call(response) -> dict | None:
+    """The first `resolve_route` call the model made - a structured tool call if there is one, otherwise one
+    written out as text (qwen/hermes-style `<tool_call>{"name": ..., "arguments": ...}</tool_call>`, a fenced
+    JSON block, or a bare JSON object), which local Ollama-backed models commonly emit when the provider
+    doesn't enforce `tool_choice`. Returns `{"name", "args"}` or `None`."""
+    for tc in getattr(response, "tool_calls", None) or []:
+        if tc.get("name") == RESOLVE_ROUTE_TOOL:
+            return tc
+    text = _THINK_RE.sub("", _text_content(response))
+    candidates = [*_TOOL_CALL_TAG_RE.findall(text), *_FENCE_RE.findall(text), text]
+    for candidate in candidates:
+        obj = _parse_json_object(candidate)
+        if not isinstance(obj, dict):
+            continue
+        if obj.get("name") == RESOLVE_ROUTE_TOOL:
+            args = obj.get("arguments", obj.get("parameters", obj.get("args", {})))
+            if isinstance(args, str):
+                args = _parse_json_object(args) or {}
+            return {"name": RESOLVE_ROUTE_TOOL, "args": args if isinstance(args, dict) else {}}
+        if set(obj) == {"classification"}:
+            return {"name": RESOLVE_ROUTE_TOOL, "args": obj}
+    return None
+
+
+def _parse_json_object(text: str):
+    text = text.strip()
+    try:
+        return json.loads(text)
+    except (json.JSONDecodeError, ValueError):
+        pass
+    start, end = text.find("{"), text.rfind("}")
+    if start == -1 or end <= start:
+        return None
+    try:
+        return json.loads(text[start : end + 1])
+    except (json.JSONDecodeError, ValueError):
+        return None
+
+
+def _add_usage(total: dict, usage: dict) -> None:
+    for k, v in usage.items():
+        if v is not None:
+            total[k] = (total.get(k) or 0) + v
 
 
 # ------------------------------------------------------------------ handoff (reasoning branch)
